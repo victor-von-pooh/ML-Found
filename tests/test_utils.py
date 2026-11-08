@@ -2,7 +2,7 @@ from collections import namedtuple
 
 import torch
 
-from ml_found.utils.batch import move_to_device
+from ml_found.utils.batch import get_batch_size, move_to_device
 from ml_found.utils.device import get_device
 
 
@@ -61,3 +61,16 @@ def test_move_to_device_namedtuple():
 
     assert isinstance(moved, Batch)
     assert torch.equal(moved.y, torch.ones(2))
+
+
+def test_get_batch_size():
+    """
+    バッチのサンプル数を推定できることを確かめる関数
+    """
+    # テンソル, タプル, 辞書, テンソルを含まないものを調べる
+    x = torch.zeros(4, 3)
+
+    assert get_batch_size(x) == 4
+    assert get_batch_size((x, torch.zeros(4))) == 4
+    assert get_batch_size({"name": "a", "x": [x]}) == 4
+    assert get_batch_size(["a", 1]) == 1

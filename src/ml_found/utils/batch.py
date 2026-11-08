@@ -50,3 +50,40 @@ def move_to_device(batch: Any, device: torch.device) -> Any:
     moved = batch
 
     return moved
+
+
+def get_batch_size(batch: Any) -> int:
+    """
+    バッチのサンプル数を推定する関数
+
+    Parameters
+    ----------
+    batch: Any
+        テンソル, またはテンソルを含むリスト, タプル, 辞書など
+
+    Returns
+    -------
+    size: int
+        最初に見つかったテンソルの 0 次元目の大きさ, 見つからない場合は 1
+    """
+    # テンソルの場合は 0 次元目をサンプル数とみなす
+    if isinstance(batch, torch.Tensor):
+        size = batch.shape[0] if batch.dim() > 0 else 1
+        return size
+
+    # 辞書の場合は値を, リストやタプルの場合は要素を順に調べる
+    if isinstance(batch, dict):
+        values = list(batch.values())
+    elif isinstance(batch, (list, tuple)):
+        values = list(batch)
+    else:
+        values = []
+    for value in values:
+        if isinstance(value, (torch.Tensor, dict, list, tuple)):
+            size = get_batch_size(value)
+            return size
+
+    # テンソルが見つからない場合は 1 とみなす
+    size = 1
+
+    return size

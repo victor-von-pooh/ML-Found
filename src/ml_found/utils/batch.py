@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import Any, Optional
 
 import torch
@@ -25,7 +26,7 @@ def move_to_device(batch: Any, device: torch.device) -> Any:
         return moved
 
     # 辞書の場合は値ごとに移動
-    if isinstance(batch, dict):
+    if isinstance(batch, Mapping):
         moved = {
             key: move_to_device(value, device)
             for key, value in batch.items()
@@ -76,8 +77,9 @@ def find_batch_size(batch: Any) -> Optional[int]:
         size = batch.shape[0] if batch.dim() > 0 else None
         return size
 
-    # 辞書の場合は値を, リストやタプルの場合は要素を順に確認
-    if isinstance(batch, dict):
+    # 辞書 (dict 以外の Mapping も含む) の場合は値を,
+    # リストやタプルの場合は要素を順に確認
+    if isinstance(batch, Mapping):
         values = list(batch.values())
     elif isinstance(batch, (list, tuple)):
         values = list(batch)

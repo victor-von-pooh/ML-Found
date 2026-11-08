@@ -1,4 +1,5 @@
 import copy
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -56,6 +57,65 @@ def is_improved(
         improved = value < best - min_delta
     else:
         improved = value > best + min_delta
+
+    return improved
+
+
+def is_improved_with_tiebreak(
+    value: float, best: Optional[float], mode: str, min_delta: float,
+    tiebreak: Optional[float], best_tiebreak: Optional[float],
+    tiebreak_mode: str
+) -> bool:
+    """
+    監視する指標と, 同じ値の場合に比べる指標で改善を判定する関数
+
+    Parameters
+    ----------
+    value: float
+        今回の監視する指標の値
+    best: Optional[float]
+        これまでの最良値, まだ無い場合は None
+    mode: str
+        監視する指標の良し悪しの向き
+    min_delta: float
+        これより小さい変化は改善とみなさない
+    tiebreak: Optional[float]
+        今回の同じ値の場合に比べる指標の値, 使わない場合は None
+    best_tiebreak: Optional[float]
+        最良値のときの同じ値の場合に比べる指標の値
+    tiebreak_mode: str
+        同じ値の場合に比べる指標の良し悪しの向き
+
+    Returns
+    ----------
+    improved: bool
+        監視する指標が改善したか, 同じ値で比べる指標が改善したかどうか
+    """
+    use_tiebreak = tiebreak is not None and best_tiebreak is not None
+
+    # 同じ値の場合は比べる指標だけで判定
+    # バッチごとの平均の丸め誤差で同じ値がずれることがあるので, 差が小さい値も同じ値に設定
+    if use_tiebreak and best is not None and math.isclose(
+        value, best, rel_tol=1e-6, abs_tol=1e-12
+    ):
+        improved = is_improved(tiebreak, best_tiebreak, tiebreak_mode)
+        return improved
+
+    # 監視する指標が min_delta 以上改善した場合
+    if is_improved(value, best, mode, min_delta):
+        improved = True
+        return improved
+
+    # 比べる指標を使わない場合は改善なし
+    if not use_tiebreak:
+        improved = False
+        return improved
+
+    # 最良値より悪くないが改善が min_delta 未満の場合は比べる指標で判定
+    not_worse = value >= best if mode == "max" else value <= best
+    improved = not_worse and is_improved(
+        tiebreak, best_tiebreak, tiebreak_mode
+    )
 
     return improved
 
@@ -131,10 +191,12 @@ def load_checkpoint(path: str, device: torch.device) -> dict:
 
 class EarlyStopping:
     def __init__(
-        self, patience: int, min_delta: float = 0.0, mode: str = "min"
+        self, patience: int, min_delta: float = 0.0, mode: str = "min",
+        tiebreak_mode: str = "min"
     ):
         # 指標の良し悪しの向きの確認
         check_mode(mode)
+        check_mode(tiebreak_mode)
 
         # 待つ回数, 改善とみなす最小の変化, 良し悪しの向きを保存
         self.patience = patience
@@ -146,7 +208,11 @@ class EarlyStopping:
         self.counter = 0
         self.stopped = False
 
-    def step(self, value: float) -> bool:
+        # 同じ値の場合に比べる指標の向きと, 最良値のときのその値を保存
+        self.tiebreak_mode = tiebreak_mode
+        self.best_tiebreak: Optional[float] = None
+
+    def step(self, value: float, tiebreak: Optional[float] = None) -> bool:
         """
         指標の値を受け取って学習を止めるかどうかを判定する関数
 
@@ -154,6 +220,8 @@ class EarlyStopping:
         ----------
         value: float
             今回の指標の値
+        tiebreak: Optional[float] = None
+            同じ値の場合に比べる指標の値, 使わない場合は None
 
         Returns
         ----------
@@ -161,8 +229,13 @@ class EarlyStopping:
             学習を止めるかどうか
         """
         # 改善した場合は最良値を更新し, しなかった場合は回数のカウント
-        if is_improved(value, self.best, self.mode, self.min_delta):
+        improved = is_improved_with_tiebreak(
+            value, self.best, self.mode, self.min_delta, tiebreak,
+            self.best_tiebreak, self.tiebreak_mode
+        )
+        if improved:
             self.best = value
+            self.best_tiebreak = tiebreak
             self.counter = 0
         else:
             self.counter += 1
@@ -189,7 +262,7 @@ class EarlyStopping:
         # 最良値, 回数, 止めたかどうかを集約
         state = {
             "best": self.best, "counter": self.counter,
-            "stopped": self.stopped
+            "stopped": self.stopped, "best_tiebreak": self.best_tiebreak
         }
 
         return state
@@ -211,15 +284,17 @@ class EarlyStopping:
         self.best = state["best"]
         self.counter = state["counter"]
         self.stopped = state["stopped"]
+        self.best_tiebreak = state.get("best_tiebreak")
 
 
 class Checkpoint:
     def __init__(
         self, run_dir: Path, mode: str = "min", save_best: bool = True,
-        save_last: bool = True
+        save_last: bool = True, tiebreak_mode: str = "min"
     ):
         # 指標の良し悪しの向きの確認
         check_mode(mode)
+        check_mode(tiebreak_mode)
 
         # 保存先, 良し悪しの向き, 何を保存するかを保存
         self.run_dir = Path(run_dir)
@@ -232,7 +307,14 @@ class Checkpoint:
         self.best_epoch = 0
         self.best_model_state: Optional[dict] = None
 
-    def update(self, value: float, epoch: int, model: nn.Module) -> bool:
+        # 同じ値の場合に比べる指標の向きと, 最良値のときのその値を保存
+        self.tiebreak_mode = tiebreak_mode
+        self.best_tiebreak: Optional[float] = None
+
+    def update(
+        self, value: float, epoch: int, model: nn.Module,
+        tiebreak: Optional[float] = None
+    ) -> bool:
         """
         指標の値を受け取ってベストモデルを更新する関数
 
@@ -244,6 +326,8 @@ class Checkpoint:
             今回のエポック
         model: nn.Module
             学習中のモデル
+        tiebreak: Optional[float] = None
+            同じ値の場合に比べる指標の値, 使わない場合は None
 
         Returns
         ----------
@@ -251,15 +335,44 @@ class Checkpoint:
             ベストモデルが更新されたかどうか
         """
         # 改善した場合は最良値とエポックと重みを更新
-        improved = is_improved(value, self.best_value, self.mode)
+        improved = is_improved_with_tiebreak(
+            value, self.best_value, self.mode, 0.0, tiebreak,
+            self.best_tiebreak, self.tiebreak_mode
+        )
         if improved:
             self.best_value = value
+            self.best_tiebreak = tiebreak
             self.best_epoch = epoch
             self.best_model_state = copy_state_dict(model.state_dict())
 
         return improved
 
-    def save(self, state: dict, improved: bool) -> None:
+    def needs_save(self, improved: bool, write_last: bool = True) -> bool:
+        """
+        今回ファイルに保存するものがあるかを判定する関数
+
+        Parameters
+        ----------
+        improved: bool
+            今回ベストモデルが更新されたかどうか
+        write_last: bool = True
+            今回 last.pt を書く順番かどうか
+
+        Returns
+        ----------
+        needed: bool
+            best.pt か last.pt のどちらかを書く場合は True
+        """
+        # 保存の設定と今回の状況から判定
+        needed = (improved and self.save_best) or (
+            write_last and self.save_last
+        )
+
+        return needed
+
+    def save(
+        self, state: dict, improved: bool, write_last: bool = True
+    ) -> None:
         """
         ベストモデルと最後のモデルをファイルに保存する関数
 
@@ -269,6 +382,8 @@ class Checkpoint:
             チェックポイントとして保存する内容, update の後に作ったもの
         improved: bool
             今回ベストモデルが更新されたかどうか
+        write_last: bool = True
+            今回 last.pt を書く順番かどうか, 保存の間隔を空ける場合に使用
 
         Returns
         ----------
@@ -278,8 +393,8 @@ class Checkpoint:
         if improved and self.save_best:
             save_checkpoint(state, self.run_dir / "best.pt")
 
-        # 学習を再開できるように最後のモデルを毎回上書きで保存
-        if self.save_last:
+        # 学習を再開できるように最後のモデルを上書きで保存
+        if write_last and self.save_last:
             save_checkpoint(state, self.run_dir / "last.pt")
 
     def restore_best(self, model: nn.Module) -> None:
@@ -316,7 +431,8 @@ class Checkpoint:
         # ベストモデルに戻せるように重みも格納
         state = {
             "best_value": self.best_value, "best_epoch": self.best_epoch,
-            "best_model": self.best_model_state
+            "best_model": self.best_model_state,
+            "best_tiebreak": self.best_tiebreak
         }
 
         return state
@@ -337,6 +453,7 @@ class Checkpoint:
         # 最良値とエポックの復元
         self.best_value = state["best_value"]
         self.best_epoch = state["best_epoch"]
+        self.best_tiebreak = state.get("best_tiebreak")
 
         # ベストモデルの重みがある場合は復元
         if state["best_model"] is not None:

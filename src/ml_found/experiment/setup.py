@@ -13,6 +13,7 @@ from ml_found.experiment.env_info import (
 )
 from ml_found.experiment.logger import get_logger
 from ml_found.experiment.seed import fix_seed
+from ml_found.training.optim import check_optim_config
 from ml_found.utils.device import get_device
 
 
@@ -52,6 +53,76 @@ def check_name(name: str) -> None:
         raise ValueError(
             "experiment.name はディレクトリ名として使える名前にしてください: "
             f"{name}"
+        )
+
+
+def check_trainer_config(cfg: DictConfig) -> None:
+    """
+    学習の設定の組み合わせが正しいことを確かめる関数
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        学習に使う config
+
+    Returns
+    ----------
+    None
+    """
+    # last.pt を保存する間隔は 1 以上に制限
+    trainer_cfg = cfg.trainer
+    if trainer_cfg.checkpoint.every_n_epochs < 1:
+        raise ValueError(
+            "trainer.checkpoint.every_n_epochs は 1 以上にしてください: "
+            f"{trainer_cfg.checkpoint.every_n_epochs}"
+        )
+
+    # 同じ値の場合に比べる指標の向きは min か max に制限
+    if trainer_cfg.monitor_tiebreak_mode not in ("min", "max"):
+        raise ValueError(
+            "trainer.monitor_tiebreak_mode は min か max にしてください: "
+            f"{trainer_cfg.monitor_tiebreak_mode}"
+        )
+
+    # 自分で更新する設定では ML-Found がクリップと記録をできないのでエラー
+    uses_grad = (
+        trainer_cfg.grad_clip_norm is not None or trainer_cfg.log_grad_norm
+    )
+    if trainer_cfg.manual_optimization and uses_grad:
+        raise ValueError(
+            "manual_optimization では grad_clip_norm と log_grad_norm は"
+            "使えません"
+        )
+
+
+def check_resume_path(cfg: DictConfig, project_dir: Path) -> None:
+    """
+    再開元のチェックポイントが存在することを確かめる関数
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        学習に使う config
+    project_dir: Path
+        ML-Found を使っているプロジェクトのディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 再開しない場合は確認不要
+    path = cfg.trainer.resume_from
+    if path is None:
+        return
+
+    # 相対パスは Trainer と同じくプロジェクトのディレクトリから辿って確認
+    resolved = Path(path)
+    if not resolved.is_absolute():
+        resolved = project_dir / resolved
+    if not resolved.exists():
+        raise FileNotFoundError(
+            f"trainer.resume_from のファイルがありません: {resolved} "
+            "(相対パスはプロジェクトのディレクトリから辿ります)"
         )
 
 
@@ -126,8 +197,12 @@ def start_experiment(
     else:
         project_root = Path(project_dir).resolve()
 
-    # 空の出力先が残らないように, ディレクトリを作る前にデバイスの確認
+    # 空の出力先が残らないように, ディレクトリを作る前にデバイス,
+    # Optimizer と Scheduler と学習の設定, 再開元の確認
     device = get_device(cfg.experiment.device)
+    check_optim_config(cfg)
+    check_trainer_config(cfg)
+    check_resume_path(cfg, project_root)
 
     # 出力先を作ると未コミットの変更として数えられるので, 先に環境の情報の収集
     env_info = collect_env_info(str(project_root))

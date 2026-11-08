@@ -850,19 +850,16 @@ def test_custom_scheduler(tmp_path: Path) -> None:
             scheduler=torch.optim.lr_scheduler.StepLR(other, step_size=1)
         )
 
-    # 間隔の typo はエラー
-    typo = make_experiment(
-        tmp_path / "typo", "scheduler:\n  interval: Epoch\n"
-    )
-    model = nn.Linear(1, 1)
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    # 間隔の typo は出力先を作る前の start_experiment でエラー
     with pytest.raises(ValueError, match="interval"):
-        Trainer(
-            model, typo, regression_step, optimizer,
-            torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)
+        make_experiment(
+            tmp_path / "typo", "scheduler:\n  interval: Epoch\n"
         )
+    assert not (tmp_path / "typo" / "outputs").exists()
 
     # 監視する指標と向きが違う ReduceLROnPlateau はエラー
+    model = nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     plateau = make_experiment(tmp_path / "plateau", "trainer:\n  mode: max\n")
     with pytest.raises(ValueError, match="mode"):
         Trainer(

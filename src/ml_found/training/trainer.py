@@ -5,6 +5,7 @@ from typing import Any, Callable, Iterable, Optional
 
 import torch
 from torch import nn, optim
+from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from tqdm import tqdm
 
 from ml_found.experiment.seed import get_rng_state, set_rng_state
@@ -23,12 +24,13 @@ from ml_found.utils.plotting import plot_history
 class Trainer:
     def __init__(
         self, model: nn.Module, experiment: Experiment,
-        step_fn: Optional[Callable[[nn.Module, Any], dict]] = None,
-        optimizer: Optional[optim.Optimizer] = None
+        step_fn: Optional[Callable[[nn.Module, Any, str], dict]] = None,
+        optimizer: Optional[optim.Optimizer] = None,
+        scheduler: Optional[LRScheduler | ReduceLROnPlateau] = None
     ):
         # 実験, 学習の config, ロガー, デバイスを保存する
         self.experiment = experiment
-        self.cfg = experiment.cfg.trainer
+        self.trainer_cfg = experiment.cfg.trainer
         self.logger = experiment.logger
         self.device = experiment.device
 
@@ -45,40 +47,55 @@ class Trainer:
             )
         self.optimizer = optimizer
 
-        # Scheduler を config から作り, 更新する間隔を保存する
-        self.scheduler = build_scheduler(
-            experiment.cfg.scheduler, self.optimizer, self.cfg.mode
-        )
+        # Scheduler が渡されていない場合は config から作る
+        if scheduler is None:
+            scheduler = build_scheduler(
+                experiment.cfg.scheduler, self.optimizer,
+                experiment.cfg.trainer.mode
+            )
+        elif scheduler.optimizer is not self.optimizer:
+            raise ValueError(
+                "scheduler は Trainer が使う optimizer で作ってください"
+            )
+        self.scheduler = scheduler
+
+        # 学習率を更新する間隔を保存する
         self.scheduler_interval = experiment.cfg.scheduler.interval
 
         # Early Stopping を使う場合は作る
         self.early_stopping = None
-        if self.cfg.early_stopping.use:
+        if self.trainer_cfg.early_stopping.use:
             self.early_stopping = EarlyStopping(
-                patience=self.cfg.early_stopping.patience,
-                min_delta=self.cfg.early_stopping.min_delta,
-                mode=self.cfg.mode
+                patience=self.trainer_cfg.early_stopping.patience,
+                min_delta=self.trainer_cfg.early_stopping.min_delta,
+                mode=self.trainer_cfg.mode
             )
 
         # ベストモデルと最後のモデルを保存する仕組みを作る
         self.checkpoint = Checkpoint(
-            experiment.run_dir, mode=self.cfg.mode,
-            save_best=self.cfg.checkpoint.save_best,
-            save_last=self.cfg.checkpoint.save_last
+            experiment.run_dir, mode=self.trainer_cfg.mode,
+            save_best=self.trainer_cfg.checkpoint.save_best,
+            save_last=self.trainer_cfg.checkpoint.save_last
         )
 
         # エポックごとの記録と, 最初のエポックを保存する
         self.history = History()
         self.start_epoch = 1
 
-    def training_step(self, batch: Any) -> dict:
+        # step から参照できるように, 今のエポックとパラメータの更新回数を保存する
+        self.epoch = 0
+        self.global_step = 0
+
+    def step(self, batch: Any, phase: str) -> dict:
         """
-        学習時に 1 バッチ分の損失と指標を求める関数
+        1 バッチ分の損失と指標を求める関数
 
         Parameters
         ----------
         batch: Any
             デバイスに移したバッチ
+        phase: str
+            学習時は train, 検証時は valid
 
         Returns
         -------
@@ -88,32 +105,48 @@ class Trainer:
         # 関数が渡されていない場合は継承して上書きしてもらう
         if self.step_fn is None:
             raise NotImplementedError(
-                "step_fn を渡すか training_step を上書きしてください"
+                "step_fn を渡すか step を上書きしてください"
             )
 
         # 渡された関数で計算する
-        outputs = self.step_fn(self.model, batch)
+        outputs = self.step_fn(self.model, batch, phase)
 
         return outputs
 
-    def validation_step(self, batch: Any) -> dict:
+    def on_epoch_start(self, phase: str) -> None:
         """
-        検証時に 1 バッチ分の損失と指標を求める関数
+        エポックの学習または検証を始める前に呼ばれる関数
 
         Parameters
         ----------
-        batch: Any
-            デバイスに移したバッチ
+        phase: str
+            学習時は train, 検証時は valid
 
         Returns
         -------
-        outputs: dict
-            loss は必須, その他の指標と batch_size は任意
+        None
         """
-        # 学習時と同じ計算をする, 違う計算をする場合は継承して上書きする
-        outputs = self.training_step(batch)
+        # 何もしない, エポック全体の予測を集める場合は継承して入れ物を用意する
+        pass
 
-        return outputs
+    def on_epoch_end(self, phase: str) -> dict:
+        """
+        エポックの学習または検証を終えた後に呼ばれる関数
+
+        Parameters
+        ----------
+        phase: str
+            学習時は train, 検証時は valid
+
+        Returns
+        -------
+        metrics: dict
+            エポック全体から求めた指標, 接頭辞を付けて記録される
+        """
+        # 何も返さない, AUC などバッチの平均で求められない指標は継承して求める
+        metrics = {}
+
+        return metrics
 
     def check_outputs(self, outputs: Any, phase: str) -> torch.Tensor:
         """
@@ -175,13 +208,14 @@ class Trainer:
         loss.backward()
 
         # 勾配が大きくなりすぎないようにノルムの上限で切る
-        if self.cfg.grad_clip_norm is not None:
+        if self.trainer_cfg.grad_clip_norm is not None:
             nn.utils.clip_grad_norm_(
-                self.model.parameters(), self.cfg.grad_clip_norm
+                self.model.parameters(), self.trainer_cfg.grad_clip_norm
             )
 
-        # パラメータを更新する
+        # パラメータを更新して回数を数える
         self.optimizer.step()
+        self.global_step += 1
 
         # step ごとに学習率を更新する場合はここで更新する
         if self.scheduler_interval == "step":
@@ -207,6 +241,7 @@ class Trainer:
         self.model.train(train)
         phase = "train" if train else "valid"
         tracker = MetricTracker()
+        self.on_epoch_start(phase)
 
         # バッチごとに計算する
         n_batches = 0
@@ -216,10 +251,7 @@ class Trainer:
 
             # 学習時だけ勾配を計算する
             with torch.set_grad_enabled(train):
-                if train:
-                    outputs = self.training_step(batch)
-                else:
-                    outputs = self.validation_step(batch)
+                outputs = self.step(batch, phase)
 
             # 戻り値を確かめて, 学習時はパラメータを更新する
             loss = self.check_outputs(outputs, phase)
@@ -237,9 +269,16 @@ class Trainer:
         if n_batches == 0:
             raise ValueError(f"{phase} の loader が空です")
 
-        # 接頭辞を付けて平均を返す
+        # バッチの平均とエポック全体から求めた指標をまとめる
+        epoch_metrics = tracker.compute()
+        for key, value in self.on_epoch_end(phase).items():
+            if "/" in key:
+                raise ValueError(f"指標の名前に / は使えません: {key}")
+            epoch_metrics[key] = to_float(value)
+
+        # 接頭辞を付けて返す
         metrics = {
-            f"{phase}/{key}": value for key, value in tracker.compute().items()
+            f"{phase}/{key}": value for key, value in epoch_metrics.items()
         }
 
         return metrics
@@ -259,8 +298,8 @@ class Trainer:
             指標の名前
         """
         # 指定されている場合はそのまま使い, 無い場合は検証用のデータの有無で決める
-        if self.cfg.monitor is not None:
-            monitor = self.cfg.monitor
+        if self.trainer_cfg.monitor is not None:
+            monitor = self.trainer_cfg.monitor
         elif has_valid:
             monitor = "valid/loss"
         else:
@@ -285,6 +324,7 @@ class Trainer:
         # 学習を再開するのに必要な状態を全てまとめる
         state = {
             "epoch": epoch,
+            "global_step": self.global_step,
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": (
@@ -347,13 +387,15 @@ class Trainer:
 
         # 新しい保存先からも続けて再開できるように, 読み込んだ状態を保存する
         run_dir = self.experiment.run_dir
-        if best_state is not None and self.cfg.checkpoint.save_best:
+        if best_state is not None and self.trainer_cfg.checkpoint.save_best:
             save_checkpoint(best_state, run_dir / "best.pt")
-        if self.cfg.checkpoint.save_last:
+        if self.trainer_cfg.checkpoint.save_last:
             save_checkpoint(state, run_dir / "last.pt")
 
-        # 続きのエポックから始める
+        # 続きのエポックとパラメータの更新回数から始める
         self.start_epoch = state["epoch"] + 1
+        self.epoch = state["epoch"]
+        self.global_step = state["global_step"]
         self.logger.info(f"再開元: {path} (エポック {state['epoch']})")
 
     def log_settings(self, monitor: str) -> None:
@@ -381,7 +423,7 @@ class Trainer:
             else type(self.scheduler).__name__
         )
         self.logger.info(f"Scheduler: {scheduler_name}")
-        self.logger.info(f"監視する指標: {monitor} ({self.cfg.mode})")
+        self.logger.info(f"監視する指標: {monitor} ({self.trainer_cfg.mode})")
 
     def finish(self, elapsed_time: float) -> None:
         """
@@ -433,11 +475,11 @@ class Trainer:
         monitor = self.get_monitor(valid_loader is not None)
 
         # 再開する場合はチェックポイントから状態を戻す
-        if self.cfg.resume_from is not None:
-            self.resume(self.cfg.resume_from)
+        if self.trainer_cfg.resume_from is not None:
+            self.resume(self.trainer_cfg.resume_from)
 
         # Early Stopping で既に止めた学習を再開した場合は学習しない
-        epochs = range(self.start_epoch, self.cfg.epochs + 1)
+        epochs = range(self.start_epoch, self.trainer_cfg.epochs + 1)
         if self.early_stopping is not None and self.early_stopping.stopped:
             self.logger.info("Early Stopping で止めた学習のため学習しません")
             epochs = range(0)
@@ -447,9 +489,10 @@ class Trainer:
 
         # エポックごとに学習する
         start_time = time.time()
-        with tqdm(epochs, disable=not self.cfg.progress_bar) as pbar:
+        with tqdm(epochs, disable=not self.trainer_cfg.progress_bar) as pbar:
             for epoch in pbar:
                 pbar.set_description(f"Epoch {epoch}")
+                self.epoch = epoch
 
                 # このエポックを始めた時点の学習率を控える
                 lr = self.optimizer.param_groups[0]["lr"]

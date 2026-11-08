@@ -79,7 +79,7 @@ def make_loader(
     return loader
 
 
-def regression_step(model: nn.Module, batch: tuple) -> dict:
+def regression_step(model: nn.Module, batch: tuple, phase: str) -> dict:
     """
     平均二乗誤差を求める関数
 
@@ -89,6 +89,8 @@ def regression_step(model: nn.Module, batch: tuple) -> dict:
         学習するモデル
     batch: tuple
         x と y
+    phase: str
+        train または valid
 
     Returns
     -------
@@ -106,7 +108,7 @@ def regression_step(model: nn.Module, batch: tuple) -> dict:
     return outputs
 
 
-def scripted_step(losses: list) -> Callable[[nn.Module, tuple], dict]:
+def scripted_step(losses: list) -> Callable[[nn.Module, tuple, str], dict]:
     """
     呼ばれるたびに決めておいた損失を返す step を作る関数
 
@@ -117,13 +119,13 @@ def scripted_step(losses: list) -> Callable[[nn.Module, tuple], dict]:
 
     Returns
     -------
-    step: Callable[[nn.Module, tuple], dict]
+    step: Callable[[nn.Module, tuple, str], dict]
         決めておいた損失を返す step
     """
     # 呼ばれた回数を数える
     values = iter(losses)
 
-    def step(model: nn.Module, batch: tuple) -> dict:
+    def step(model: nn.Module, batch: tuple, phase: str) -> dict:
         """
         決めておいた損失を返す関数
 
@@ -133,6 +135,8 @@ def scripted_step(losses: list) -> Callable[[nn.Module, tuple], dict]:
             学習するモデル
         batch: tuple
             x と y
+        phase: str
+            train または valid
 
         Returns
         -------
@@ -461,9 +465,9 @@ def test_scheduler_and_clipping(tmp_path: Path) -> None:
     assert history.get("lr") == pytest.approx([0.1, 0.05])
 
 
-def test_override_training_step(tmp_path: Path) -> None:
+def test_override_step(tmp_path: Path) -> None:
     """
-    step_fn の代わりに training_step を上書きできることを確かめる関数
+    step_fn の代わりに step を上書きでき, エポック数を参照できることを確かめる関数
 
     Parameters
     ----------
@@ -474,9 +478,9 @@ def test_override_training_step(tmp_path: Path) -> None:
     -------
     None
     """
-    # training_step を上書きした Trainer を作る
+    # step を上書きし, 呼ばれた時のエポックとパラメータの更新回数を控える Trainer を作る
     class RegressionTrainer(Trainer):
-        def training_step(self, batch: tuple) -> dict:
+        def step(self, batch: tuple, phase: str) -> dict:
             """
             平均二乗誤差を求める関数
 
@@ -484,23 +488,210 @@ def test_override_training_step(tmp_path: Path) -> None:
             ----------
             batch: tuple
                 x と y
+            phase: str
+                train または valid
 
             Returns
             -------
             outputs: dict
                 平均二乗誤差
             """
-            # 予測して誤差を求める
-            outputs = regression_step(self.model, batch)
+            # エポックと更新回数を控えてから誤差を求める
+            self.calls.append((phase, self.epoch, self.global_step))
+            outputs = regression_step(self.model, batch, phase)
 
             return outputs
 
     experiment = make_experiment(tmp_path, "trainer:\n  epochs: 2\n")
-    history = RegressionTrainer(nn.Linear(1, 1), experiment).fit(
-        make_loader()
+    trainer = RegressionTrainer(nn.Linear(1, 1), experiment)
+    trainer.calls = []
+    trainer.fit(make_loader(n=32, batch_size=16), make_loader(n=16))
+
+    assert trainer.calls == [
+        ("train", 1, 0), ("train", 1, 1), ("valid", 1, 2),
+        ("train", 2, 2), ("train", 2, 3), ("valid", 2, 4)
+    ]
+
+
+def test_phase_with_masks(tmp_path: Path) -> None:
+    """
+    1 つのデータを phase に応じたマスクで学習と検証に使い分けられることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    -------
+    None
+    """
+    # GNN のように学習用と検証用のマスクを持つ 1 つのデータを作る
+    x = torch.linspace(-1, 1, 10).unsqueeze(1)
+    data = {
+        "x": x, "y": 2 * x + 1,
+        "train_mask": torch.arange(10) < 7,
+        "valid_mask": torch.arange(10) >= 7
+    }
+
+    def masked_step(model: nn.Module, batch: dict, phase: str) -> dict:
+        """
+        phase に応じたマスクで平均二乗誤差を求める関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: dict
+            特徴量, 正解, マスク
+        phase: str
+            train または valid
+
+        Returns
+        -------
+        outputs: dict
+            平均二乗誤差と使ったサンプル数
+        """
+        # phase に応じたマスクで選んだノードだけ誤差を求める
+        mask = batch[f"{phase}_mask"]
+        pred = model(batch["x"])
+        outputs = {
+            "loss": nn.functional.mse_loss(pred[mask], batch["y"][mask]),
+            "n_nodes": float(mask.sum())
+        }
+
+        return outputs
+
+    # 同じデータを学習用と検証用の両方に渡す
+    experiment = make_experiment(tmp_path, "trainer:\n  epochs: 1\n")
+    history = Trainer(nn.Linear(1, 1), experiment, masked_step).fit(
+        [data], [data]
     )
 
-    assert len(history.records) == 2
+    assert history.get("train/n_nodes") == [7.0]
+    assert history.get("valid/n_nodes") == [3.0]
+
+
+def test_on_epoch_end(tmp_path: Path) -> None:
+    """
+    エポック全体から求めた指標を記録できることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    -------
+    None
+    """
+    # エポック全体の予測を集めて最大誤差を求める Trainer を作る
+    class MaxErrorTrainer(Trainer):
+        def on_epoch_start(self, phase: str) -> None:
+            """
+            誤差を集める入れ物を用意する関数
+
+            Parameters
+            ----------
+            phase: str
+                train または valid
+
+            Returns
+            -------
+            None
+            """
+            # 入れ物を空にする
+            self.errors = []
+
+        def step(self, batch: tuple, phase: str) -> dict:
+            """
+            平均二乗誤差を求めて誤差を集める関数
+
+            Parameters
+            ----------
+            batch: tuple
+                x と y
+            phase: str
+                train または valid
+
+            Returns
+            -------
+            outputs: dict
+                平均二乗誤差
+            """
+            # 予測して誤差を集める
+            x, y = batch
+            pred = self.model(x)
+            self.errors.append((pred - y).abs().detach())
+            outputs = {"loss": nn.functional.mse_loss(pred, y)}
+
+            return outputs
+
+        def on_epoch_end(self, phase: str) -> dict:
+            """
+            集めた誤差から最大誤差を求める関数
+
+            Parameters
+            ----------
+            phase: str
+                train または valid
+
+            Returns
+            -------
+            metrics: dict
+                最大誤差
+            """
+            # 全バッチの誤差をつなげて最大値を取る
+            metrics = {"max_error": torch.cat(self.errors).max()}
+
+            return metrics
+
+    experiment = make_experiment(tmp_path, "trainer:\n  epochs: 1\n")
+    history = MaxErrorTrainer(nn.Linear(1, 1), experiment).fit(
+        make_loader(), make_loader()
+    )
+
+    assert history.get("valid/max_error")[0] > 0
+    assert "train/max_error" in history.keys()
+
+
+def test_custom_scheduler(tmp_path: Path) -> None:
+    """
+    自分で作った Optimizer と Scheduler を渡せることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    -------
+    None
+    """
+    # step ごとに学習率を変える OneCycleLR を作る
+    experiment = make_experiment(
+        tmp_path, "scheduler:\n  interval: step\ntrainer:\n  epochs: 2\n"
+    )
+    model = nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer, max_lr=0.1, total_steps=8
+    )
+    trainer = Trainer(
+        model, experiment, regression_step, optimizer, scheduler
+    )
+    trainer.fit(make_loader(n=64, batch_size=16))
+
+    assert trainer.scheduler is scheduler
+    assert trainer.global_step == 8
+
+    # 別の Optimizer で作った Scheduler はエラーになる
+    other = torch.optim.SGD(nn.Linear(1, 1).parameters(), lr=0.1)
+    with pytest.raises(ValueError, match="optimizer"):
+        Trainer(
+            nn.Linear(1, 1), experiment, regression_step,
+            scheduler=torch.optim.lr_scheduler.StepLR(other, step_size=1)
+        )
 
 
 @pytest.mark.parametrize(
@@ -532,7 +723,7 @@ def test_invalid_outputs(tmp_path: Path, outputs: dict, message: str) -> None:
     """
     # 正しくない戻り値を返す step で学習する
     experiment = make_experiment(tmp_path, "trainer:\n  epochs: 1\n")
-    trainer = Trainer(nn.Linear(1, 1), experiment, lambda m, b: outputs)
+    trainer = Trainer(nn.Linear(1, 1), experiment, lambda m, b, p: outputs)
 
     with pytest.raises(ValueError, match=message):
         trainer.fit(make_loader())

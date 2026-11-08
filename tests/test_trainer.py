@@ -37,9 +37,11 @@ def make_experiment(tmp_path: Path, text: str = "") -> Experiment:
     tmp_path.mkdir(parents=True, exist_ok=True)
     default_path = tmp_path / "default.yaml"
     default_path.write_text(base + text, encoding="utf-8")
+    experiment_path = tmp_path / "experiment.yaml"
+    experiment_path.write_text("", encoding="utf-8")
 
     # 実験を開始する
-    cfg, diff = load_config(str(default_path))
+    cfg, diff = load_config(str(default_path), str(experiment_path))
     cfg.trainer.progress_bar = False
     experiment = start_experiment(cfg, diff, str(tmp_path))
 

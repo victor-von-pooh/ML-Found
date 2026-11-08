@@ -1,10 +1,16 @@
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from omegaconf import DictConfig, OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
 from ml_found.config.schema import Config
+
+# 差分で, 片方にしか存在しない項目の値として使う印
+ABSENT = "<未定義>"
+
+# torch のクラスに渡す引数の項目, クラスを変えると必要な引数も変わる
+PARAMS_SECTIONS = ("optimizer", "scheduler")
 
 
 def load_yaml(path: str) -> DictConfig:
@@ -21,6 +27,10 @@ def load_yaml(path: str) -> DictConfig:
     cfg: DictConfig
         読み込んだ config, 空のファイルの場合は空の config
     """
+    # ファイルが無い場合は分かりやすいエラーにする
+    if not Path(path).exists():
+        raise FileNotFoundError(f"config ファイルがありません: {path}")
+
     # ファイルを読み込む
     cfg = OmegaConf.load(path)
 
@@ -46,8 +56,8 @@ def unlock_params(cfg: DictConfig) -> DictConfig:
         optimizer と scheduler の params だけキーを追加できるようにした config
     """
     # Optimizer や Scheduler を切り替えると必要な引数も変わるので自由に追加させる
-    OmegaConf.set_struct(cfg.optimizer.params, False)
-    OmegaConf.set_struct(cfg.scheduler.params, False)
+    for section in PARAMS_SECTIONS:
+        OmegaConf.set_struct(cfg[section].params, False)
 
     return cfg
 
@@ -86,8 +96,74 @@ def build_default(default_path: str) -> DictConfig:
     return default_cfg
 
 
+def check_structure(
+    experiment: Any, default: Any, prefix: str = ""
+) -> None:
+    """
+    experiment が default に無い項目を追加していないかを確かめる関数
+
+    Parameters
+    ----------
+    experiment: Any
+        experiment の値, 辞書の場合は中を順に調べる
+    default: Any
+        同じ位置の default の値
+    prefix: str = ""
+        親のキー
+
+    Returns
+    -------
+    None
+    """
+    # torch に渡す引数の項目は自由に書けるので調べない
+    if prefix in [f"{section}.params" for section in PARAMS_SECTIONS]:
+        return
+
+    # 辞書と辞書以外を入れ替えると項目の追加や削除になるのでエラーにする
+    if isinstance(experiment, dict) != isinstance(default, dict):
+        raise ValueError(
+            f"experiment で {prefix} の構造は変えられません: "
+            f"default は {default}, experiment は {experiment}"
+        )
+
+    # 辞書の場合は各キーが default にあるかを調べ, 中も順に調べる
+    if isinstance(experiment, dict):
+        for key, value in experiment.items():
+            child_key = f"{prefix}.{key}" if prefix else str(key)
+            if key not in default:
+                raise ValueError(
+                    f"experiment に default に無い項目があります: {child_key}"
+                )
+            check_structure(value, default[key], child_key)
+
+
+def reset_params(base: DictConfig, experiment: DictConfig) -> DictConfig:
+    """
+    experiment でクラスを変える場合に default の引数を捨てる関数
+
+    Parameters
+    ----------
+    base: DictConfig
+        experiment を重ねる前の config
+    experiment: DictConfig
+        experiment の config
+
+    Returns
+    -------
+    base: DictConfig
+        クラスを変える項目だけ params を空にした config
+    """
+    # クラスを変えると default の引数はそのクラスで使えないことがあるので空にする
+    for section in PARAMS_SECTIONS:
+        name = OmegaConf.select(experiment, f"{section}.name", default=None)
+        if name is not None and name != base[section].name:
+            base[section].params = {}
+
+    return base
+
+
 def merge_experiment(
-    default_cfg: DictConfig, experiment_path: Optional[str] = None
+    default_cfg: DictConfig, experiment_path: str
 ) -> DictConfig:
     """
     default に experiment の差分を重ねる関数
@@ -96,27 +172,32 @@ def merge_experiment(
     ----------
     default_cfg: DictConfig
         ML-Found の既定値に default を重ねた config
-    experiment_path: Optional[str] = None
-        experiment の config のパス, null やファイルが無い場合は default のまま
+    experiment_path: str
+        experiment の config のパス
 
     Returns
     -------
     cfg: DictConfig
         学習に使う config
     """
-    # experiment が無い場合は default をそのまま使う
-    if experiment_path is None or not Path(experiment_path).exists():
-        cfg = default_cfg.copy()
-        return cfg
+    # experiment を読み込み, default に無い項目を追加していないかを確かめる
+    experiment = load_yaml(experiment_path)
+    check_structure(
+        OmegaConf.to_container(experiment),
+        OmegaConf.to_container(default_cfg)
+    )
 
     # default に無いキーを experiment で書けないようにする
     base = default_cfg.copy()
     OmegaConf.set_struct(base, True)
+
+    # クラスを変える項目は default の引数を捨て, params だけキーを追加できるようにする
+    base = reset_params(base, experiment)
     base = unlock_params(base)
 
     # experiment の差分を重ねる
     try:
-        cfg = OmegaConf.merge(base, load_yaml(experiment_path))
+        cfg = OmegaConf.merge(base, experiment)
     except OmegaConfBaseException as e:
         raise ValueError(
             f"experiment の config が正しくありません: {e}"
@@ -172,17 +253,22 @@ def get_diff(default_cfg: DictConfig, cfg: DictConfig) -> dict:
         変わった項目ごとの default の値と experiment の値
     """
     # 比べやすいように両方を平らにする
-    default_flat = flatten(OmegaConf.to_container(default_cfg, resolve=True))
-    cfg_flat = flatten(OmegaConf.to_container(cfg, resolve=True))
+    try:
+        default_flat = flatten(
+            OmegaConf.to_container(default_cfg, resolve=True)
+        )
+        cfg_flat = flatten(OmegaConf.to_container(cfg, resolve=True))
+    except OmegaConfBaseException as e:
+        raise ValueError(f"config の ${{...}} を解決できません: {e}") from e
 
-    # 値が変わった項目と experiment で追加された項目を集める
+    # 追加, 削除, 変更された項目を両方のキーから集める
+    keys = list(default_flat) + [k for k in cfg_flat if k not in default_flat]
     diff = {}
-    for key, value in cfg_flat.items():
-        if key not in default_flat or default_flat[key] != value:
-            diff[key] = {
-                "default": default_flat.get(key),
-                "experiment": value
-            }
+    for key in keys:
+        default_value = default_flat.get(key, ABSENT)
+        value = cfg_flat.get(key, ABSENT)
+        if default_value != value:
+            diff[key] = {"default": default_value, "experiment": value}
 
     return diff
 
@@ -216,7 +302,7 @@ def format_diff(diff: dict) -> str:
 
 
 def load_config(
-    default_path: str, experiment_path: Optional[str] = None
+    default_path: str, experiment_path: str
 ) -> tuple[DictConfig, dict]:
     """
     default と experiment を読み込んで学習に使う config を作る関数
@@ -225,8 +311,8 @@ def load_config(
     ----------
     default_path: str
         プロジェクトの default の config のパス
-    experiment_path: Optional[str] = None
-        experiment の config のパス, null やファイルが無い場合は default のまま
+    experiment_path: str
+        experiment の config のパス, 差分が無い場合も空のファイルを置く
 
     Returns
     -------

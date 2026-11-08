@@ -78,14 +78,16 @@ class Trainer:
             self.early_stopping = EarlyStopping(
                 patience=self.trainer_cfg.early_stopping.patience,
                 min_delta=self.trainer_cfg.early_stopping.min_delta,
-                mode=self.trainer_cfg.mode
+                mode=self.trainer_cfg.mode,
+                tiebreak_mode=self.trainer_cfg.monitor_tiebreak_mode
             )
 
         # ベストモデルと最後のモデルを保存する仕組みの作成
         self.checkpoint = Checkpoint(
             experiment.run_dir, mode=self.trainer_cfg.mode,
             save_best=self.trainer_cfg.checkpoint.save_best,
-            save_last=self.trainer_cfg.checkpoint.save_last
+            save_last=self.trainer_cfg.checkpoint.save_last,
+            tiebreak_mode=self.trainer_cfg.monitor_tiebreak_mode
         )
 
         # エポックごとの記録と, 最初のエポックを保存
@@ -358,30 +360,37 @@ class Trainer:
         # 学習時と, 検証時にも勾配を使う設定の場合だけ勾配を計算
         grad_enabled = train or self.trainer_cfg.valid_grad
 
-        # バッチごとに計算
+        # バッチごとに計算, 設定に応じてエポックの中の進捗バーも表示
+        show = (
+            self.trainer_cfg.progress_bar
+            and self.trainer_cfg.progress_bar_batches
+        )
         n_batches = 0
-        for batch in loader:
-            batch = move_to_device(batch, self.device)
-            n_batches += 1
+        with tqdm(
+            loader, desc=phase, leave=False, disable=not show
+        ) as batches:
+            for batch in batches:
+                batch = move_to_device(batch, self.device)
+                n_batches += 1
 
-            # 決めた範囲だけ勾配を計算
-            with torch.set_grad_enabled(grad_enabled):
-                outputs = self.step(batch, phase)
+                # 決めた範囲だけ勾配を計算
+                with torch.set_grad_enabled(grad_enabled):
+                    outputs = self.step(batch, phase)
 
-            # 戻り値を確かめて, 学習時は closure 用にバッチを保存して更新
-            loss = self.check_outputs(outputs, phase)
-            if train:
-                self.current_batch = batch
-                self.update_parameters(loss)
+                # 戻り値を確かめて, 学習時は closure 用にバッチを保存して更新
+                loss = self.check_outputs(outputs, phase)
+                if train:
+                    self.current_batch = batch
+                    self.update_parameters(loss)
 
-            # サンプル数で重み付けして指標の加算
-            metrics = dict(outputs)
-            n = metrics.pop("batch_size", None)
-            if n is None:
-                n = get_batch_size(batch)
-            if train and self.trainer_cfg.log_grad_norm:
-                self.add_grad_norm(metrics)
-            tracker.update(metrics, int(n))
+                # サンプル数で重み付けして指標の加算
+                metrics = dict(outputs)
+                n = metrics.pop("batch_size", None)
+                if n is None:
+                    n = get_batch_size(batch)
+                if train and self.trainer_cfg.log_grad_norm:
+                    self.add_grad_norm(metrics)
+                tracker.update(metrics, int(n))
 
         # 学習時のバッチを検証の間まで残さないように解放
         self.current_batch = None
@@ -461,6 +470,40 @@ class Trainer:
 
         return metrics
 
+    def get_tiebreak(self, record: dict) -> Optional[float]:
+        """
+        監視する指標が同じ値の場合に比べる指標の値を取得する関数
+
+        Parameters
+        ----------
+        record: dict
+            今回のエポックの記録
+
+        Returns
+        ----------
+        tiebreak: Optional[float]
+            比べる指標の値, 設定していない場合は None
+        """
+        # 設定していない場合は比べない
+        name = self.trainer_cfg.monitor_tiebreak
+        if name is None:
+            tiebreak = None
+            return tiebreak
+
+        # 指標があり, 有限の値であることの確認
+        if name not in record:
+            raise ValueError(
+                f"同じ値の場合に比べる指標 {name} がありません: "
+                f"{list(record.keys())}"
+            )
+        tiebreak = record[name]
+        if not math.isfinite(tiebreak):
+            raise ValueError(
+                f"同じ値の場合に比べる指標 {name} が {tiebreak} になりました"
+            )
+
+        return tiebreak
+
     def get_monitor(self, has_valid: bool) -> str:
         """
         ベストモデルの判定に使う指標の名前を決める関数
@@ -507,6 +550,8 @@ class Trainer:
             "global_step": self.global_step,
             "monitor": monitor,
             "mode": self.trainer_cfg.mode,
+            "monitor_tiebreak": self.trainer_cfg.monitor_tiebreak,
+            "monitor_tiebreak_mode": self.trainer_cfg.monitor_tiebreak_mode,
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": (
@@ -591,6 +636,23 @@ class Trainer:
                 f"再開元と監視する指標が違います: 再開元は {state['monitor']} "
                 f"({state['mode']}), 今回は {monitor} "
                 f"({self.trainer_cfg.mode})"
+            )
+
+        # 同じ値の場合に比べる指標と向きも同じものに制限
+        # この設定を入れる前のチェックポイントには無いので比較しない
+        old_tiebreak = (
+            state.get("monitor_tiebreak"),
+            state.get("monitor_tiebreak_mode", "min")
+        )
+        new_tiebreak = (
+            self.trainer_cfg.monitor_tiebreak,
+            self.trainer_cfg.monitor_tiebreak_mode
+        )
+        if "monitor_tiebreak" in state and old_tiebreak != new_tiebreak:
+            raise ValueError(
+                "再開元と同じ値の場合に比べる指標が違います: 再開元は "
+                f"{old_tiebreak[0]} ({old_tiebreak[1]}), 今回は "
+                f"{new_tiebreak[0]} ({new_tiebreak[1]})"
             )
 
         # モデル, Optimizer, Scheduler, 記録の復元
@@ -696,6 +758,12 @@ class Trainer:
             }
             self.logger.info(f"Scheduler の状態: {scheduler_state}")
         self.logger.info(f"監視する指標: {monitor} ({self.trainer_cfg.mode})")
+        if self.trainer_cfg.monitor_tiebreak is not None:
+            self.logger.info(
+                "同じ値の場合に比べる指標: "
+                f"{self.trainer_cfg.monitor_tiebreak} "
+                f"({self.trainer_cfg.monitor_tiebreak_mode})"
+            )
 
         # 更新の手順を記録
         if self.trainer_cfg.manual_optimization:
@@ -906,6 +974,9 @@ class Trainer:
                     raise ValueError(
                         f"監視する指標 {monitor} が {value} になりました"
                     )
+
+                # 監視する指標が同じ値の場合に比べる指標の取得
+                tiebreak = self.get_tiebreak(record)
                 self.history.append(record)
 
                 # epoch ごとに学習率を更新する場合はここで更新
@@ -913,10 +984,12 @@ class Trainer:
                     step_scheduler(self.scheduler, value)
 
                 # ベストモデルと Early Stopping の状態を先に更新
-                improved = self.checkpoint.update(value, epoch, self.model)
+                improved = self.checkpoint.update(
+                    value, epoch, self.model, tiebreak
+                )
                 should_stop = (
                     self.early_stopping is not None
-                    and self.early_stopping.step(value)
+                    and self.early_stopping.step(value, tiebreak)
                 )
 
                 # last.pt は決めた間隔と, 最後のエポックと止めるエポックに保存

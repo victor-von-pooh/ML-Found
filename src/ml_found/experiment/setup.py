@@ -77,6 +77,13 @@ def check_trainer_config(cfg: DictConfig) -> None:
             f"{trainer_cfg.checkpoint.every_n_epochs}"
         )
 
+    # 同じ値の場合に比べる指標の向きは min か max に制限
+    if trainer_cfg.monitor_tiebreak_mode not in ("min", "max"):
+        raise ValueError(
+            "trainer.monitor_tiebreak_mode は min か max にしてください: "
+            f"{trainer_cfg.monitor_tiebreak_mode}"
+        )
+
     # 自分で更新する設定では ML-Found がクリップと記録をできないのでエラー
     uses_grad = (
         trainer_cfg.grad_clip_norm is not None or trainer_cfg.log_grad_norm

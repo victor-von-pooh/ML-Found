@@ -258,6 +258,8 @@ ML-Found が使う項目と既定値.
 | `trainer.epochs` | `100` | エポック数 |
 | `trainer.monitor` | `null` | ベストモデルの判定に使う指標, `null` の場合は `valid/loss`, 検証しない場合は `train/loss` |
 | `trainer.mode` | `min` | 指標は小さい方と大きい方のどちらが良いか |
+| `trainer.monitor_tiebreak` | `null` | 監視する指標が最良値と同じ値 (相対誤差 1e-6 以内) か, 最良値より悪くないが `min_delta` 未満の改善の場合に比べる指標 (例: `valid/loss`), `null` の場合は同じ値を改善とみなさない |
+| `trainer.monitor_tiebreak_mode` | `min` | 同じ値の場合に比べる指標は小さい方と大きい方のどちらが良いか |
 | `trainer.grad_clip_norm` | `null` | 勾配のノルムの上限, `null` の場合はクリッピングしない. Optimizer が更新するパラメータだけが対象 |
 | `trainer.log_grad_norm` | `false` | クリップ前の勾配のノルムを `train/grad_norm` として記録するかどうか |
 | `trainer.restore_best` | `true` | 学習後にベストモデルの重みに戻すかどうか, `false` の場合は最後のエポックの重み |
@@ -266,6 +268,7 @@ ML-Found が使う項目と既定値.
 | `trainer.manual_optimization` | `false` | ML-Found が逆伝播と更新を行わず, `step` の中で更新するかどうか |
 | `trainer.resume_from` | `null` | 再開するチェックポイントのパス, 相対パスの場合はプロジェクトのディレクトリから辿る |
 | `trainer.progress_bar` | `true` | 進捗バーを表示するかどうか |
+| `trainer.progress_bar_batches` | `false` | エポックの中のバッチ単位の進捗バーも表示するかどうか (1 エポックが長い場合に使う) |
 | `trainer.early_stopping.use` | `false` | Early Stopping を使うかどうか |
 | `trainer.early_stopping.patience` | `10` | 改善しないまま待つエポック数 |
 | `trainer.early_stopping.min_delta` | `0.0` | これより小さい変化は改善とみなさない |
@@ -278,9 +281,12 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 `mode` を省略した場合は `trainer.mode` と同じになる.
 
 監視する指標が nan や inf になった場合はエラーで止まる.
+監視する指標が最良値とちょうど同じ値の場合は改善とみなさないので, 正解率のように同じ値を取りやすい指標を監視すると, ベストモデルは最初にその値に達したエポックのままになり, Early Stopping も止まりやすい. `trainer.monitor_tiebreak` に `valid/loss` などを指定すると, 同じ値の場合はその指標で比べ, ベストモデルの判定と Early Stopping の両方に使う. バッチごとの平均の丸め誤差で同じ正解率がわずかに違う値になることがあるので, 相対誤差 1e-6 以内は同じ値とみなす. Early Stopping では, 最良値より悪くないが `min_delta` 未満の改善の場合も比べる指標で判定する (`min_delta` は Early Stopping だけに使い, ベストモデルの判定には使わない). 比べる指標が nan や inf になった場合もエラーで止まる. 再開するときは, 比べる指標と向きを再開元と同じにする (違う場合はエラー). この設定を入れる前のチェックポイントから再開した場合は, 次に監視する指標が改善するまで比べない.
 学習の途中で起きたエラーは `train.log` にも記録する. Optimizer と Scheduler のクラス名, `scheduler.interval`, ReduceLROnPlateau の組み合わせの誤りと, 存在しない `resume_from` は, 出力先を作る前に見つかる. Optimizer と Scheduler の引数の誤りは `Trainer` を作るときにエラーになる (出力先は作られた後). 自分で作った Optimizer や Scheduler を `Trainer` に渡す場合も, config の `optimizer` と `scheduler` の名前と組み合わせは確かめるので, 使わない設定も正しい値にしておく.
 
 `last.pt` と `best.pt` には, モデル, Optimizer, Scheduler, 記録の全て, 乱数の状態, ベストモデルの重みが入る. 1 エポックが短い学習 (フルバッチなど) では保存が学習時間の大部分を占めることがあるので, `trainer.checkpoint.every_n_epochs` で `last.pt` の間隔を空けるか, 再開しない場合は `save_best` と `save_last` を `false` にする. `best.pt` は改善するたびに保存するので `every_n_epochs` では減らない (ベストモデルの重みは `last.pt` にも入るので, 再開だけなら `save_best: false` でもよい). 大きなモデルでは 1 ファイルが数 GB になる.
+
+`train.log` のモデルの構造は `print(model)` の内容なので, 中身を `nn.Module` の子として持たない層 (外部ライブラリの層など) は構造が残らない. 再現に必要な情報は, モデルに `extra_repr` を書いて出すと良い.
 
 `experiment.device: auto` は小さなモデルでも GPU を選ぶ. パラメータが少ないモデルや, 中で cpu を使うモデル (外部ライブラリの計算など) は `cpu` を明示した方が速いことがある.
 

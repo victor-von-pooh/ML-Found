@@ -8,7 +8,9 @@ import torch
 from torch import nn
 
 from ml_found.experiment.setup import Experiment
-from ml_found.training.callbacks import load_checkpoint
+from ml_found.training.callbacks import (
+    is_improved_with_tiebreak, load_checkpoint
+)
 from ml_found.training.optim import requires_closure
 from ml_found.training.trainer import Trainer
 from ml_found.utils.batch import get_batch_size
@@ -780,3 +782,245 @@ def test_in_closure_flag(tmp_path: Path) -> None:
     assert trainer.flags[0] is False
     assert all(trainer.flags[1:]) and len(trainer.flags) > 1
     assert trainer.in_closure is False
+
+
+class ScriptedMetricTrainer(Trainer):
+    def on_epoch_end(self, phase: str) -> dict:
+        """
+        検証の後にエポックごとに決めておいた指標を返す関数
+
+        Parameters
+        ----------
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        metrics: dict
+            検証の場合は score と aux, 学習の場合は空の辞書
+        """
+        # 学習の場合は指標なし
+        metrics = {}
+        if phase != "valid":
+            return metrics
+
+        # 今のエポックの値を返却
+        metrics = {
+            "score": self.scores[self.epoch - 1],
+            "aux": self.auxes[self.epoch - 1]
+        }
+
+        return metrics
+
+
+def run_scripted(
+    tmp_path: Path, text: str, scores: list[float], auxes: list[float]
+) -> ScriptedMetricTrainer:
+    """
+    決めておいた指標で学習する関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    text: str
+        default に加える YAML の内容
+    scores: list[float]
+        エポックごとの valid/score
+    auxes: list[float]
+        エポックごとの valid/aux
+
+    Returns
+    ----------
+    trainer: ScriptedMetricTrainer
+        学習を終えた Trainer
+    """
+    # score を大きい方が良い指標として監視して学習
+    base = f"  epochs: {len(scores)}\n  monitor: valid/score\n  mode: max\n"
+    experiment = make_experiment(tmp_path, "trainer:\n" + base + text)
+    trainer = ScriptedMetricTrainer(
+        nn.Linear(1, 1), experiment, regression_step
+    )
+    trainer.scores = scores
+    trainer.auxes = auxes
+    trainer.fit(make_loader(), make_loader())
+
+    return trainer
+
+
+def test_monitor_tiebreak(tmp_path: Path) -> None:
+    """
+    監視する指標が同じ値の場合に, 別の指標で比べることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 設定しない場合は, 最初に 0.9 に達したエポック 2 がベスト
+    scores = [0.5, 0.9, 0.9, 0.9]
+    auxes = [1.0, 0.8, 0.6, 0.7]
+    plain = run_scripted(tmp_path / "plain", "", scores, auxes)
+    assert plain.checkpoint.best_epoch == 2
+
+    # aux が小さい方を良いとして比べると, 同じ 0.9 のうち aux が最小のエポック 3
+    tie = "  monitor_tiebreak: valid/aux\n  monitor_tiebreak_mode: min\n"
+    tied = run_scripted(tmp_path / "tied", tie, scores, auxes)
+    assert tied.checkpoint.best_epoch == 3
+
+
+def test_monitor_tiebreak_early_stopping(tmp_path: Path) -> None:
+    """
+    同じ値が続いても比べる指標が改善していれば Early Stopping しないことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # score が同じ値のまま aux だけ下がり続ける学習
+    scores = [0.9] * 5
+    auxes = [1.0, 0.9, 0.8, 0.7, 0.6]
+    stop = "  early_stopping:\n    use: true\n    patience: 2\n"
+
+    # 設定しない場合は 2 エポック改善なしでエポック 3 で停止
+    plain = run_scripted(tmp_path / "plain", stop, scores, auxes)
+    assert len(plain.history.records) == 3
+
+    # aux で比べると毎エポック改善とみなし, 最後まで学習
+    tie = "  monitor_tiebreak: valid/aux\n"
+    tied = run_scripted(tmp_path / "tied", stop + tie, scores, auxes)
+    assert len(tied.history.records) == 5
+    assert tied.checkpoint.best_epoch == 5
+
+
+def test_progress_bar_batches(tmp_path: Path) -> None:
+    """
+    バッチ単位の進捗バーを出しても学習できることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 進捗バーを表示する設定で 1 エポック学習
+    experiment = make_experiment(
+        tmp_path, "trainer:\n  epochs: 1\n  progress_bar_batches: true\n"
+    )
+    experiment.cfg.trainer.progress_bar = True
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    history = trainer.fit(make_loader(), make_loader())
+    assert len(history.records) == 1
+
+
+def test_tiebreak_tolerance_and_min_delta() -> None:
+    """
+    丸め誤差の範囲の同じ値と, min_delta 未満の改善でも比べることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 丸め誤差でわずかに小さい値でも, 比べる指標が良ければ改善
+    best = 0.9666666666666667
+    near = 0.9666666547457378
+    assert is_improved_with_tiebreak(near, best, "max", 0.0, 0.5, 0.6, "min")
+    assert not is_improved_with_tiebreak(
+        near, best, "max", 0.0, 0.7, 0.6, "min"
+    )
+
+    # 丸め誤差でわずかに大きい値でも, 比べる指標が悪ければ改善なし
+    above = 0.9666666766666667
+    assert not is_improved_with_tiebreak(
+        above, best, "max", 0.0, 0.7, 0.6, "min"
+    )
+    assert is_improved_with_tiebreak(above, best, "max", 0.0, None, 0.6, "min")
+
+    # min_delta 未満の改善は, 比べる指標が良ければ改善
+    assert is_improved_with_tiebreak(0.905, 0.9, "max", 0.01, 0.5, 0.6, "min")
+    assert not is_improved_with_tiebreak(
+        0.905, 0.9, "max", 0.01, None, 0.6, "min"
+    )
+
+    # 明らかに悪い値は, 比べる指標が良くても改善なし
+    assert not is_improved_with_tiebreak(
+        0.8, 0.9, "max", 0.0, 0.1, 0.6, "min"
+    )
+
+
+def test_tiebreak_errors(tmp_path: Path) -> None:
+    """
+    比べる指標の名前の誤りと, 再開時の設定の違いがエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 存在しない指標の名前はエラーで, 記録は追加なし
+    wrong = make_experiment(
+        tmp_path / "wrong",
+        "trainer:\n  epochs: 1\n  monitor_tiebreak: valid/missing\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), wrong, regression_step)
+    with pytest.raises(ValueError, match="valid/missing"):
+        trainer.fit(make_loader(), make_loader())
+    assert len(trainer.history.records) == 0
+
+    # 比べる指標を変えて再開するとエラー
+    first = make_experiment(
+        tmp_path / "first",
+        "trainer:\n  epochs: 1\n  monitor_tiebreak: valid/mae\n"
+    )
+    Trainer(nn.Linear(1, 1), first, regression_step).fit(
+        make_loader(), make_loader()
+    )
+    path = first.run_dir / "last.pt"
+    second = make_experiment(
+        tmp_path / "second",
+        "trainer:\n  epochs: 2\n  monitor_tiebreak: train/mae\n"
+        f"  resume_from: {path}\n"
+    )
+    resumed = Trainer(nn.Linear(1, 1), second, regression_step)
+    with pytest.raises(ValueError, match="同じ値の場合に比べる指標"):
+        resumed.fit(make_loader(), make_loader())
+
+    # 使っていなかった比べる指標を再開時に加えてもエラー
+    plain = make_experiment(tmp_path / "plain", "trainer:\n  epochs: 1\n")
+    Trainer(nn.Linear(1, 1), plain, regression_step).fit(
+        make_loader(), make_loader()
+    )
+    added = make_experiment(
+        tmp_path / "added",
+        "trainer:\n  epochs: 2\n  monitor_tiebreak: valid/mae\n"
+        f"  resume_from: {plain.run_dir / 'last.pt'}\n"
+    )
+    resumed = Trainer(nn.Linear(1, 1), added, regression_step)
+    with pytest.raises(ValueError, match="同じ値の場合に比べる指標"):
+        resumed.fit(make_loader(), make_loader())
+
+    # 比べる指標の向きの誤りは出力先を作る前にエラー
+    with pytest.raises(ValueError, match="monitor_tiebreak_mode"):
+        make_experiment(
+            tmp_path / "mode", "trainer:\n  monitor_tiebreak_mode: low\n"
+        )

@@ -143,10 +143,8 @@ def start_experiment(
     save_config(cfg, diff, str(run_dir))
 
     # 未コミットの変更がある場合は再現できるように差分を保存する
-    if git_diff != "":
-        (run_dir / "git_diff.patch").write_text(
-            git_diff + "\n", encoding="utf-8"
-        )
+    if git_diff != b"":
+        (run_dir / "git_diff.patch").write_bytes(git_diff)
 
     # ロガーを設定する
     logger = get_logger(

@@ -1,5 +1,6 @@
 import math
 from pathlib import Path
+import shutil
 import time
 from typing import Any, Callable, Iterable, Optional, Union
 
@@ -15,7 +16,7 @@ from ml_found.training.callbacks import (
 )
 from ml_found.training.history import History, MetricTracker, to_float
 from ml_found.training.optim import (
-    build_optimizer, build_scheduler, step_scheduler
+    build_optimizer, build_scheduler, check_scheduler, step_scheduler
 )
 from ml_found.utils.batch import get_batch_size, move_to_device
 from ml_found.utils.plotting import plot_history
@@ -59,8 +60,12 @@ class Trainer:
             )
         self.scheduler = scheduler
 
-        # 学習率を更新する間隔を保存する
+        # 学習率を更新する間隔を保存し, Scheduler との組み合わせを確かめる
         self.scheduler_interval = experiment.cfg.scheduler.interval
+        check_scheduler(
+            self.scheduler, self.scheduler_interval,
+            experiment.cfg.trainer.mode
+        )
 
         # Early Stopping を使う場合は作る
         self.early_stopping = None
@@ -307,7 +312,7 @@ class Trainer:
 
         return monitor
 
-    def state_dict(self, epoch: int) -> dict:
+    def state_dict(self, epoch: int, monitor: str) -> dict:
         """
         チェックポイントとして保存する内容をまとめる関数
 
@@ -315,6 +320,8 @@ class Trainer:
         ----------
         epoch: int
             今回のエポック
+        monitor: str
+            ベストモデルの判定に使う指標の名前
 
         Returns
         -------
@@ -325,6 +332,8 @@ class Trainer:
         state = {
             "epoch": epoch,
             "global_step": self.global_step,
+            "monitor": monitor,
+            "mode": self.trainer_cfg.mode,
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": (
@@ -342,7 +351,7 @@ class Trainer:
 
         return state
 
-    def resume(self, path: str) -> None:
+    def resume(self, path: str, monitor: str) -> None:
         """
         チェックポイントから学習を再開できる状態に戻す関数
 
@@ -350,6 +359,8 @@ class Trainer:
         ----------
         path: str
             チェックポイントのパス, 相対パスの場合はプロジェクトのディレクトリから辿る
+        monitor: str
+            ベストモデルの判定に使う指標の名前
 
         Returns
         -------
@@ -363,6 +374,16 @@ class Trainer:
 
         # チェックポイントを読み込む
         state = load_checkpoint(path, self.device)
+
+        # 監視する指標や向きが変わると最良値を比べられないので同じものに限る
+        if (state["monitor"], state["mode"]) != (
+            monitor, self.trainer_cfg.mode
+        ):
+            raise ValueError(
+                f"再開元と監視する指標が違います: 再開元は {state['monitor']} "
+                f"({state['mode']}), 今回は {monitor} "
+                f"({self.trainer_cfg.mode})"
+            )
 
         # モデル, Optimizer, Scheduler, 記録を戻す
         self.model.load_state_dict(state["model"])
@@ -378,23 +399,17 @@ class Trainer:
         ):
             self.early_stopping.load_state_dict(state["early_stopping"])
 
-        # 同じディレクトリに best.pt がある場合はベストモデルの重みも戻す
-        best_path = Path(path).with_name("best.pt")
-        best_state = None
-        if best_path.exists():
-            best_state = load_checkpoint(str(best_path), self.device)
-        self.checkpoint.load_state_dict(
-            state["checkpoint"],
-            None if best_state is None else best_state["model"]
-        )
+        # チェックポイントに含まれるベストモデルの重みと最良値を戻す
+        self.checkpoint.load_state_dict(state["checkpoint"])
 
         # 続きの乱数を使えるように乱数の状態を戻す
         set_rng_state(state["rng"])
 
-        # 新しい保存先からも続けて再開できるように, 読み込んだ状態を保存する
+        # 新しい保存先にも, 再開元の best.pt と読み込んだ状態を保存する
         run_dir = self.experiment.run_dir
-        if best_state is not None and self.trainer_cfg.checkpoint.save_best:
-            save_checkpoint(best_state, run_dir / "best.pt")
+        best_path = checkpoint_path.with_name("best.pt")
+        if best_path.exists() and self.trainer_cfg.checkpoint.save_best:
+            shutil.copyfile(best_path, run_dir / "best.pt")
         if self.trainer_cfg.checkpoint.save_last:
             save_checkpoint(state, run_dir / "last.pt")
 
@@ -482,7 +497,7 @@ class Trainer:
 
         # 再開する場合はチェックポイントから状態を戻す
         if self.trainer_cfg.resume_from is not None:
-            self.resume(self.trainer_cfg.resume_from)
+            self.resume(self.trainer_cfg.resume_from, monitor)
 
         # Early Stopping で既に止めた学習を再開した場合は学習しない
         epochs = range(self.start_epoch, self.trainer_cfg.epochs + 1)
@@ -517,6 +532,8 @@ class Trainer:
                         f"{list(record.keys())}"
                     )
                 value = record[monitor]
+                if not math.isfinite(value):
+                    raise ValueError(f"監視する指標 {monitor} が {value} になりました")
                 self.history.append(record)
 
                 # epoch ごとに学習率を更新する場合はここで更新する
@@ -531,7 +548,7 @@ class Trainer:
                 )
 
                 # 更新した状態でチェックポイントを保存する
-                self.checkpoint.save(self.state_dict(epoch), improved)
+                self.checkpoint.save(self.state_dict(epoch, monitor), improved)
 
                 # エポックの結果を記録して表示する
                 summary = ", ".join(

@@ -470,6 +470,127 @@ def test_resume_without_best_file(tmp_path: Path) -> None:
     )
 
 
+def test_resume_chain_keeps_best_weights(tmp_path: Path) -> None:
+    """
+    再開を 2 回つないでもベストモデルの重みを失わないことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    -------
+    None
+    """
+    # best.pt を残さずに, 損失が 3, 1, 2 となる 3 エポックを学習する
+    first = make_experiment(
+        tmp_path / "first",
+        "trainer:\n  epochs: 3\n  checkpoint:\n    save_best: false\n"
+    )
+    Trainer(nn.Linear(1, 1), first, scripted_step([3.0, 1.0, 2.0])).fit(
+        [(torch.ones(1, 1),)]
+    )
+
+    # best.pt を残す設定で, 改善しない 4 エポック目を再開して学習する
+    second = make_experiment(
+        tmp_path / "second",
+        f"trainer:\n  epochs: 4\n"
+        f"  resume_from: {first.run_dir / 'last.pt'}\n"
+    )
+    Trainer(nn.Linear(1, 1), second, scripted_step([2.5])).fit(
+        [(torch.ones(1, 1),)]
+    )
+
+    # さらに 5 エポック目を再開して学習する
+    third = make_experiment(
+        tmp_path / "third",
+        f"trainer:\n  epochs: 5\n"
+        f"  resume_from: {second.run_dir / 'last.pt'}\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), third, scripted_step([2.6]))
+    trainer.fit([(torch.ones(1, 1),)])
+
+    assert trainer.checkpoint.best_epoch == 2
+    assert trainer.checkpoint.best_model_state is not None
+
+
+def test_resume_with_different_monitor(tmp_path: Path) -> None:
+    """
+    監視する指標の向きを変えて再開するとエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    -------
+    None
+    """
+    # 小さい方が良い向きで学習する
+    first = make_experiment(tmp_path / "first", "trainer:\n  epochs: 1\n")
+    Trainer(nn.Linear(1, 1), first, regression_step).fit(make_loader())
+
+    # 大きい方が良い向きに変えて再開する
+    second = make_experiment(
+        tmp_path / "second",
+        f"trainer:\n  epochs: 2\n  mode: max\n"
+        f"  resume_from: {first.run_dir / 'last.pt'}\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), second, regression_step)
+
+    with pytest.raises(ValueError, match="監視する指標が違います"):
+        trainer.fit(make_loader())
+
+
+def test_nan_monitor(tmp_path: Path) -> None:
+    """
+    監視する指標が nan になるとエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    -------
+    None
+    """
+    # 監視する指標だけが nan になる step を用意する
+    def nan_auc_step(model: nn.Module, batch: tuple, phase: str) -> dict:
+        """
+        損失と nan の指標を返す関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase: str
+            train または valid
+
+        Returns
+        -------
+        outputs: dict
+            平均二乗誤差と nan の指標
+        """
+        # 平均二乗誤差に nan の指標を加える
+        outputs = regression_step(model, batch, phase)
+        outputs["auc"] = float("nan")
+
+        return outputs
+
+    experiment = make_experiment(
+        tmp_path, "trainer:\n  epochs: 2\n  monitor: train/auc\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), experiment, nan_auc_step)
+
+    with pytest.raises(ValueError, match="train/auc"):
+        trainer.fit(make_loader())
+
+
 def test_scheduler_and_clipping(tmp_path: Path) -> None:
     """
     Scheduler と勾配クリッピングを使って学習できることを確かめる関数
@@ -725,6 +846,26 @@ def test_custom_scheduler(tmp_path: Path) -> None:
         Trainer(
             nn.Linear(1, 1), experiment, regression_step,
             scheduler=torch.optim.lr_scheduler.StepLR(other, step_size=1)
+        )
+
+    # 間隔の typo はエラーになる
+    typo = make_experiment(
+        tmp_path / "typo", "scheduler:\n  interval: Epoch\n"
+    )
+    model = nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    with pytest.raises(ValueError, match="interval"):
+        Trainer(
+            model, typo, regression_step, optimizer,
+            torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)
+        )
+
+    # 監視する指標と向きが違う ReduceLROnPlateau はエラーになる
+    plateau = make_experiment(tmp_path / "plateau", "trainer:\n  mode: max\n")
+    with pytest.raises(ValueError, match="mode"):
+        Trainer(
+            model, plateau, regression_step, optimizer,
+            torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min")
         )
 
 

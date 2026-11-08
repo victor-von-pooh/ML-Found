@@ -310,20 +310,18 @@ class Checkpoint:
         Returns
         -------
         state: dict
-            最良値とそのエポック, best.pt を保存しない場合はベストモデルの重みも含む
+            最良値, そのエポック, ベストモデルの重み
         """
-        # 最良値とエポックをまとめる
-        state = {"best_value": self.best_value, "best_epoch": self.best_epoch}
-
-        # best.pt が無いと再開時にベストモデルの重みを戻せないので含める
-        if not self.save_best:
-            state["best_model"] = self.best_model_state
+        # best.pt を残さない設定や, 再開元の best.pt が無い場合でも
+        # ベストモデルに戻せるように重みも含める
+        state = {
+            "best_value": self.best_value, "best_epoch": self.best_epoch,
+            "best_model": self.best_model_state
+        }
 
         return state
 
-    def load_state_dict(
-        self, state: dict, best_model_state: Optional[dict] = None
-    ) -> None:
+    def load_state_dict(self, state: dict) -> None:
         """
         チェックポイントから状態を戻す関数
 
@@ -331,8 +329,6 @@ class Checkpoint:
         ----------
         state: dict
             state_dict で取得した状態
-        best_model_state: Optional[dict] = None
-            ベストモデルの重み, 再開前の best.pt から読み込んだもの
 
         Returns
         -------
@@ -342,10 +338,6 @@ class Checkpoint:
         self.best_value = state["best_value"]
         self.best_epoch = state["best_epoch"]
 
-        # チェックポイントにベストモデルの重みが含まれている場合はそちらを使う
-        if state.get("best_model") is not None:
-            best_model_state = state["best_model"]
-
         # ベストモデルの重みがある場合は戻す
-        if best_model_state is not None:
-            self.best_model_state = copy_state_dict(best_model_state)
+        if state["best_model"] is not None:
+            self.best_model_state = copy_state_dict(state["best_model"])

@@ -1,9 +1,11 @@
 from importlib import metadata
 import json
 import logging
+import os
 from pathlib import Path
 import platform
 import subprocess
+import tempfile
 
 import torch
 
@@ -28,10 +30,11 @@ def run_git(args: list, repo_dir: str) -> str:
         コマンドの出力, 取得できない場合は空文字
     """
     # git リポジトリでない場合や git が無い場合は空文字にする
+    # UTF-8 でないファイル名などがあっても止まらないように読めない文字は置き換える
     try:
         output = subprocess.check_output(
             ["git", *args], cwd=repo_dir, stderr=subprocess.DEVNULL
-        ).decode().strip()
+        ).decode(errors="replace").strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         output = ""
 
@@ -81,7 +84,7 @@ def get_git_info(repo_dir: str) -> str:
     return git_info
 
 
-def get_git_diff(repo_dir: str) -> str:
+def get_git_diff(repo_dir: str) -> bytes:
     """
     未コミットの変更の差分を取得する関数
 
@@ -92,11 +95,27 @@ def get_git_diff(repo_dir: str) -> str:
 
     Returns
     -------
-    git_diff: str
-        最新の commit からの差分, 変更が無い場合や git 管理外の場合は空文字
+    git_diff: bytes
+        最新の commit からの差分, 変更が無い場合や git 管理外の場合は空
     """
-    # ステージ済みかどうかに関わらず最新の commit からの差分を取得する
-    git_diff = run_git(["diff", "HEAD"], repo_dir)
+    # プロジェクトのインデックスを変えないように一時的なインデックスを使う
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(tmp_dir) / "index"))
+
+        # 未追跡のファイルも含めて最新の commit からの差分を取得する
+        # 文字コードに関わらず git apply で戻せるように, 出力は手を加えずに使う
+        try:
+            for args in (["read-tree", "HEAD"], ["add", "--all"]):
+                subprocess.run(
+                    ["git", *args], cwd=repo_dir, env=env, check=True,
+                    capture_output=True
+                )
+            git_diff = subprocess.run(
+                ["git", "diff", "--cached", "HEAD"], cwd=repo_dir, env=env,
+                check=True, capture_output=True
+            ).stdout
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            git_diff = b""
 
     return git_diff
 

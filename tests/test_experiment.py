@@ -175,6 +175,49 @@ def test_git_info_before_run_dir(tmp_path: Path) -> None:
     assert "+# changed" in patch
 
 
+def test_git_diff_patch(tmp_path: Path) -> None:
+    """
+    未追跡のファイルや UTF-8 でないファイルを含む差分を, 適用できる形で保存することを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    -------
+    None
+    """
+    # 末尾が空行のファイルを commit する
+    default_text = "experiment:\n  device: cpu\n"
+    (tmp_path / "default.yaml").write_text(default_text, encoding="utf-8")
+    (tmp_path / "experiment.yaml").write_text("", encoding="utf-8")
+    (tmp_path / "f.txt").write_text("a\nb\n\nc\n\n", encoding="utf-8")
+    git(["init"], tmp_path)
+    git(["add", "."], tmp_path)
+    git(["commit", "-m", "init"], tmp_path)
+
+    # commit 済みのファイルを変え, 未追跡のファイルと UTF-8 でないファイルを加える
+    (tmp_path / "f.txt").write_text("a\nB\n\nc\n\n", encoding="utf-8")
+    (tmp_path / "new.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "latin1.txt").write_bytes("café\n".encode("latin-1"))
+
+    # 実験を開始する
+    experiment = run_experiment(tmp_path, default_text)
+    patch_path = experiment.run_dir / "git_diff.patch"
+    patch = patch_path.read_bytes()
+
+    # 差分を逆向きに適用できるかを確かめる
+    result = subprocess.run(
+        ["git", "apply", "--check", "-R", str(patch_path)],
+        cwd=tmp_path, capture_output=True
+    )
+
+    assert b"+++ b/new.py" in patch
+    assert b"+++ b/latin1.txt" in patch
+    assert result.returncode == 0, result.stderr
+
+
 def test_invalid_device(tmp_path: Path) -> None:
     """
     使えないデバイスを指定すると出力先を作らずにエラーになることを確かめる関数

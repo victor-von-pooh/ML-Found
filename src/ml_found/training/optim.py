@@ -92,6 +92,45 @@ def build_optimizer(
     return optimizer
 
 
+def check_scheduler(
+    scheduler: Optional[Union[LRScheduler, ReduceLROnPlateau]],
+    interval: str, mode: str
+) -> None:
+    """
+    Scheduler と学習率を更新する間隔の組み合わせが正しいことを確かめる関数
+
+    Parameters
+    ----------
+    scheduler: Optional[Union[LRScheduler, ReduceLROnPlateau]]
+        確かめる Scheduler, None の場合は間隔だけを確かめる
+    interval: str
+        学習率を更新する間隔
+    mode: str
+        監視する指標の良し悪しの向き
+
+    Returns
+    -------
+    None
+    """
+    # 間隔は epoch か step に限る
+    if interval not in ("epoch", "step"):
+        raise ValueError(
+            f"scheduler.interval は epoch か step にしてください: {interval}"
+        )
+
+    # ReduceLROnPlateau は監視する指標を見るので, 間隔と向きを揃える
+    if isinstance(scheduler, ReduceLROnPlateau):
+        if interval != "epoch":
+            raise ValueError(
+                "ReduceLROnPlateau は scheduler.interval を epoch にしてください"
+            )
+        if scheduler.mode != mode:
+            raise ValueError(
+                f"ReduceLROnPlateau の mode ({scheduler.mode}) が "
+                f"trainer.mode ({mode}) と違います"
+            )
+
+
 def build_scheduler(
     cfg: DictConfig, optimizer: optim.Optimizer, mode: str = "min"
 ) -> Optional[Union[LRScheduler, ReduceLROnPlateau]]:
@@ -117,13 +156,6 @@ def build_scheduler(
         scheduler = None
         return scheduler
 
-    # 学習率を更新する間隔が正しいことを確かめる
-    if cfg.interval not in ("epoch", "step"):
-        raise ValueError(
-            f"scheduler.interval は epoch か step にしてください: "
-            f"{cfg.interval}"
-        )
-
     # クラスを取得し, Scheduler であることを確かめる
     scheduler_cls = resolve_class(cfg.name, optim.lr_scheduler)
     if not (
@@ -132,22 +164,14 @@ def build_scheduler(
     ):
         raise ValueError(f"{cfg.name} は Scheduler ではありません")
 
-    # ReduceLROnPlateau は監視する指標を見るので, 間隔と向きを揃える
+    # ReduceLROnPlateau の向きを指定しない場合は監視する指標の向きに揃える
     kwargs = to_kwargs(cfg.params)
     if issubclass(scheduler_cls, ReduceLROnPlateau):
-        if cfg.interval != "epoch":
-            raise ValueError(
-                "ReduceLROnPlateau は scheduler.interval を epoch にしてください"
-            )
         kwargs.setdefault("mode", mode)
-        if kwargs["mode"] != mode:
-            raise ValueError(
-                f"ReduceLROnPlateau の mode ({kwargs['mode']}) が "
-                f"trainer.mode ({mode}) と違います"
-            )
 
-    # 引数を渡して作る
+    # 引数を渡して作り, 間隔と向きの組み合わせを確かめる
     scheduler = scheduler_cls(optimizer, **kwargs)
+    check_scheduler(scheduler, cfg.interval, mode)
 
     return scheduler
 

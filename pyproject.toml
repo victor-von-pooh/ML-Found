@@ -21,6 +21,9 @@ dependencies = [
 dev = [
     "pytest"
 ]
+examples = [
+    "scikit-learn"
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

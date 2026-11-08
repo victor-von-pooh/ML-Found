@@ -1,0 +1,23 @@
+# ML-Found が使う設定, 書かなかった項目は ML-Found の既定値になる
+experiment:
+  name: wine
+  seed: 42
+
+optimizer:
+  name: Adam
+  params:
+    lr: 0.001
+
+trainer:
+  epochs: 100
+  early_stopping:
+    use: true
+    patience: 10
+
+# プロジェクト固有の設定, 項目は自由に追加できる
+data:
+  valid_size: 0.2
+  batch_size: 16
+
+model:
+  hidden_dim: 32

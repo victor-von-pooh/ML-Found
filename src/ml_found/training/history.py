@@ -18,8 +18,12 @@ def to_float(value: Any) -> float:
     number: float
         float にした値
     """
-    # テンソルの場合は計算グラフから切り離して取り出す
+    # テンソルの場合は 1 つの値であることを確かめ, 計算グラフから切り離して取り出す
     if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            raise ValueError(
+                f"指標は 1 つの値にしてください: 形状 {tuple(value.shape)}"
+            )
         number = value.detach().item()
     else:
         number = float(value)

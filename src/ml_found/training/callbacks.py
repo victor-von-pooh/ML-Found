@@ -141,9 +141,10 @@ class EarlyStopping:
         self.min_delta = min_delta
         self.mode = mode
 
-        # これまでの最良値と, 改善しなかった回数を保存する
+        # これまでの最良値, 改善しなかった回数, 既に止めたかどうかを保存する
         self.best: Optional[float] = None
         self.counter = 0
+        self.stopped = False
 
     def step(self, value: float) -> bool:
         """
@@ -168,6 +169,7 @@ class EarlyStopping:
 
         # patience 回続けて改善しなかったら止める
         should_stop = self.counter >= self.patience
+        self.stopped = should_stop
 
         return should_stop
 
@@ -175,13 +177,20 @@ class EarlyStopping:
         """
         チェックポイントに保存するための状態を取得する関数
 
+        Parameters
+        ----------
+        None
+
         Returns
         -------
         state: dict
-            最良値と改善しなかった回数
+            最良値, 改善しなかった回数, 既に止めたかどうか
         """
-        # 最良値と回数をまとめる
-        state = {"best": self.best, "counter": self.counter}
+        # 最良値, 回数, 止めたかどうかをまとめる
+        state = {
+            "best": self.best, "counter": self.counter,
+            "stopped": self.stopped
+        }
 
         return state
 
@@ -198,9 +207,10 @@ class EarlyStopping:
         -------
         None
         """
-        # 最良値と回数を戻す
+        # 最良値, 回数, 止めたかどうかを戻す
         self.best = state["best"]
         self.counter = state["counter"]
+        self.stopped = state["stopped"]
 
 
 class Checkpoint:
@@ -222,11 +232,9 @@ class Checkpoint:
         self.best_epoch = 0
         self.best_model_state: Optional[dict] = None
 
-    def update(
-        self, value: float, epoch: int, model: nn.Module, state: dict
-    ) -> bool:
+    def update(self, value: float, epoch: int, model: nn.Module) -> bool:
         """
-        指標の値を受け取ってベストモデルと最後のモデルを保存する関数
+        指標の値を受け取ってベストモデルを更新する関数
 
         Parameters
         ----------
@@ -236,28 +244,43 @@ class Checkpoint:
             今回のエポック
         model: nn.Module
             学習中のモデル
-        state: dict
-            チェックポイントとして保存する内容
 
         Returns
         -------
         improved: bool
             ベストモデルが更新されたかどうか
         """
-        # 改善した場合は最良値と重みを更新し, ベストモデルを保存する
+        # 改善した場合は最良値とエポックと重みを更新する
         improved = is_improved(value, self.best_value, self.mode)
         if improved:
             self.best_value = value
             self.best_epoch = epoch
             self.best_model_state = copy_state_dict(model.state_dict())
-            if self.save_best:
-                save_checkpoint(state, self.run_dir / "best.pt")
+
+        return improved
+
+    def save(self, state: dict, improved: bool) -> None:
+        """
+        ベストモデルと最後のモデルをファイルに保存する関数
+
+        Parameters
+        ----------
+        state: dict
+            チェックポイントとして保存する内容, update の後に作ったもの
+        improved: bool
+            今回ベストモデルが更新されたかどうか
+
+        Returns
+        -------
+        None
+        """
+        # ベストモデルが更新された場合は保存する
+        if improved and self.save_best:
+            save_checkpoint(state, self.run_dir / "best.pt")
 
         # 学習を再開できるように最後のモデルを毎回上書きで保存する
         if self.save_last:
             save_checkpoint(state, self.run_dir / "last.pt")
-
-        return improved
 
     def restore_best(self, model: nn.Module) -> None:
         """
@@ -272,24 +295,29 @@ class Checkpoint:
         -------
         None
         """
-        # ベストモデルがまだ無い場合は何もしない
-        if self.best_model_state is None:
-            return
-
-        # 保存しておいた重みを戻す
-        model.load_state_dict(self.best_model_state)
+        # ベストモデルがある場合は保存しておいた重みを戻す
+        if self.best_model_state is not None:
+            model.load_state_dict(self.best_model_state)
 
     def state_dict(self) -> dict:
         """
         チェックポイントに保存するための状態を取得する関数
 
+        Parameters
+        ----------
+        None
+
         Returns
         -------
         state: dict
-            最良値とそのエポック
+            最良値とそのエポック, best.pt を保存しない場合はベストモデルの重みも含む
         """
-        # 重みは容量が大きいので含めず, 最良値とエポックだけをまとめる
+        # 最良値とエポックをまとめる
         state = {"best_value": self.best_value, "best_epoch": self.best_epoch}
+
+        # best.pt が無いと再開時にベストモデルの重みを戻せないので含める
+        if not self.save_best:
+            state["best_model"] = self.best_model_state
 
         return state
 
@@ -313,6 +341,10 @@ class Checkpoint:
         # 最良値とエポックを戻す
         self.best_value = state["best_value"]
         self.best_epoch = state["best_epoch"]
+
+        # チェックポイントにベストモデルの重みが含まれている場合はそちらを使う
+        if state.get("best_model") is not None:
+            best_model_state = state["best_model"]
 
         # ベストモデルの重みがある場合は戻す
         if best_model_state is not None:

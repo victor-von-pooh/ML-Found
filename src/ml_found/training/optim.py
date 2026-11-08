@@ -93,7 +93,7 @@ def build_optimizer(
 
 
 def build_scheduler(
-    cfg: DictConfig, optimizer: optim.Optimizer
+    cfg: DictConfig, optimizer: optim.Optimizer, mode: str = "min"
 ) -> Optional[LRScheduler | ReduceLROnPlateau]:
     """
     config から Scheduler を作る関数
@@ -104,6 +104,8 @@ def build_scheduler(
         scheduler の config
     optimizer: optim.Optimizer
         学習率を調整する Optimizer
+    mode: str = "min"
+        監視する指標の良し悪しの向き, ReduceLROnPlateau に使う
 
     Returns
     -------
@@ -130,8 +132,22 @@ def build_scheduler(
     ):
         raise ValueError(f"{cfg.name} は Scheduler ではありません")
 
+    # ReduceLROnPlateau は監視する指標を見るので, 間隔と向きを揃える
+    kwargs = to_kwargs(cfg.params)
+    if issubclass(scheduler_cls, ReduceLROnPlateau):
+        if cfg.interval != "epoch":
+            raise ValueError(
+                "ReduceLROnPlateau は scheduler.interval を epoch にしてください"
+            )
+        kwargs.setdefault("mode", mode)
+        if kwargs["mode"] != mode:
+            raise ValueError(
+                f"ReduceLROnPlateau の mode ({kwargs['mode']}) が "
+                f"trainer.mode ({mode}) と違います"
+            )
+
     # 引数を渡して作る
-    scheduler = scheduler_cls(optimizer, **to_kwargs(cfg.params))
+    scheduler = scheduler_cls(optimizer, **kwargs)
 
     return scheduler
 

@@ -163,3 +163,52 @@ def test_build_scheduler_invalid():
     cfg = OmegaConf.create({"name": "Adam", "params": {}, "interval": "epoch"})
     with pytest.raises(ValueError):
         build_scheduler(cfg, make_optimizer())
+
+
+def test_reduce_lr_on_plateau_follows_mode() -> None:
+    """
+    ReduceLROnPlateau の向きが監視する指標の向きに揃うことを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+    """
+    # 大きい方が良い指標を監視する設定で作る
+    cfg = OmegaConf.create(
+        {"name": "ReduceLROnPlateau", "params": {}, "interval": "epoch"}
+    )
+    scheduler = build_scheduler(cfg, make_optimizer(), mode="max")
+
+    assert scheduler.mode == "max"
+
+
+@pytest.mark.parametrize(
+    "params, interval",
+    [({"mode": "min"}, "epoch"), ({}, "step")]
+)
+def test_reduce_lr_on_plateau_invalid(params: dict, interval: str) -> None:
+    """
+    ReduceLROnPlateau の向きや間隔が正しくない場合にエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    params: dict
+        ReduceLROnPlateau に渡す引数
+    interval: str
+        学習率を更新する間隔
+
+    Returns
+    -------
+    None
+    """
+    # 監視する指標と向きが違う場合や, step ごとに更新する場合
+    cfg = OmegaConf.create(
+        {"name": "ReduceLROnPlateau", "params": params, "interval": interval}
+    )
+
+    with pytest.raises(ValueError, match="ReduceLROnPlateau"):
+        build_scheduler(cfg, make_optimizer(), mode="max")

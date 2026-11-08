@@ -1,7 +1,7 @@
 import math
 from pathlib import Path
 import time
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, Union
 
 import torch
 from torch import nn, optim
@@ -26,7 +26,7 @@ class Trainer:
         self, model: nn.Module, experiment: Experiment,
         step_fn: Optional[Callable[[nn.Module, Any, str], dict]] = None,
         optimizer: Optional[optim.Optimizer] = None,
-        scheduler: Optional[LRScheduler | ReduceLROnPlateau] = None
+        scheduler: Optional[Union[LRScheduler, ReduceLROnPlateau]] = None
     ):
         # 実験, 学習の config, ロガー, デバイスを保存する
         self.experiment = experiment
@@ -539,8 +539,8 @@ class Trainer:
                 if should_stop:
                     self.logger.info(f"Early Stopping (エポック {epoch})")
                     pbar.write(
-                        f"Early Stopping at epoch {epoch}. "
-                        f"Best epoch: {self.checkpoint.best_epoch}"
+                        f"Early Stopping (エポック {epoch}), "
+                        f"ベストモデルのエポック: {self.checkpoint.best_epoch}"
                     )
                     break
 

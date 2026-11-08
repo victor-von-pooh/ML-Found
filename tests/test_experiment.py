@@ -135,7 +135,7 @@ def test_start_experiment(tmp_path: Path) -> None:
     assert (experiment.run_dir / "diff.yaml").exists()
     assert experiment.device.type == "cpu"
     assert "trainer.epochs: 100 -> 3" in log_text
-    assert "package list" in log_text
+    assert "パッケージ一覧" in log_text
 
 
 def test_git_info_before_run_dir(tmp_path: Path) -> None:

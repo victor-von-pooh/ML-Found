@@ -100,10 +100,8 @@ def regression_step(model: nn.Module, batch: tuple, phase: str) -> dict:
     # 予測して誤差を求める
     x, y = batch
     pred = model(x)
-    outputs = {
-        "loss": nn.functional.mse_loss(pred, y),
-        "mae": (pred - y).abs().mean()
-    }
+    mse = nn.MSELoss()
+    outputs = {"loss": mse(pred, y), "mae": (pred - y).abs().mean()}
 
     return outputs
 
@@ -555,8 +553,9 @@ def test_phase_with_masks(tmp_path: Path) -> None:
         # phase に応じたマスクで選んだノードだけ誤差を求める
         mask = batch[f"{phase}_mask"]
         pred = model(batch["x"])
+        mse = nn.MSELoss()
         outputs = {
-            "loss": nn.functional.mse_loss(pred[mask], batch["y"][mask]),
+            "loss": mse(pred[mask], batch["y"][mask]),
             "n_nodes": float(mask.sum())
         }
 
@@ -623,7 +622,8 @@ def test_on_epoch_end(tmp_path: Path) -> None:
             x, y = batch
             pred = self.model(x)
             self.errors.append((pred - y).abs().detach())
-            outputs = {"loss": nn.functional.mse_loss(pred, y)}
+            mse = nn.MSELoss()
+            outputs = {"loss": mse(pred, y)}
 
             return outputs
 

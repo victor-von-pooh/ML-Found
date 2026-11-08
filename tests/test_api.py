@@ -14,9 +14,18 @@ import ml_found
         "ml_found.training.trainer", "ml_found.experiment.setup"
     ]
 )
-def test_import_in_fresh_process(module: str):
+def test_import_in_fresh_process(module: str) -> None:
     """
     どのモジュールから import しても循環 import にならないことを確かめる関数
+
+    Parameters
+    ----------
+    module: str
+        import するモジュールの名前
+
+    Returns
+    -------
+    None
     """
     # import の順番で結果が変わらないように新しいプロセスで import する
     result = subprocess.run(
@@ -27,9 +36,17 @@ def test_import_in_fresh_process(module: str):
     assert result.returncode == 0, result.stderr
 
 
-def test_public_api():
+def test_public_api() -> None:
     """
     学習に必要なものがトップレベルから使えることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # 公開している名前が全て取得できる
     for name in ml_found.__all__:

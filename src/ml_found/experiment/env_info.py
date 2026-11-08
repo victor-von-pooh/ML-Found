@@ -105,6 +105,10 @@ def get_ml_found_info() -> str:
     """
     ML-Found のバージョンの情報を取得する関数
 
+    Parameters
+    ----------
+    None
+
     Returns
     -------
     ml_found_info: str
@@ -250,11 +254,11 @@ def collect_env_info(project_dir: str) -> dict[str, str]:
     """
     # プロジェクトと ML-Found のバージョン, OS, PyTorch, パッケージの情報を集める
     env_info = {
-        "project git information": get_git_info(project_dir),
-        "ML-Found information": get_ml_found_info(),
-        "OS information": get_os_info(),
-        "PyTorch information": get_torch_info(),
-        "package list": get_package_list()
+        "プロジェクトの git 情報": get_git_info(project_dir),
+        "ML-Found の情報": get_ml_found_info(),
+        "OS の情報": get_os_info(),
+        "PyTorch の情報": get_torch_info(),
+        "パッケージ一覧": get_package_list()
     }
 
     return env_info

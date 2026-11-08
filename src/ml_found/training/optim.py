@@ -1,6 +1,6 @@
 import importlib
 from types import ModuleType
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Union
 
 from omegaconf import DictConfig, OmegaConf
 from torch import optim
@@ -94,7 +94,7 @@ def build_optimizer(
 
 def build_scheduler(
     cfg: DictConfig, optimizer: optim.Optimizer, mode: str = "min"
-) -> Optional[LRScheduler | ReduceLROnPlateau]:
+) -> Optional[Union[LRScheduler, ReduceLROnPlateau]]:
     """
     config から Scheduler を作る関数
 
@@ -109,7 +109,7 @@ def build_scheduler(
 
     Returns
     -------
-    scheduler: Optional[LRScheduler | ReduceLROnPlateau]
+    scheduler: Optional[Union[LRScheduler, ReduceLROnPlateau]]
         作成した Scheduler, 使わない場合は None
     """
     # 名前が指定されていない場合は使わない
@@ -153,7 +153,7 @@ def build_scheduler(
 
 
 def step_scheduler(
-    scheduler: Optional[LRScheduler | ReduceLROnPlateau],
+    scheduler: Optional[Union[LRScheduler, ReduceLROnPlateau]],
     metric: Optional[float] = None
 ) -> None:
     """
@@ -161,7 +161,7 @@ def step_scheduler(
 
     Parameters
     ----------
-    scheduler: Optional[LRScheduler | ReduceLROnPlateau]
+    scheduler: Optional[Union[LRScheduler, ReduceLROnPlateau]]
         更新する Scheduler, None の場合は何もしない
     metric: Optional[float] = None
         ReduceLROnPlateau が改善を判定するための指標の値

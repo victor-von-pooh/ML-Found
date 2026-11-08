@@ -48,9 +48,17 @@ def get_lr(optimizer: optim.Optimizer) -> float:
     return lr
 
 
-def test_build_optimizer_with_params():
+def test_build_optimizer_with_params() -> None:
     """
     クラス名と引数から Optimizer が作られることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # リストで書いた betas を含めて Adam を作る
     cfg = OmegaConf.create(
@@ -63,9 +71,17 @@ def test_build_optimizer_with_params():
     assert tuple(optimizer.param_groups[0]["betas"]) == (0.8, 0.9)
 
 
-def test_build_optimizer_dotted_name():
+def test_build_optimizer_dotted_name() -> None:
     """
     モジュールのパスを含めた名前でも作れることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # モジュールのパスを含めて指定する
     cfg = OmegaConf.create({"name": "torch.optim.AdamW", "params": {}})
@@ -77,9 +93,18 @@ def test_build_optimizer_dotted_name():
 @pytest.mark.parametrize(
     "name", ["Adamm", "lr_scheduler", "no_such_module.Optimizer"]
 )
-def test_build_optimizer_invalid_name(name: str):
+def test_build_optimizer_invalid_name(name: str) -> None:
     """
     存在しない名前や Optimizer でない名前でエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    name: str
+        正しくない名前
+
+    Returns
+    -------
+    None
     """
     # 正しくない名前を指定する
     cfg = OmegaConf.create({"name": name, "params": {}})
@@ -88,9 +113,17 @@ def test_build_optimizer_invalid_name(name: str):
         build_optimizer(cfg, nn.Linear(2, 1).parameters())
 
 
-def test_build_scheduler_none():
+def test_build_scheduler_none() -> None:
     """
     名前が null の場合は Scheduler を使わないことを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # 名前を null にする
     cfg = OmegaConf.create({"name": None, "params": {}, "interval": "epoch"})
@@ -99,9 +132,17 @@ def test_build_scheduler_none():
     assert scheduler is None
 
 
-def test_step_lr():
+def test_step_lr() -> None:
     """
     StepLR で学習率が下がることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # 1 回ごとに学習率を 0.5 倍にする StepLR を作る
     optimizer = make_optimizer(lr=0.1)
@@ -122,9 +163,17 @@ def test_step_lr():
     assert get_lr(optimizer) == pytest.approx(0.025)
 
 
-def test_reduce_lr_on_plateau():
+def test_reduce_lr_on_plateau() -> None:
     """
     ReduceLROnPlateau で改善しない場合に学習率が下がることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # 1 回改善しなければ学習率を 0.1 倍にする ReduceLROnPlateau を作る
     optimizer = make_optimizer(lr=0.1)
@@ -148,9 +197,17 @@ def test_reduce_lr_on_plateau():
         step_scheduler(scheduler)
 
 
-def test_build_scheduler_invalid():
+def test_build_scheduler_invalid() -> None:
     """
     正しくない間隔や Scheduler でない名前でエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # 間隔が正しくない場合
     cfg = OmegaConf.create(

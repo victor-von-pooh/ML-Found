@@ -6,9 +6,17 @@ from ml_found.utils.batch import get_batch_size, move_to_device
 from ml_found.utils.device import get_device
 
 
-def test_get_device_explicit():
+def test_get_device_explicit() -> None:
     """
     指定したデバイスがそのまま返ることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # cpu を指定して取得する
     device = get_device("cpu")
@@ -16,9 +24,17 @@ def test_get_device_explicit():
     assert device == torch.device("cpu")
 
 
-def test_get_device_auto():
+def test_get_device_auto() -> None:
     """
     auto の場合に使えるデバイスが選ばれることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # 自動で選ばせる
     device = get_device("auto")
@@ -26,9 +42,17 @@ def test_get_device_auto():
     assert device.type in ("cuda", "mps", "cpu")
 
 
-def test_move_to_device_nested():
+def test_move_to_device_nested() -> None:
     """
     入れ子のバッチが型を保ったまま移ることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # テンソル, リスト, タプル, 辞書, テンソル以外を混ぜたバッチを作る
     batch = {
@@ -48,9 +72,17 @@ def test_move_to_device_nested():
     assert moved["x"].device.type == "cpu"
 
 
-def test_move_to_device_namedtuple():
+def test_move_to_device_namedtuple() -> None:
     """
     namedtuple が同じ型のまま移ることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # namedtuple のバッチを作る
     Batch = namedtuple("Batch", ["x", "y"])
@@ -63,9 +95,17 @@ def test_move_to_device_namedtuple():
     assert torch.equal(moved.y, torch.ones(2))
 
 
-def test_get_batch_size():
+def test_get_batch_size() -> None:
     """
     バッチのサンプル数を推定できることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # テンソル, タプル, 辞書, テンソルを含まないものを調べる
     x = torch.zeros(4, 3)

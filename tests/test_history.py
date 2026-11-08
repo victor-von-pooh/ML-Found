@@ -12,6 +12,10 @@ def make_history() -> History:
     """
     テスト用の記録を作る関数
 
+    Parameters
+    ----------
+    None
+
     Returns
     -------
     history: History
@@ -30,9 +34,17 @@ def make_history() -> History:
     return history
 
 
-def test_metric_tracker_weighted_mean():
+def test_metric_tracker_weighted_mean() -> None:
     """
     サンプル数で重み付けした平均が求まることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # サンプル数の違う 2 バッチを加える
     tracker = MetricTracker()
@@ -49,9 +61,17 @@ def test_metric_tracker_weighted_mean():
     assert tracker.compute() == {}
 
 
-def test_history_get_and_keys():
+def test_history_get_and_keys() -> None:
     """
     途中で欠けた項目も含めて取り出せることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # 記録を作る
     history = make_history()
@@ -60,9 +80,18 @@ def test_history_get_and_keys():
     assert history.get("valid/loss") == [1.2, None, 0.7]
 
 
-def test_history_save_csv(tmp_path: Path):
+def test_history_save_csv(tmp_path: Path) -> None:
     """
     CSV に 1 エポック 1 行で保存されることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    -------
+    None
     """
     # CSV に保存して読み込む
     path = tmp_path / "history.csv"
@@ -75,9 +104,17 @@ def test_history_save_csv(tmp_path: Path):
     assert rows[2]["lr"] == "0.01"
 
 
-def test_history_state_dict():
+def test_history_state_dict() -> None:
     """
     state_dict から記録を戻せることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
     """
     # 記録を別の History に移す
     history = make_history()
@@ -87,9 +124,18 @@ def test_history_state_dict():
     assert restored.records == history.records
 
 
-def test_plot_history(tmp_path: Path):
+def test_plot_history(tmp_path: Path) -> None:
     """
     指標ごとに学習曲線の画像が保存されることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    -------
+    None
     """
     # 学習曲線を保存する
     paths = plot_history(make_history().records, str(tmp_path))

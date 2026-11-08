@@ -3,6 +3,8 @@ from typing import Any
 
 import torch
 
+from ml_found.utils.plotting import get_keys
+
 
 def to_float(value: Any) -> float:
     """
@@ -61,6 +63,10 @@ class MetricTracker:
         """
         加えた指標の平均を求める関数
 
+        Parameters
+        ----------
+        None
+
         Returns
         -------
         means: dict[str, float]
@@ -76,6 +82,10 @@ class MetricTracker:
     def reset(self) -> None:
         """
         加えた指標を空にする関数
+
+        Parameters
+        ----------
+        None
 
         Returns
         -------
@@ -111,17 +121,17 @@ class History:
         """
         記録されている項目の名前を取得する関数
 
+        Parameters
+        ----------
+        None
+
         Returns
         -------
         names: list[str]
             現れた順に並べた項目の名前
         """
         # 途中から増えた項目も含めて現れた順に並べる
-        names = []
-        for record in self.records:
-            for key in record:
-                if key not in names:
-                    names.append(key)
+        names = get_keys(self.records)
 
         return names
 
@@ -167,12 +177,16 @@ class History:
         """
         チェックポイントに保存するための記録を取得する関数
 
+        Parameters
+        ----------
+        None
+
         Returns
         -------
         state: dict
             エポックごとの記録
         """
-        # 記録をそのまま渡す
+        # 後から書き換わらないように記録を複製して渡す
         state = {"records": [dict(record) for record in self.records]}
 
         return state

@@ -12,9 +12,9 @@ PyTorch のモデルを config から自動で学習させる基盤モジュー�
 ## 主な特徴
 
 - **default と experiment の 2 段の config**: default を基準とし, experiment には差分だけを書く. experiment で default に無い項目を書くとエラーになるので, default を壊さずに実験できる
-- **実験の記録**: 実行ごとに `outputs/<名前>/<日付>/<時刻>/` を作り, config 全体, default との差分, git の commit id と未コミットの変更, OS や PyTorch やパッケージの情報を残す
+- **実験の記録**: 実行ごとに `outputs/<名前>/<日付>/<時刻>/` を作り, config 全体, default との差分, git の commit id と未コミットの変更の差分, OS や PyTorch やパッケージの情報を残す
 - **ミニバッチ学習とフルバッチ学習の両対応**: DataLoader でも, グラフ全体のような 1 つのデータでも, 同じ書き方で学習できる
-- **torch の Optimizer と Scheduler をそのまま使える**: クラス名と引数を config に書くだけで, `torch.optim` にあるものは全て使える
+- **torch の Optimizer と Scheduler をそのまま使える**: クラス名と引数を config に書くだけで, `torch.optim` にあるものを使える (closure が必要な LBFGS を除く)
 - **ベストモデルと再開**: 監視する指標が最も良いモデルを保存して最後に戻す. Early Stopping, 勾配クリッピング, チェックポイントからの再開にも対応する
 - **Lightning などに依存しない**: 素の PyTorch だけで書いている
 
@@ -27,8 +27,13 @@ git submodule add https://github.com/victor-von-pooh/ML-Found.git ML-Found
 pip install -e ./ML-Found
 ```
 
-Python 3.10 以上が必要.
-依存ライブラリは `torch`, `omegaconf`, `numpy`, `tqdm`, `matplotlib` で, インストール時に一緒に入る.
+- Python 3.10 以上が必要
+- 依存ライブラリは `torch`, `omegaconf`, `numpy`, `tqdm`, `matplotlib` で, インストール時に一緒に入る
+- `-e` を付けてインストールすると, 実験ごとに ML-Found の commit id も記録される. 付けない場合はバージョン番号だけが記録される
+- `examples/minibatch/` を動かす場合は scikit-learn も必要なので, `pip install -e "./ML-Found[examples]"` でインストールする
+
+プロジェクトの `.gitignore` には `outputs/` を加えておく.
+加えないと, 2 回目以降の実験で前回の出力が未コミットの変更として記録される.
 
 ## 使い方
 
@@ -127,6 +132,7 @@ history = trainer.fit(train_loader, valid_loader)
 - `batch` は ML-Found がデバイスに移してから渡す
 - `phase` は学習時に `"train"`, 検証時に `"valid"` になる
 - 戻り値は辞書で, `loss` は必須. その他の値は `train/acc` や `valid/acc` のように指標として記録され, 学習曲線も描かれる
+- 指標は 1 つの値にし, 名前には `/` を使わない (学習曲線の画像のファイル名に使うため)
 - 指標はバッチのサンプル数で重み付けして平均する. サンプル数は自動で推定するが, 戻り値に `batch_size` を入れると, そちらを使う
 
 ### フルバッチ学習
@@ -151,10 +157,11 @@ history = trainer.fit([graph], [graph])
 | --- | --- | --- |
 | `step(batch, phase)` | バッチごと | `step_fn` を渡す代わりに書く |
 | `on_epoch_start(phase)` | エポックの学習または検証の前 | 予測を集める入れ物を用意する |
-| `on_epoch_end(phase)` | エポックの学習または検証の後 | AUC など, バッチの平均では求められない指標を辞書で返す |
+| `on_epoch_end(phase)` | エポックの学習または検証の後 | AUC など, バッチの平均では求められない指標を辞書で返す. `train/` や `valid/` を付けて記録される |
 
 継承した中では `self.epoch` (今のエポック) と `self.global_step` (パラメータの更新回数) を参照できる.
 Optimizer や Scheduler を自分で作る場合は `Trainer(model, experiment, step, optimizer, scheduler)` のように渡す.
+渡した Scheduler にも, config で作った場合と同じく `scheduler.interval` と ReduceLROnPlateau の確認が行われる.
 
 ### 学習の再開
 
@@ -166,7 +173,10 @@ trainer:
   resume_from: outputs/wine/2026-11-08/16-18-27/last.pt
 ```
 
-相対パスは, `experiment.output_dir` と同じくプロジェクトのディレクトリから辿る.
+- 相対パスは, `experiment.output_dir` と同じくプロジェクトのディレクトリから辿る
+- `last.pt` にはベストモデルの重みも含まれるので, `last.pt` だけで再開できる
+- `trainer.monitor` や `trainer.mode` を再開元から変えるとエラーになる
+- Early Stopping で止めた学習を再開しても学習しない
 
 ### 学習後のモデル
 
@@ -208,8 +218,11 @@ ML-Found が使う項目と既定値.
 | `trainer.checkpoint.save_best` | `true` | `best.pt` を保存するかどうか |
 | `trainer.checkpoint.save_last` | `true` | `last.pt` を保存するかどうか |
 
-ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げるので, `scheduler.interval` は `epoch` にする.
+ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
+`scheduler.interval` を `step` にした場合や, `scheduler.params.mode` を `trainer.mode` と違う値にした場合はエラーになる.
 `mode` を省略した場合は `trainer.mode` と同じになる.
+
+監視する指標が nan や inf になった場合はエラーで止まる.
 
 ## 出力
 
@@ -217,14 +230,14 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げるので, `s
 
 | ファイル | 内容 |
 | --- | --- |
-| `config.yaml` | 学習に使った config 全体, default として読み込めば同じ条件で学習できる |
+| `config.yaml` | 学習に使った config 全体, default として読み込めば同じ条件で学習できる. 再開した実験の場合は `trainer.resume_from` も残っているので, 最初から学習し直す場合は消す |
 | `diff.yaml` | default から変えた項目 |
 | `train.log` | 差分, 環境の情報, モデルの構造, エポックごとの指標, 結果 |
-| `git_diff.patch` | 未コミットの変更がある場合のみ, commit id からの差分 |
-| `history.csv` | エポックごとの指標 |
-| `<指標>_curve.png` | 指標ごとの学習曲線 |
+| `git_diff.patch` | 未コミットの変更がある場合のみ, commit id からの差分. 未追跡のファイルも含むが, `.gitignore` で除外したファイルと submodule の中の変更は含まない. バイナリファイルは変更されたことだけが記録される |
+| `history.csv` | エポックごとの指標と, エポックを始めた時点の学習率 (`lr`) |
+| `<指標>_curve.png` | 指標ごとの学習曲線, 学習率の推移 (`lr_curve.png`) も含む |
 | `best.pt` | ベストモデルのチェックポイント |
-| `last.pt` | 最後のエポックのチェックポイント, 再開に使う |
+| `last.pt` | 最後のエポックのチェックポイント, ベストモデルの重みも含む. 再開に使う |
 | `final_model.pt` | ベストモデルの重みだけ |
 
 ## ディレクトリ構成

@@ -242,11 +242,14 @@ def get_package_list() -> str:
         パッケージ名とバージョンの一覧
     """
     # pip が無い環境でも取得できるように実行中の Python から直接調べる
-    # メタデータが壊れていて名前が取れないものは除く
+    # メタデータが壊れていて名前が取れないものは除き,
+    # 編集可能インストールで同じパッケージが 2 回見つかる場合は 1 つにまとめる
     packages = sorted(
-        (dist.metadata["Name"], dist.version)
-        for dist in metadata.distributions()
-        if dist.metadata["Name"] is not None
+        {
+            (dist.metadata["Name"], dist.version)
+            for dist in metadata.distributions()
+            if dist.metadata["Name"] is not None
+        }
     )
 
     # 1 つの文字列にまとめる

@@ -1,0 +1,165 @@
+from omegaconf import OmegaConf
+import pytest
+from torch import nn, optim
+
+from ml_found.training.optim import (
+    build_optimizer, build_scheduler, step_scheduler
+)
+
+
+def make_optimizer(lr: float = 0.1) -> optim.Optimizer:
+    """
+    テスト用の SGD を作る関数
+
+    Parameters
+    ----------
+    lr: float = 0.1
+        学習率
+
+    Returns
+    -------
+    optimizer: optim.Optimizer
+        小さなモデルの SGD
+    """
+    # 小さなモデルのパラメータで SGD を作る
+    cfg = OmegaConf.create({"name": "SGD", "params": {"lr": lr}})
+    optimizer = build_optimizer(cfg, nn.Linear(2, 1).parameters())
+
+    return optimizer
+
+
+def get_lr(optimizer: optim.Optimizer) -> float:
+    """
+    現在の学習率を取得する関数
+
+    Parameters
+    ----------
+    optimizer: optim.Optimizer
+        学習率を調べる Optimizer
+
+    Returns
+    -------
+    lr: float
+        先頭のパラメータグループの学習率
+    """
+    # 先頭のパラメータグループから取り出す
+    lr = optimizer.param_groups[0]["lr"]
+
+    return lr
+
+
+def test_build_optimizer_with_params():
+    """
+    クラス名と引数から Optimizer が作られることを確かめる関数
+    """
+    # リストで書いた betas を含めて Adam を作る
+    cfg = OmegaConf.create(
+        {"name": "Adam", "params": {"lr": 0.01, "betas": [0.8, 0.9]}}
+    )
+    optimizer = build_optimizer(cfg, nn.Linear(2, 1).parameters())
+
+    assert isinstance(optimizer, optim.Adam)
+    assert get_lr(optimizer) == 0.01
+    assert tuple(optimizer.param_groups[0]["betas"]) == (0.8, 0.9)
+
+
+def test_build_optimizer_dotted_name():
+    """
+    モジュールのパスを含めた名前でも作れることを確かめる関数
+    """
+    # モジュールのパスを含めて指定する
+    cfg = OmegaConf.create({"name": "torch.optim.AdamW", "params": {}})
+    optimizer = build_optimizer(cfg, nn.Linear(2, 1).parameters())
+
+    assert isinstance(optimizer, optim.AdamW)
+
+
+@pytest.mark.parametrize(
+    "name", ["Adamm", "lr_scheduler", "no_such_module.Optimizer"]
+)
+def test_build_optimizer_invalid_name(name: str):
+    """
+    存在しない名前や Optimizer でない名前でエラーになることを確かめる関数
+    """
+    # 正しくない名前を指定する
+    cfg = OmegaConf.create({"name": name, "params": {}})
+
+    with pytest.raises(ValueError):
+        build_optimizer(cfg, nn.Linear(2, 1).parameters())
+
+
+def test_build_scheduler_none():
+    """
+    名前が null の場合は Scheduler を使わないことを確かめる関数
+    """
+    # 名前を null にする
+    cfg = OmegaConf.create({"name": None, "params": {}, "interval": "epoch"})
+    scheduler = build_scheduler(cfg, make_optimizer())
+
+    assert scheduler is None
+
+
+def test_step_lr():
+    """
+    StepLR で学習率が下がることを確かめる関数
+    """
+    # 1 回ごとに学習率を 0.5 倍にする StepLR を作る
+    optimizer = make_optimizer(lr=0.1)
+    cfg = OmegaConf.create(
+        {
+            "name": "StepLR", "params": {"step_size": 1, "gamma": 0.5},
+            "interval": "epoch"
+        }
+    )
+    scheduler = build_scheduler(cfg, optimizer)
+
+    # 2 回更新する
+    optimizer.step()
+    step_scheduler(scheduler)
+    optimizer.step()
+    step_scheduler(scheduler)
+
+    assert get_lr(optimizer) == pytest.approx(0.025)
+
+
+def test_reduce_lr_on_plateau():
+    """
+    ReduceLROnPlateau で改善しない場合に学習率が下がることを確かめる関数
+    """
+    # 1 回改善しなければ学習率を 0.1 倍にする ReduceLROnPlateau を作る
+    optimizer = make_optimizer(lr=0.1)
+    cfg = OmegaConf.create(
+        {
+            "name": "ReduceLROnPlateau",
+            "params": {"patience": 0, "factor": 0.1},
+            "interval": "epoch"
+        }
+    )
+    scheduler = build_scheduler(cfg, optimizer)
+
+    # 同じ値を続けて渡す
+    step_scheduler(scheduler, 1.0)
+    step_scheduler(scheduler, 1.0)
+
+    assert get_lr(optimizer) == pytest.approx(0.01)
+
+    # 指標の値を渡さないとエラーになる
+    with pytest.raises(ValueError):
+        step_scheduler(scheduler)
+
+
+def test_build_scheduler_invalid():
+    """
+    正しくない間隔や Scheduler でない名前でエラーになることを確かめる関数
+    """
+    # 間隔が正しくない場合
+    cfg = OmegaConf.create(
+        {"name": "StepLR", "params": {"step_size": 1}, "interval": "batch"}
+    )
+    with pytest.raises(ValueError):
+        build_scheduler(cfg, make_optimizer())
+
+    # Scheduler でない名前の場合
+    cfg = OmegaConf.create({"name": "Adam", "params": {}, "interval": "epoch"})
+    with pytest.raises(ValueError):
+        build_scheduler(cfg, make_optimizer())

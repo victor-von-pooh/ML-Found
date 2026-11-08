@@ -13,11 +13,11 @@ def get_keys(records: list[dict]) -> list[str]:
         エポックごとの記録
 
     Returns
-    -------
+    ----------
     keys: list[str]
         現れた順に並べた項目の名前
     """
-    # 途中から増えた項目も含めて現れた順に並べる
+    # 途中から増えた項目も含めて現れた順に整列
     keys = []
     for record in records:
         for key in record:
@@ -37,11 +37,11 @@ def get_metric_names(records: list[dict]) -> list[str]:
         エポックごとの記録
 
     Returns
-    -------
+    ----------
     names: list[str]
         train/ と valid/ を除いた指標の名前
     """
-    # train/loss と valid/loss は同じ loss として 1 つの図にまとめる
+    # train/loss と valid/loss は同じ loss として 1 つの図に集約
     names = []
     for key in get_keys(records):
         if key == "epoch":
@@ -67,7 +67,7 @@ def plot_metric(records: list[dict], name: str, output_path: str) -> None:
         画像の保存先のパス
 
     Returns
-    -------
+    ----------
     None
     """
     # 出力画像の設定
@@ -77,7 +77,7 @@ def plot_metric(records: list[dict], name: str, output_path: str) -> None:
     ax.set_xlabel("Epoch")
     ax.set_ylabel(name)
 
-    # train と valid, または接頭辞の無い指標を, 記録があるエポックだけ描く
+    # train と valid, または接頭辞の無い指標を, 記録があるエポックだけ描画
     keys = get_keys(records)
     for key in (f"train/{name}", f"valid/{name}", name):
         if key not in keys:
@@ -92,7 +92,7 @@ def plot_metric(records: list[dict], name: str, output_path: str) -> None:
             label=key
         )
 
-    # 凡例を表示して保存する
+    # 凡例を表示して保存
     ax.legend(bbox_to_anchor=(1.01, 1), loc="upper left", borderaxespad=0)
     fig.savefig(output_path)
     plt.close(fig)
@@ -110,11 +110,11 @@ def plot_history(records: list[dict], output_dir: str) -> list[Path]:
         画像の保存先のディレクトリ
 
     Returns
-    -------
+    ----------
     paths: list[Path]
         保存した画像のパス
     """
-    # 指標ごとに <指標名>_curve.png として保存する
+    # 指標ごとに <指標名>_curve.png として保存
     paths = []
     for name in get_metric_names(records):
         path = Path(output_dir) / f"{name}_curve.png"

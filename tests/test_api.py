@@ -24,10 +24,10 @@ def test_import_in_fresh_process(module: str) -> None:
         import するモジュールの名前
 
     Returns
-    -------
+    ----------
     None
     """
-    # import の順番で結果が変わらないように新しいプロセスで import する
+    # import の順番で結果が変わらないように新しいプロセスで import
     result = subprocess.run(
         [sys.executable, "-c", f"import {module}"],
         capture_output=True, text=True
@@ -45,10 +45,10 @@ def test_public_api() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # 公開している名前が全て取得できる
+    # 公開している名前が全て取得可能
     for name in ml_found.__all__:
         assert hasattr(ml_found, name)
 

@@ -14,7 +14,7 @@ dependencies = [
     "matplotlib",
     "numpy",
     "omegaconf>=2.3",
-    "torch>=2.0",
+    "torch>=2.2",
     "tqdm"
 ]
 

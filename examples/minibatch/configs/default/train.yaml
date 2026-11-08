@@ -1,4 +1,4 @@
-# ML-Found が使う設定, 書かなかった項目は ML-Found の既定値になる
+# ML-Found が使う設定, 書かなかった項目は ML-Found の既定値
 experiment:
   name: wine
   seed: 42
@@ -14,7 +14,7 @@ trainer:
     use: true
     patience: 10
 
-# プロジェクト固有の設定, 項目は自由に追加できる
+# プロジェクト固有の設定, 項目は自由に追加可能
 data:
   valid_size: 0.2
   batch_size: 16

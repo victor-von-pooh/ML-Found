@@ -24,11 +24,11 @@ def make_experiment(tmp_path: Path, text: str = "") -> Experiment:
         default に加える YAML の内容
 
     Returns
-    -------
+    ----------
     experiment: Experiment
         cpu で進捗バーを出さない実験
     """
-    # cpu で進捗バーを出さない default と空の experiment を用意する
+    # cpu で進捗バーを出さない default と空の experiment を用意
     base = (
         "experiment:\n"
         "  name: test\n"
@@ -41,7 +41,7 @@ def make_experiment(tmp_path: Path, text: str = "") -> Experiment:
     experiment_path = tmp_path / "experiment.yaml"
     experiment_path.write_text("", encoding="utf-8")
 
-    # 実験を開始する
+    # 実験を開始
     cfg, diff = load_config(str(default_path), str(experiment_path))
     cfg.trainer.progress_bar = False
     experiment = start_experiment(cfg, diff, str(tmp_path))
@@ -65,11 +65,11 @@ def make_loader(
         エポックごとにデータを並べ替えるかどうか
 
     Returns
-    -------
+    ----------
     loader: DataLoader
         x と y を返す DataLoader
     """
-    # 1 次関数のデータを作る
+    # 1 次関数のデータの作成
     x = torch.linspace(-1, 1, n).unsqueeze(1)
     y = 2 * x + 1
     loader = DataLoader(
@@ -93,11 +93,11 @@ def regression_step(model: nn.Module, batch: tuple, phase: str) -> dict:
         train または valid
 
     Returns
-    -------
+    ----------
     outputs: dict
         平均二乗誤差と平均絶対誤差
     """
-    # 予測して誤差を求める
+    # 予測して誤差の計算
     x, y = batch
     pred = model(x)
     mse = nn.MSELoss()
@@ -116,11 +116,11 @@ def scripted_step(losses: list) -> Callable[[nn.Module, tuple, str], dict]:
         順に返す損失の値
 
     Returns
-    -------
+    ----------
     step: Callable[[nn.Module, tuple, str], dict]
         決めておいた損失を返す step
     """
-    # 呼ばれた回数を数える
+    # 呼ばれた回数のカウント
     values = iter(losses)
 
     def step(model: nn.Module, batch: tuple, phase: str) -> dict:
@@ -137,11 +137,11 @@ def scripted_step(losses: list) -> Callable[[nn.Module, tuple, str], dict]:
             train または valid
 
         Returns
-        -------
+        ----------
         outputs: dict
             決めておいた損失
         """
-        # 勾配が 0 になるようにモデルの出力に 0 を掛けて足す
+        # 勾配が 0 になるようにモデルの出力に 0 を掛けて加算
         outputs = {"loss": model(batch[0]).sum() * 0 + next(values)}
 
         return outputs
@@ -159,10 +159,10 @@ def test_fit_minibatch(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 線形回帰を学習する
+    # 線形回帰を学習
     experiment = make_experiment(
         tmp_path,
         "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
@@ -195,10 +195,10 @@ def test_fit_fullbatch(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # データ全体を 1 つの要素として渡す
+    # データ全体を 1 つの要素として受け渡し
     experiment = make_experiment(tmp_path, "trainer:\n  epochs: 5\n")
     x = torch.randn(32, 1)
     trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
@@ -218,10 +218,10 @@ def test_final_model_is_best(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 学習率が大きすぎて途中から悪化する設定で学習する
+    # 学習率が大きすぎて途中から悪化する設定で学習
     experiment = make_experiment(
         tmp_path,
         "optimizer:\n  name: SGD\n  params:\n    lr: 1.5\n"
@@ -250,10 +250,10 @@ def test_early_stopping(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 学習率 0 で全く改善しない設定にする
+    # 学習率 0 で全く改善しない設定
     experiment = make_experiment(
         tmp_path,
         "optimizer:\n  name: SGD\n  params:\n    lr: 0.0\n"
@@ -276,10 +276,10 @@ def test_resume_matches_uninterrupted(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # データを並べ替えながら 5 エポック続けて学習する
+    # データを並べ替えながら 5 エポック続けて学習
     text = (
         "optimizer:\n  name: Adam\n  params:\n    lr: 0.05\n"
         "scheduler:\n  name: StepLR\n  params:\n    step_size: 2\n"
@@ -291,7 +291,7 @@ def test_resume_matches_uninterrupted(tmp_path: Path) -> None:
         make_loader(shuffle=True)
     )
 
-    # 3 エポックで止めてから 5 エポックまで再開する
+    # 3 エポックで止めてから 5 エポックまで再開
     first = make_experiment(
         tmp_path / "first", text + "trainer:\n  epochs: 3\n"
     )
@@ -300,7 +300,7 @@ def test_resume_matches_uninterrupted(tmp_path: Path) -> None:
     )
     second = make_experiment(
         tmp_path / "second",
-        text + f"trainer:\n  epochs: 5\n"
+        text + "trainer:\n  epochs: 5\n"
         f"  resume_from: {first.run_dir / 'last.pt'}\n"
     )
     resumed_history = Trainer(nn.Linear(1, 1), second, regression_step).fit(
@@ -328,16 +328,16 @@ def test_resume_relative_path(
         実行する場所を変えるために pytest が用意するもの
 
     Returns
-    -------
+    ----------
     None
     """
-    # プロジェクトのディレクトリで 2 エポック学習する
+    # プロジェクトのディレクトリで 2 エポック学習
     project_dir = tmp_path / "project"
     first = make_experiment(project_dir, "trainer:\n  epochs: 2\n")
     Trainer(nn.Linear(1, 1), first, regression_step).fit(make_loader())
     relative_path = (first.run_dir / "last.pt").relative_to(project_dir)
 
-    # プロジェクトの外に移動し, 相対パスで指定して再開する
+    # プロジェクトの外に移動し, 相対パスで指定して再開
     monkeypatch.chdir(tmp_path)
     text = f"trainer:\n  epochs: 3\n  resume_from: {relative_path}\n"
     second = make_experiment(project_dir, text)
@@ -358,18 +358,18 @@ def test_resume_keeps_best(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 損失が 3, 2, 1 と下がる 3 エポックを学習する
+    # 損失が 3, 2, 1 と下がる 3 エポックを学習
     first = make_experiment(tmp_path / "first", "trainer:\n  epochs: 3\n")
     Trainer(nn.Linear(1, 1), first, scripted_step([3.0, 2.0, 1.0])).fit(
         [(torch.ones(1, 1),)]
     )
 
-    # 損失が 1.5 に悪化する 4 エポック目を再開して学習する
+    # 損失が 1.5 に悪化する 4 エポック目を再開して学習
     text = (
-        f"trainer:\n  epochs: 4\n"
+        "trainer:\n  epochs: 4\n"
         f"  resume_from: {first.run_dir / 'last.pt'}\n"
     )
     second = make_experiment(tmp_path / "second", text)
@@ -394,13 +394,13 @@ def test_resume_early_stopping(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 損失が変わらず, 2 回待つと 3 エポック目で止まる設定にする
+    # 損失が変わらず, 2 回待つと 3 エポック目で止まる設定
     text = "  early_stopping:\n    use: true\n    patience: 2\n"
 
-    # 2 エポックで止めてから再開する
+    # 2 エポックで止めてから再開
     first = make_experiment(
         tmp_path / "first", "trainer:\n  epochs: 2\n" + text
     )
@@ -409,7 +409,7 @@ def test_resume_early_stopping(tmp_path: Path) -> None:
     )
     second = make_experiment(
         tmp_path / "second",
-        f"trainer:\n  epochs: 10\n"
+        "trainer:\n  epochs: 10\n"
         f"  resume_from: {first.run_dir / 'last.pt'}\n" + text
     )
     history = Trainer(
@@ -418,10 +418,10 @@ def test_resume_early_stopping(tmp_path: Path) -> None:
 
     assert history.get("epoch") == [1, 2, 3]
 
-    # 止めた学習を再開しても学習しない
+    # 止めた学習を再開しても学習しないことの確認
     third = make_experiment(
         tmp_path / "third",
-        f"trainer:\n  epochs: 10\n"
+        "trainer:\n  epochs: 10\n"
         f"  resume_from: {second.run_dir / 'last.pt'}\n" + text
     )
     history = Trainer(nn.Linear(1, 1), third, scripted_step([])).fit(
@@ -443,10 +443,10 @@ def test_resume_without_best_file(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 学習率が大きすぎて途中から悪化する設定を best.pt を保存せずに学習する
+    # 学習率が大きすぎて途中から悪化する設定を best.pt を保存せずに学習
     text = (
         "optimizer:\n  name: SGD\n  params:\n    lr: 1.5\n"
         "trainer:\n  checkpoint:\n    save_best: false\n"
@@ -480,10 +480,10 @@ def test_resume_chain_keeps_best_weights(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # best.pt を残さずに, 損失が 3, 1, 2 となる 3 エポックを学習する
+    # best.pt を残さずに, 損失が 3, 1, 2 となる 3 エポックを学習
     first = make_experiment(
         tmp_path / "first",
         "trainer:\n  epochs: 3\n  checkpoint:\n    save_best: false\n"
@@ -492,20 +492,20 @@ def test_resume_chain_keeps_best_weights(tmp_path: Path) -> None:
         [(torch.ones(1, 1),)]
     )
 
-    # best.pt を残す設定で, 改善しない 4 エポック目を再開して学習する
+    # best.pt を残す設定で, 改善しない 4 エポック目を再開して学習
     second = make_experiment(
         tmp_path / "second",
-        f"trainer:\n  epochs: 4\n"
+        "trainer:\n  epochs: 4\n"
         f"  resume_from: {first.run_dir / 'last.pt'}\n"
     )
     Trainer(nn.Linear(1, 1), second, scripted_step([2.5])).fit(
         [(torch.ones(1, 1),)]
     )
 
-    # さらに 5 エポック目を再開して学習する
+    # さらに 5 エポック目を再開して学習
     third = make_experiment(
         tmp_path / "third",
-        f"trainer:\n  epochs: 5\n"
+        "trainer:\n  epochs: 5\n"
         f"  resume_from: {second.run_dir / 'last.pt'}\n"
     )
     trainer = Trainer(nn.Linear(1, 1), third, scripted_step([2.6]))
@@ -525,17 +525,17 @@ def test_resume_with_different_monitor(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 小さい方が良い向きで学習する
+    # 小さい方が良い向きで学習
     first = make_experiment(tmp_path / "first", "trainer:\n  epochs: 1\n")
     Trainer(nn.Linear(1, 1), first, regression_step).fit(make_loader())
 
-    # 大きい方が良い向きに変えて再開する
+    # 大きい方が良い向きに変えて再開
     second = make_experiment(
         tmp_path / "second",
-        f"trainer:\n  epochs: 2\n  mode: max\n"
+        "trainer:\n  epochs: 2\n  mode: max\n"
         f"  resume_from: {first.run_dir / 'last.pt'}\n"
     )
     trainer = Trainer(nn.Linear(1, 1), second, regression_step)
@@ -554,10 +554,10 @@ def test_nan_monitor(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 監視する指標だけが nan になる step を用意する
+    # 監視する指標だけが nan になる step を用意
     def nan_auc_step(model: nn.Module, batch: tuple, phase: str) -> dict:
         """
         損失と nan の指標を返す関数
@@ -572,11 +572,11 @@ def test_nan_monitor(tmp_path: Path) -> None:
             train または valid
 
         Returns
-        -------
+        ----------
         outputs: dict
             平均二乗誤差と nan の指標
         """
-        # 平均二乗誤差に nan の指標を加える
+        # 平均二乗誤差に nan の指標の追加
         outputs = regression_step(model, batch, phase)
         outputs["auc"] = float("nan")
 
@@ -601,10 +601,10 @@ def test_scheduler_and_clipping(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # step ごとに学習率を下げ, 勾配を切る設定にする
+    # step ごとに学習率を下げ, 勾配を切る設定
     experiment = make_experiment(
         tmp_path,
         "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
@@ -628,10 +628,10 @@ def test_override_step(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # step を上書きし, 呼ばれた時のエポックとパラメータの更新回数を控える Trainer を作る
+    # step を上書きし, 呼ばれた時のエポックとパラメータの更新回数を控える Trainer の作成
     class RegressionTrainer(Trainer):
         def step(self, batch: tuple, phase: str) -> dict:
             """
@@ -645,16 +645,17 @@ def test_override_step(tmp_path: Path) -> None:
                 train または valid
 
             Returns
-            -------
+            ----------
             outputs: dict
                 平均二乗誤差
             """
-            # エポックと更新回数を控えてから誤差を求める
+            # エポックと更新回数を控えてから誤差の計算
             self.calls.append((phase, self.epoch, self.global_step))
             outputs = regression_step(self.model, batch, phase)
 
             return outputs
 
+    # 2 エポック学習して呼ばれた順を記録
     experiment = make_experiment(tmp_path, "trainer:\n  epochs: 2\n")
     trainer = RegressionTrainer(nn.Linear(1, 1), experiment)
     trainer.calls = []
@@ -676,10 +677,10 @@ def test_phase_with_masks(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # GNN のように学習用と検証用のマスクを持つ 1 つのデータを作る
+    # GNN のように学習用と検証用のマスクを持つ 1 つのデータの作成
     x = torch.linspace(-1, 1, 10).unsqueeze(1)
     data = {
         "x": x, "y": 2 * x + 1,
@@ -701,11 +702,11 @@ def test_phase_with_masks(tmp_path: Path) -> None:
             train または valid
 
         Returns
-        -------
+        ----------
         outputs: dict
             平均二乗誤差と使ったサンプル数
         """
-        # phase に応じたマスクで選んだノードだけ誤差を求める
+        # phase に応じたマスクで選んだノードだけ誤差の計算
         mask = batch[f"{phase}_mask"]
         pred = model(batch["x"])
         mse = nn.MSELoss()
@@ -716,7 +717,7 @@ def test_phase_with_masks(tmp_path: Path) -> None:
 
         return outputs
 
-    # 同じデータを学習用と検証用の両方に渡す
+    # 同じデータを学習用と検証用の両方に受け渡し
     experiment = make_experiment(tmp_path, "trainer:\n  epochs: 1\n")
     history = Trainer(nn.Linear(1, 1), experiment, masked_step).fit(
         [data], [data]
@@ -736,10 +737,10 @@ def test_on_epoch_end(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # エポック全体の予測を集めて最大誤差を求める Trainer を作る
+    # エポック全体の予測を集めて最大誤差を求める Trainer の作成
     class MaxErrorTrainer(Trainer):
         def on_epoch_start(self, phase: str) -> None:
             """
@@ -751,10 +752,10 @@ def test_on_epoch_end(tmp_path: Path) -> None:
                 train または valid
 
             Returns
-            -------
+            ----------
             None
             """
-            # 入れ物を空にする
+            # 入れ物を空に初期化
             self.errors = []
 
         def step(self, batch: tuple, phase: str) -> dict:
@@ -769,11 +770,11 @@ def test_on_epoch_end(tmp_path: Path) -> None:
                 train または valid
 
             Returns
-            -------
+            ----------
             outputs: dict
                 平均二乗誤差
             """
-            # 予測して誤差を集める
+            # 予測して誤差の収集
             x, y = batch
             pred = self.model(x)
             self.errors.append((pred - y).abs().detach())
@@ -792,15 +793,16 @@ def test_on_epoch_end(tmp_path: Path) -> None:
                 train または valid
 
             Returns
-            -------
+            ----------
             metrics: dict
                 最大誤差
             """
-            # 全バッチの誤差をつなげて最大値を取る
+            # 全バッチの誤差をつなげて最大値を取得
             metrics = {"max_error": torch.cat(self.errors).max()}
 
             return metrics
 
+    # 学習用と検証用のデータで 1 エポック学習
     experiment = make_experiment(tmp_path, "trainer:\n  epochs: 1\n")
     history = MaxErrorTrainer(nn.Linear(1, 1), experiment).fit(
         make_loader(), make_loader()
@@ -820,10 +822,10 @@ def test_custom_scheduler(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # step ごとに学習率を変える OneCycleLR を作る
+    # step ごとに学習率を変える OneCycleLR の作成
     experiment = make_experiment(
         tmp_path, "scheduler:\n  interval: step\ntrainer:\n  epochs: 2\n"
     )
@@ -840,7 +842,7 @@ def test_custom_scheduler(tmp_path: Path) -> None:
     assert trainer.scheduler is scheduler
     assert trainer.global_step == 8
 
-    # 別の Optimizer で作った Scheduler はエラーになる
+    # 別の Optimizer で作った Scheduler はエラー
     other = torch.optim.SGD(nn.Linear(1, 1).parameters(), lr=0.1)
     with pytest.raises(ValueError, match="optimizer"):
         Trainer(
@@ -848,7 +850,7 @@ def test_custom_scheduler(tmp_path: Path) -> None:
             scheduler=torch.optim.lr_scheduler.StepLR(other, step_size=1)
         )
 
-    # 間隔の typo はエラーになる
+    # 間隔の typo はエラー
     typo = make_experiment(
         tmp_path / "typo", "scheduler:\n  interval: Epoch\n"
     )
@@ -860,7 +862,7 @@ def test_custom_scheduler(tmp_path: Path) -> None:
             torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)
         )
 
-    # 監視する指標と向きが違う ReduceLROnPlateau はエラーになる
+    # 監視する指標と向きが違う ReduceLROnPlateau はエラー
     plateau = make_experiment(tmp_path / "plateau", "trainer:\n  mode: max\n")
     with pytest.raises(ValueError, match="mode"):
         Trainer(
@@ -893,10 +895,10 @@ def test_invalid_outputs(tmp_path: Path, outputs: dict, message: str) -> None:
         エラーメッセージに含まれるべき文字列
 
     Returns
-    -------
+    ----------
     None
     """
-    # 正しくない戻り値を返す step で学習する
+    # 正しくない戻り値を返す step で学習
     experiment = make_experiment(tmp_path, "trainer:\n  epochs: 1\n")
     trainer = Trainer(nn.Linear(1, 1), experiment, lambda m, b, p: outputs)
 
@@ -914,7 +916,7 @@ def test_errors(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
     # step_fn も上書きも無い場合

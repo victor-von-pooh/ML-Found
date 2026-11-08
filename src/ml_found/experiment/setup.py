@@ -44,13 +44,13 @@ def check_name(name: str) -> None:
         実験の名前
 
     Returns
-    -------
+    ----------
     None
     """
-    # 出力先の外にディレクトリを作らないように区切り文字や .. を禁止する
+    # 出力先の外にディレクトリを作らないように区切り文字や .. を禁止
     if name in ("", ".", "..") or "/" in name or "\\" in name:
         raise ValueError(
-            f"experiment.name はディレクトリ名として使える名前にしてください: "
+            "experiment.name はディレクトリ名として使える名前にしてください: "
             f"{name}"
         )
 
@@ -73,19 +73,19 @@ def make_run_dir(
         実験を開始した日時
 
     Returns
-    -------
+    ----------
     run_dir: Path
         <output_dir>/<name>/<日付>/<時刻>/ のディレクトリ
     """
-    # 実験の名前を確かめる
+    # 実験の名前の確認
     check_name(name)
 
-    # 日付のディレクトリまで作る
+    # 日付のディレクトリまで作成
     date_dir = project_dir / output_dir / name / now.strftime("%Y-%m-%d")
     date_dir.mkdir(parents=True, exist_ok=True)
 
-    # 同じ秒に複数の実験を始めた場合は連番を付けて上書きを防ぐ
-    # 並列に実行しても衝突しないように, 作れなかった場合に次の番号を試す
+    # 同じ秒に複数の実験を始めた場合は連番を付けて上書きの防止
+    # 並列に実行しても衝突しないように, 作れなかった場合に次の番号の試行
     time_str = now.strftime("%H-%M-%S")
     count = 0
     while True:
@@ -116,52 +116,52 @@ def start_experiment(
         ML-Found を使っているプロジェクトのディレクトリ, None の場合は実行した場所
 
     Returns
-    -------
+    ----------
     experiment: Experiment
         config, プロジェクトのディレクトリ, 保存先, ロガー, デバイスをまとめたもの
     """
-    # プロジェクトのディレクトリを決める
+    # プロジェクトのディレクトリの決定
     if project_dir is None:
         project_root = Path.cwd()
     else:
         project_root = Path(project_dir).resolve()
 
-    # 空の出力先が残らないように, ディレクトリを作る前にデバイスを確かめる
+    # 空の出力先が残らないように, ディレクトリを作る前にデバイスの確認
     device = get_device(cfg.experiment.device)
 
-    # 出力先を作ると未コミットの変更として数えられるので, 先に環境の情報を集める
+    # 出力先を作ると未コミットの変更として数えられるので, 先に環境の情報の収集
     env_info = collect_env_info(str(project_root))
     git_diff = get_git_diff(str(project_root))
 
-    # 実験結果を保存するディレクトリを作る
+    # 実験結果を保存するディレクトリの作成
     run_dir = make_run_dir(
         project_root, cfg.experiment.output_dir, cfg.experiment.name,
         datetime.now()
     )
 
-    # 学習に使った config と差分を保存する
+    # 学習に使った config と差分を保存
     save_config(cfg, diff, str(run_dir))
 
-    # 未コミットの変更がある場合は再現できるように差分を保存する
+    # 未コミットの変更がある場合は再現できるように差分を保存
     if git_diff != b"":
         (run_dir / "git_diff.patch").write_bytes(git_diff)
 
-    # ロガーを設定する
+    # ロガーを設定し, 保存先と差分を記録
     logger = get_logger(
         str(run_dir / "train.log"), cfg.experiment.log_format
     )
     logger.info(f"保存先: {run_dir}")
     logger.info(f"default との差分:\n\n{format_diff(diff)}")
 
-    # 乱数シードを固定する
+    # 乱数シードを固定して記録
     fix_seed(cfg.experiment.seed, cfg.experiment.deterministic)
     logger.info(f"乱数シード: {cfg.experiment.seed}")
 
-    # 実験環境の情報を記録する
+    # 実験環境の情報とデバイスを記録
     log_env_info(logger, env_info)
     logger.info(f"デバイス: {device}")
 
-    # まとめて返す
+    # まとめて返却
     experiment = Experiment(
         cfg=cfg, project_dir=project_root, run_dir=run_dir, logger=logger,
         device=device

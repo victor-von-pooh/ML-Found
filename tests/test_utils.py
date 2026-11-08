@@ -15,10 +15,10 @@ def test_get_device_explicit() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # cpu を指定して取得する
+    # cpu を指定して取得
     device = get_device("cpu")
 
     assert device == torch.device("cpu")
@@ -33,10 +33,10 @@ def test_get_device_auto() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # 自動で選ばせる
+    # 自動で選択
     device = get_device("auto")
 
     assert device.type in ("cuda", "mps", "cpu")
@@ -51,17 +51,17 @@ def test_move_to_device_nested() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # テンソル, リスト, タプル, 辞書, テンソル以外を混ぜたバッチを作る
+    # テンソル, リスト, タプル, 辞書, テンソル以外を混ぜたバッチの作成
     batch = {
         "x": torch.zeros(2, 3),
         "pair": (torch.ones(2), [torch.ones(1), 5]),
         "name": "sample"
     }
 
-    # cpu に移す
+    # cpu に移動
     moved = move_to_device(batch, torch.device("cpu"))
 
     assert isinstance(moved, dict)
@@ -81,14 +81,14 @@ def test_move_to_device_namedtuple() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # namedtuple のバッチを作る
+    # namedtuple のバッチの作成
     Batch = namedtuple("Batch", ["x", "y"])
     batch = Batch(x=torch.zeros(2), y=torch.ones(2))
 
-    # cpu に移す
+    # cpu に移動
     moved = move_to_device(batch, torch.device("cpu"))
 
     assert isinstance(moved, Batch)
@@ -104,10 +104,10 @@ def test_get_batch_size() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # テンソル, タプル, 辞書, テンソルを含まないものを調べる
+    # テンソル, タプル, 辞書, テンソルを含まないものの確認
     x = torch.zeros(4, 3)
 
     assert get_batch_size(x) == 4

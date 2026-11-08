@@ -16,20 +16,20 @@ def fix_seed(seed: int, deterministic: bool = True) -> None:
         cuDNN の計算を毎回同じ結果になるようにするかどうか
 
     Returns
-    -------
+    ----------
     None
     """
-    # Python 標準の乱数を固定する
+    # Python 標準の乱数を固定
     random.seed(seed)
 
-    # NumPy の乱数を固定する
+    # NumPy の乱数を固定
     np.random.seed(seed)
 
-    # PyTorch の乱数を CPU, GPU ともに固定する
+    # PyTorch の乱数を CPU, GPU ともに固定
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    # 速度より再現性を優先する場合は cuDNN の自動選択を止める
+    # 速度より再現性を優先する場合は cuDNN の自動選択の停止
     torch.backends.cudnn.deterministic = deterministic
     torch.backends.cudnn.benchmark = not deterministic
 
@@ -43,18 +43,18 @@ def get_rng_state() -> dict:
     None
 
     Returns
-    -------
+    ----------
     state: dict
         Python, NumPy, PyTorch の乱数の状態
     """
-    # NumPy の状態は配列を含み安全に読み込めないので整数のリストにする
+    # NumPy の状態は配列を含み安全に読み込めないので整数のリストに変換
     np_state = np.random.get_state()
     numpy_state = [
         np_state[0], np_state[1].tolist(), np_state[2], np_state[3],
         np_state[4]
     ]
 
-    # 各ライブラリの状態をまとめる
+    # 各ライブラリの状態を集約
     state = {
         "python": random.getstate(),
         "numpy": numpy_state,
@@ -82,10 +82,10 @@ def set_rng_state(state: dict) -> None:
         get_rng_state で取得した乱数の状態
 
     Returns
-    -------
+    ----------
     None
     """
-    # Python と NumPy の状態を戻す
+    # Python と NumPy の状態の復元
     random.setstate(state["python"])
     numpy_state = state["numpy"]
     np.random.set_state(
@@ -95,7 +95,7 @@ def set_rng_state(state: dict) -> None:
         )
     )
 
-    # PyTorch の状態を CPU, GPU の順に戻す
+    # PyTorch の状態を CPU, GPU の順に復元
     torch.set_rng_state(state["torch"].cpu())
     if state["cuda"] is not None and torch.cuda.is_available():
         torch.cuda.set_rng_state_all([s.cpu() for s in state["cuda"]])

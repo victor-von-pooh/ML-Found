@@ -11,10 +11,10 @@ def check_device(device: torch.device) -> None:
         確かめるデバイス
 
     Returns
-    -------
+    ----------
     None
     """
-    # CUDA が使えない場合や, GPU の番号が存在しない場合はエラーにする
+    # CUDA が使えない場合や, GPU の番号が存在しない場合はエラー
     if device.type == "cuda":
         if not torch.cuda.is_available():
             raise ValueError("CUDA が使えません")
@@ -23,7 +23,7 @@ def check_device(device: torch.device) -> None:
         ):
             raise ValueError(f"GPU {device.index} がありません")
 
-    # MPS が使えない場合はエラーにする
+    # MPS が使えない場合はエラー
     if device.type == "mps" and not torch.backends.mps.is_available():
         raise ValueError("MPS が使えません")
 
@@ -38,11 +38,11 @@ def get_device(device: str = "auto") -> torch.device:
         デバイス名, auto の場合は使えるものから自動で選ぶ
 
     Returns
-    -------
+    ----------
     selected: torch.device
         学習に使うデバイス
     """
-    # 指定されている場合は使えることを確かめてから使う
+    # 指定されている場合は使えることを確かめてから使用
     if device != "auto":
         try:
             selected = torch.device(device)
@@ -51,7 +51,7 @@ def get_device(device: str = "auto") -> torch.device:
         check_device(selected)
         return selected
 
-    # cuda, mps, cpu の順に使えるものを選ぶ
+    # cuda, mps, cpu の順に使えるものの選択
     if torch.cuda.is_available():
         selected = torch.device("cuda")
     elif torch.backends.mps.is_available():

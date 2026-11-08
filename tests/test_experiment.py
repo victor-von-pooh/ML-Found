@@ -28,18 +28,18 @@ def run_experiment(
         experiment の YAML の内容
 
     Returns
-    -------
+    ----------
     experiment: Experiment
         開始した実験
     """
-    # default と experiment を書き出して読み込む
+    # default と experiment を書き出して読み込み
     default_path = project_dir / "default.yaml"
     default_path.write_text(default_text, encoding="utf-8")
     experiment_path = project_dir / "experiment.yaml"
     experiment_path.write_text(experiment_text, encoding="utf-8")
     cfg, diff = load_config(str(default_path), str(experiment_path))
 
-    # 実験を開始する
+    # 実験を開始
     experiment = start_experiment(cfg, diff, str(project_dir))
 
     return experiment
@@ -57,10 +57,10 @@ def git(args: list, repo_dir: Path) -> None:
         リポジトリのディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 環境に依存しないようにユーザー名とメールアドレスを指定して実行する
+    # 環境に依存しないようにユーザー名とメールアドレスを指定して実行
     subprocess.run(
         ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
          *args],
@@ -78,10 +78,10 @@ def test_make_run_dir_no_overwrite(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 同じ日時で 3 回作る
+    # 同じ日時で 3 回作成
     now = datetime(2026, 11, 8, 12, 34, 56)
     dirs = [make_run_dir(tmp_path, "outputs", "exp", now) for _ in range(3)]
 
@@ -103,7 +103,7 @@ def test_make_run_dir_invalid_name(tmp_path: Path, name: str) -> None:
         正しくない実験の名前
 
     Returns
-    -------
+    ----------
     None
     """
     with pytest.raises(ValueError, match="experiment.name"):
@@ -120,10 +120,10 @@ def test_start_experiment(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 実験を開始する
+    # 実験を開始
     experiment = run_experiment(
         tmp_path, "experiment:\n  name: sample\n  device: cpu\n",
         "trainer:\n  epochs: 3\n"
@@ -148,10 +148,10 @@ def test_git_info_before_run_dir(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # outputs を無視しないリポジトリを作り, config を commit する
+    # outputs を無視しないリポジトリを作り, config を commit
     default_text = "experiment:\n  device: cpu\n"
     (tmp_path / "default.yaml").write_text(default_text, encoding="utf-8")
     (tmp_path / "experiment.yaml").write_text("", encoding="utf-8")
@@ -159,14 +159,14 @@ def test_git_info_before_run_dir(tmp_path: Path) -> None:
     git(["add", "."], tmp_path)
     git(["commit", "-m", "init"], tmp_path)
 
-    # 変更が無い状態で実験を開始する
+    # 変更が無い状態で実験を開始
     experiment = run_experiment(tmp_path, default_text)
     log_text = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
 
-    assert "uncommitted changes: 0 files" in log_text
+    assert "未コミットの変更: 0 ファイル" in log_text
     assert not (experiment.run_dir / "git_diff.patch").exists()
 
-    # commit 済みのファイルを変更して実験を開始する
+    # commit 済みのファイルを変更して実験を開始
     experiment = run_experiment(tmp_path, default_text + "# changed\n")
     patch = (experiment.run_dir / "git_diff.patch").read_text(
         encoding="utf-8"
@@ -185,10 +185,10 @@ def test_git_diff_patch(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 末尾が空行のファイルを commit する
+    # 末尾が空行のファイルを commit
     default_text = "experiment:\n  device: cpu\n"
     (tmp_path / "default.yaml").write_text(default_text, encoding="utf-8")
     (tmp_path / "experiment.yaml").write_text("", encoding="utf-8")
@@ -197,17 +197,17 @@ def test_git_diff_patch(tmp_path: Path) -> None:
     git(["add", "."], tmp_path)
     git(["commit", "-m", "init"], tmp_path)
 
-    # commit 済みのファイルを変え, 未追跡のファイルと UTF-8 でないファイルを加える
+    # commit 済みのファイルを変え, 未追跡のファイルと UTF-8 でないファイルの追加
     (tmp_path / "f.txt").write_text("a\nB\n\nc\n\n", encoding="utf-8")
     (tmp_path / "new.py").write_text("x = 1\n", encoding="utf-8")
     (tmp_path / "latin1.txt").write_bytes("café\n".encode("latin-1"))
 
-    # 実験を開始する
+    # 実験を開始
     experiment = run_experiment(tmp_path, default_text)
     patch_path = experiment.run_dir / "git_diff.patch"
     patch = patch_path.read_bytes()
 
-    # 差分を逆向きに適用できるかを確かめる
+    # 差分を逆向きに適用できるかの確認
     result = subprocess.run(
         ["git", "apply", "--check", "-R", str(patch_path)],
         cwd=tmp_path, capture_output=True
@@ -228,10 +228,10 @@ def test_invalid_device(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # この環境で使えないデバイスを選ぶ
+    # この環境で使えないデバイスの選択
     device = "cpuu" if torch.cuda.is_available() else "cuda"
 
     with pytest.raises(ValueError):
@@ -248,10 +248,10 @@ def test_ml_found_info() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # ML-Found のバージョンの情報を取得する
+    # ML-Found のバージョンの情報を取得
     info = get_ml_found_info()
 
     assert "commit id:" in info

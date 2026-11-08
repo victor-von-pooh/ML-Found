@@ -16,11 +16,11 @@ def to_float(value: Any) -> float:
         指標の値, テンソルまたは数値
 
     Returns
-    -------
+    ----------
     number: float
         float にした値
     """
-    # テンソルの場合は 1 つの値であることを確かめ, 計算グラフから切り離して取り出す
+    # テンソルの場合は 1 つの値であることを確かめ, 計算グラフから切り離して取り出し
     if isinstance(value, torch.Tensor):
         if value.numel() != 1:
             raise ValueError(
@@ -35,7 +35,7 @@ def to_float(value: Any) -> float:
 
 class MetricTracker:
     def __init__(self):
-        # 指標ごとの重み付きの合計と重みの合計を保存する
+        # 指標ごとの重み付きの合計と重みの合計を保存
         self.sums: dict[str, float] = {}
         self.counts: dict[str, float] = {}
 
@@ -51,10 +51,10 @@ class MetricTracker:
             バッチのサンプル数, バッチごとの平均値をサンプル数で重み付けする
 
         Returns
-        -------
+        ----------
         None
         """
-        # 平均値にサンプル数を掛けて足し込む
+        # 平均値にサンプル数を掛けて加算
         for key, value in metrics.items():
             self.sums[key] = self.sums.get(key, 0.0) + to_float(value) * n
             self.counts[key] = self.counts.get(key, 0.0) + n
@@ -68,11 +68,11 @@ class MetricTracker:
         None
 
         Returns
-        -------
+        ----------
         means: dict[str, float]
             指標ごとの平均
         """
-        # 重み付きの合計を重みの合計で割る
+        # 重み付きの合計を重みの合計で除算
         means = {
             key: self.sums[key] / self.counts[key] for key in self.sums
         }
@@ -88,17 +88,17 @@ class MetricTracker:
         None
 
         Returns
-        -------
+        ----------
         None
         """
-        # 合計を空にする
+        # 合計を空に初期化
         self.sums = {}
         self.counts = {}
 
 
 class History:
     def __init__(self):
-        # エポックごとの記録を保存する
+        # エポックごとの記録を保存
         self.records: list[dict] = []
 
     def append(self, record: dict) -> None:
@@ -111,10 +111,10 @@ class History:
             epoch と指標の名前と値
 
         Returns
-        -------
+        ----------
         None
         """
-        # 記録を末尾に加える
+        # 記録を末尾に追加
         self.records.append(dict(record))
 
     def keys(self) -> list[str]:
@@ -126,11 +126,11 @@ class History:
         None
 
         Returns
-        -------
+        ----------
         names: list[str]
             現れた順に並べた項目の名前
         """
-        # 途中から増えた項目も含めて現れた順に並べる
+        # 途中から増えた項目も含めて現れた順に整列
         names = get_keys(self.records)
 
         return names
@@ -145,11 +145,11 @@ class History:
             項目の名前
 
         Returns
-        -------
+        ----------
         values: list
             エポック順の値, 記録されていないエポックは None
         """
-        # エポックごとに値を取り出す
+        # エポックごとに値の取り出し
         values = [record.get(key) for record in self.records]
 
         return values
@@ -164,10 +164,10 @@ class History:
             保存先のパス
 
         Returns
-        -------
+        ----------
         None
         """
-        # 全項目を列にして 1 エポック 1 行で書き出す
+        # 全項目を列にして 1 エポック 1 行で書き出し
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=self.keys())
             writer.writeheader()
@@ -182,11 +182,11 @@ class History:
         None
 
         Returns
-        -------
+        ----------
         state: dict
             エポックごとの記録
         """
-        # 後から書き換わらないように記録を複製して渡す
+        # 後から書き換わらないように記録を複製して受け渡し
         state = {"records": [dict(record) for record in self.records]}
 
         return state
@@ -201,8 +201,8 @@ class History:
             state_dict で取得した記録
 
         Returns
-        -------
+        ----------
         None
         """
-        # 記録を置き換える
+        # 記録の置き換え
         self.records = [dict(record) for record in state["records"]]

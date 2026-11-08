@@ -16,10 +16,10 @@ def check_mode(mode: str) -> None:
         小さい方が良い場合は min, 大きい方が良い場合は max
 
     Returns
-    -------
+    ----------
     None
     """
-    # min と max 以外はエラーにする
+    # min と max 以外はエラー
     if mode not in ("min", "max"):
         raise ValueError(f"mode は min か max にしてください: {mode}")
 
@@ -42,16 +42,16 @@ def is_improved(
         これより小さい変化は改善とみなさない
 
     Returns
-    -------
+    ----------
     improved: bool
         改善したかどうか
     """
-    # 最良値がまだ無い場合は改善とみなす
+    # 最良値がまだ無い場合は改善と判断
     if best is None:
         improved = True
         return improved
 
-    # 向きに応じて min_delta 以上良くなったかを判定する
+    # 向きに応じて min_delta 以上良くなったかを判定
     if mode == "min":
         improved = value < best - min_delta
     else:
@@ -70,12 +70,12 @@ def copy_state_dict(state_dict: dict) -> dict:
         model.state_dict() で取得した重み
 
     Returns
-    -------
+    ----------
     copied: dict
         CPU 上に複製した重み
     """
     # state_dict().copy() は辞書だけの複製で中身のテンソルは学習で書き換わるので,
-    # テンソルごと CPU 上に複製する
+    # テンソルごと CPU 上に複製
     copied = {}
     for key, value in state_dict.items():
         if isinstance(value, torch.Tensor):
@@ -98,10 +98,10 @@ def save_checkpoint(state: dict, path: Path) -> None:
         保存先のパス
 
     Returns
-    -------
+    ----------
     None
     """
-    # 書き込み中に止まっても壊れたファイルが残らないように一時ファイルを経由する
+    # 書き込み中に止まっても壊れたファイルが残らないように一時ファイルを経由
     tmp_path = path.with_name(f"{path.name}.tmp")
     torch.save(state, tmp_path)
     tmp_path.replace(path)
@@ -119,11 +119,11 @@ def load_checkpoint(path: str, device: torch.device) -> dict:
         テンソルを配置するデバイス
 
     Returns
-    -------
+    ----------
     state: dict
         保存されていた内容
     """
-    # 任意のコードが実行されないようにテンソルと基本的な型だけを読み込む
+    # 任意のコードが実行されないようにテンソルと基本的な型だけの読み込み
     state = torch.load(path, map_location=device, weights_only=True)
 
     return state
@@ -133,15 +133,15 @@ class EarlyStopping:
     def __init__(
         self, patience: int, min_delta: float = 0.0, mode: str = "min"
     ):
-        # 指標の良し悪しの向きを確かめる
+        # 指標の良し悪しの向きの確認
         check_mode(mode)
 
-        # 待つ回数, 改善とみなす最小の変化, 良し悪しの向きを保存する
+        # 待つ回数, 改善とみなす最小の変化, 良し悪しの向きを保存
         self.patience = patience
         self.min_delta = min_delta
         self.mode = mode
 
-        # これまでの最良値, 改善しなかった回数, 既に止めたかどうかを保存する
+        # これまでの最良値, 改善しなかった回数, 既に止めたかどうかを保存
         self.best: Optional[float] = None
         self.counter = 0
         self.stopped = False
@@ -156,18 +156,18 @@ class EarlyStopping:
             今回の指標の値
 
         Returns
-        -------
+        ----------
         should_stop: bool
             学習を止めるかどうか
         """
-        # 改善した場合は最良値を更新し, しなかった場合は回数を数える
+        # 改善した場合は最良値を更新し, しなかった場合は回数のカウント
         if is_improved(value, self.best, self.mode, self.min_delta):
             self.best = value
             self.counter = 0
         else:
             self.counter += 1
 
-        # patience 回続けて改善しなかったら止める
+        # patience 回続けて改善しなかったら停止
         should_stop = self.counter >= self.patience
         self.stopped = should_stop
 
@@ -182,11 +182,11 @@ class EarlyStopping:
         None
 
         Returns
-        -------
+        ----------
         state: dict
             最良値, 改善しなかった回数, 既に止めたかどうか
         """
-        # 最良値, 回数, 止めたかどうかをまとめる
+        # 最良値, 回数, 止めたかどうかを集約
         state = {
             "best": self.best, "counter": self.counter,
             "stopped": self.stopped
@@ -204,10 +204,10 @@ class EarlyStopping:
             state_dict で取得した状態
 
         Returns
-        -------
+        ----------
         None
         """
-        # 最良値, 回数, 止めたかどうかを戻す
+        # 最良値, 回数, 止めたかどうかの復元
         self.best = state["best"]
         self.counter = state["counter"]
         self.stopped = state["stopped"]
@@ -218,16 +218,16 @@ class Checkpoint:
         self, run_dir: Path, mode: str = "min", save_best: bool = True,
         save_last: bool = True
     ):
-        # 指標の良し悪しの向きを確かめる
+        # 指標の良し悪しの向きの確認
         check_mode(mode)
 
-        # 保存先, 良し悪しの向き, 何を保存するかを保存する
+        # 保存先, 良し悪しの向き, 何を保存するかを保存
         self.run_dir = Path(run_dir)
         self.mode = mode
         self.save_best = save_best
         self.save_last = save_last
 
-        # これまでの最良値, そのエポック, その時の重みを保存する
+        # これまでの最良値, そのエポック, その時の重みを保存
         self.best_value: Optional[float] = None
         self.best_epoch = 0
         self.best_model_state: Optional[dict] = None
@@ -246,11 +246,11 @@ class Checkpoint:
             学習中のモデル
 
         Returns
-        -------
+        ----------
         improved: bool
             ベストモデルが更新されたかどうか
         """
-        # 改善した場合は最良値とエポックと重みを更新する
+        # 改善した場合は最良値とエポックと重みを更新
         improved = is_improved(value, self.best_value, self.mode)
         if improved:
             self.best_value = value
@@ -271,14 +271,14 @@ class Checkpoint:
             今回ベストモデルが更新されたかどうか
 
         Returns
-        -------
+        ----------
         None
         """
-        # ベストモデルが更新された場合は保存する
+        # ベストモデルが更新された場合は保存
         if improved and self.save_best:
             save_checkpoint(state, self.run_dir / "best.pt")
 
-        # 学習を再開できるように最後のモデルを毎回上書きで保存する
+        # 学習を再開できるように最後のモデルを毎回上書きで保存
         if self.save_last:
             save_checkpoint(state, self.run_dir / "last.pt")
 
@@ -292,10 +292,10 @@ class Checkpoint:
             重みを戻すモデル
 
         Returns
-        -------
+        ----------
         None
         """
-        # ベストモデルがある場合は保存しておいた重みを戻す
+        # ベストモデルがある場合は保存しておいた重みの復元
         if self.best_model_state is not None:
             model.load_state_dict(self.best_model_state)
 
@@ -308,12 +308,12 @@ class Checkpoint:
         None
 
         Returns
-        -------
+        ----------
         state: dict
             最良値, そのエポック, ベストモデルの重み
         """
         # best.pt を残さない設定や, 再開元の best.pt が無い場合でも
-        # ベストモデルに戻せるように重みも含める
+        # ベストモデルに戻せるように重みも格納
         state = {
             "best_value": self.best_value, "best_epoch": self.best_epoch,
             "best_model": self.best_model_state
@@ -331,13 +331,13 @@ class Checkpoint:
             state_dict で取得した状態
 
         Returns
-        -------
+        ----------
         None
         """
-        # 最良値とエポックを戻す
+        # 最良値とエポックの復元
         self.best_value = state["best_value"]
         self.best_epoch = state["best_epoch"]
 
-        # ベストモデルの重みがある場合は戻す
+        # ベストモデルの重みがある場合は復元
         if state["best_model"] is not None:
             self.best_model_state = copy_state_dict(state["best_model"])

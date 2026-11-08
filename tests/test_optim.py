@@ -17,11 +17,11 @@ def make_optimizer(lr: float = 0.1) -> optim.Optimizer:
         学習率
 
     Returns
-    -------
+    ----------
     optimizer: optim.Optimizer
         小さなモデルの SGD
     """
-    # 小さなモデルのパラメータで SGD を作る
+    # 小さなモデルのパラメータで SGD の作成
     cfg = OmegaConf.create({"name": "SGD", "params": {"lr": lr}})
     optimizer = build_optimizer(cfg, nn.Linear(2, 1).parameters())
 
@@ -38,11 +38,11 @@ def get_lr(optimizer: optim.Optimizer) -> float:
         学習率を調べる Optimizer
 
     Returns
-    -------
+    ----------
     lr: float
         先頭のパラメータグループの学習率
     """
-    # 先頭のパラメータグループから取り出す
+    # 先頭のパラメータグループから取り出し
     lr = optimizer.param_groups[0]["lr"]
 
     return lr
@@ -57,10 +57,10 @@ def test_build_optimizer_with_params() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # リストで書いた betas を含めて Adam を作る
+    # リストで書いた betas を含めて Adam の作成
     cfg = OmegaConf.create(
         {"name": "Adam", "params": {"lr": 0.01, "betas": [0.8, 0.9]}}
     )
@@ -80,10 +80,10 @@ def test_build_optimizer_dotted_name() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # モジュールのパスを含めて指定する
+    # モジュールのパスを含めて指定
     cfg = OmegaConf.create({"name": "torch.optim.AdamW", "params": {}})
     optimizer = build_optimizer(cfg, nn.Linear(2, 1).parameters())
 
@@ -103,10 +103,10 @@ def test_build_optimizer_invalid_name(name: str) -> None:
         正しくない名前
 
     Returns
-    -------
+    ----------
     None
     """
-    # 正しくない名前を指定する
+    # 正しくない名前を指定
     cfg = OmegaConf.create({"name": name, "params": {}})
 
     with pytest.raises(ValueError):
@@ -122,10 +122,10 @@ def test_build_scheduler_none() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # 名前を null にする
+    # 名前を null に設定
     cfg = OmegaConf.create({"name": None, "params": {}, "interval": "epoch"})
     scheduler = build_scheduler(cfg, make_optimizer())
 
@@ -141,10 +141,10 @@ def test_step_lr() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # 1 回ごとに学習率を 0.5 倍にする StepLR を作る
+    # 1 回ごとに学習率を 0.5 倍にする StepLR の作成
     optimizer = make_optimizer(lr=0.1)
     cfg = OmegaConf.create(
         {
@@ -154,7 +154,7 @@ def test_step_lr() -> None:
     )
     scheduler = build_scheduler(cfg, optimizer)
 
-    # 2 回更新する
+    # 2 回更新
     optimizer.step()
     step_scheduler(scheduler)
     optimizer.step()
@@ -172,10 +172,10 @@ def test_reduce_lr_on_plateau() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # 1 回改善しなければ学習率を 0.1 倍にする ReduceLROnPlateau を作る
+    # 1 回改善しなければ学習率を 0.1 倍にする ReduceLROnPlateau の作成
     optimizer = make_optimizer(lr=0.1)
     cfg = OmegaConf.create(
         {
@@ -186,13 +186,13 @@ def test_reduce_lr_on_plateau() -> None:
     )
     scheduler = build_scheduler(cfg, optimizer)
 
-    # 同じ値を続けて渡す
+    # 同じ値を続けて受け渡し
     step_scheduler(scheduler, 1.0)
     step_scheduler(scheduler, 1.0)
 
     assert get_lr(optimizer) == pytest.approx(0.01)
 
-    # 指標の値を渡さないとエラーになる
+    # 指標の値を渡さないとエラー
     with pytest.raises(ValueError):
         step_scheduler(scheduler)
 
@@ -206,7 +206,7 @@ def test_build_scheduler_invalid() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
     # 間隔が正しくない場合
@@ -231,10 +231,10 @@ def test_reduce_lr_on_plateau_follows_mode() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # 大きい方が良い指標を監視する設定で作る
+    # 大きい方が良い指標を監視する設定で作成
     cfg = OmegaConf.create(
         {"name": "ReduceLROnPlateau", "params": {}, "interval": "epoch"}
     )
@@ -259,7 +259,7 @@ def test_reduce_lr_on_plateau_invalid(params: dict, interval: str) -> None:
         学習率を更新する間隔
 
     Returns
-    -------
+    ----------
     None
     """
     # 監視する指標と向きが違う場合や, step ごとに更新する場合

@@ -39,7 +39,7 @@ def test_is_improved(
         改善とみなされるべきかどうか
 
     Returns
-    -------
+    ----------
     None
     """
     assert is_improved(value, best, mode, min_delta) == expected
@@ -54,13 +54,13 @@ def test_early_stopping() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # 2 回まで待つ Early Stopping を作る
+    # 2 回まで待つ Early Stopping の作成
     early_stopping = EarlyStopping(patience=2)
 
-    # 改善, 悪化, 改善, 悪化, 悪化の順に渡す
+    # 改善, 悪化, 改善, 悪化, 悪化の順に受け渡し
     results = [early_stopping.step(v) for v in [1.0, 1.2, 0.8, 0.9, 0.9]]
 
     assert results == [False, False, False, False, True]
@@ -77,17 +77,17 @@ def test_early_stopping_state_dict() -> None:
     None
 
     Returns
-    -------
+    ----------
     None
     """
-    # 1 回悪化した状態を別の Early Stopping に移す
+    # 1 回悪化した状態を別の Early Stopping に移動
     early_stopping = EarlyStopping(patience=2)
     early_stopping.step(1.0)
     early_stopping.step(1.5)
     restored = EarlyStopping(patience=2)
     restored.load_state_dict(early_stopping.state_dict())
 
-    # もう 1 回悪化すると止まる
+    # もう 1 回悪化すると停止
     assert restored.stopped is False
     assert restored.step(1.5) is True
 
@@ -102,10 +102,10 @@ def test_checkpoint_restores_best_weights(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # ベストモデルを記録した後に, optimizer.step のように重みを直接書き換える
+    # ベストモデルを記録した後に, optimizer.step のように重みを直接書き換え
     model = nn.Linear(2, 1)
     checkpoint = Checkpoint(tmp_path)
     best_weight = model.weight.detach().clone()
@@ -114,7 +114,7 @@ def test_checkpoint_restores_best_weights(tmp_path: Path) -> None:
         model.weight.add_(10.0)
     checkpoint.update(2.0, 2, model)
 
-    # ベストモデルの重みを戻す
+    # ベストモデルの重みの復元
     checkpoint.restore_best(model)
 
     assert torch.equal(model.weight, best_weight)
@@ -131,17 +131,17 @@ def test_checkpoint_files(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 改善, 悪化の順に記録して保存する
+    # 改善, 悪化の順に記録して保存
     model = nn.Linear(2, 1)
     checkpoint = Checkpoint(tmp_path)
     for epoch, value in [(1, 1.0), (2, 2.0)]:
         improved = checkpoint.update(value, epoch, model)
         checkpoint.save({"epoch": epoch}, improved)
 
-    # 保存したファイルを読み込む
+    # 保存したファイルの読み込み
     best = load_checkpoint(str(tmp_path / "best.pt"), torch.device("cpu"))
     last = load_checkpoint(str(tmp_path / "last.pt"), torch.device("cpu"))
 
@@ -160,17 +160,17 @@ def test_checkpoint_without_best_file(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # best.pt を保存しない設定で記録する
+    # best.pt を保存しない設定で記録
     model = nn.Linear(2, 1)
     checkpoint = Checkpoint(tmp_path, save_best=False, save_last=False)
     best_weight = model.weight.detach().clone()
     improved = checkpoint.update(1.0, 1, model)
     checkpoint.save({"epoch": 1}, improved)
 
-    # 状態を別の Checkpoint に移してから重みを書き換えたモデルに戻す
+    # 状態を別の Checkpoint に移してから重みを書き換えたモデルに復元
     restored = Checkpoint(tmp_path, save_best=False)
     restored.load_state_dict(checkpoint.state_dict())
     with torch.no_grad():
@@ -191,7 +191,7 @@ def test_invalid_mode(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
     with pytest.raises(ValueError):

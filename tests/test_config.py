@@ -19,11 +19,11 @@ def write_yaml(path: Path, text: str) -> str:
         YAML の内容
 
     Returns
-    -------
+    ----------
     path_str: str
         書き出したファイルのパス
     """
-    # ファイルに書き出す
+    # ファイルに書き出し
     path.write_text(text, encoding="utf-8")
     path_str = str(path)
 
@@ -41,11 +41,11 @@ def default_path(tmp_path: Path) -> str:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     path: str
         default の config のパス
     """
-    # ML-Found の項目とプロジェクト固有の項目を混ぜる
+    # ML-Found の項目とプロジェクト固有の項目の混在
     text = (
         "experiment:\n"
         "  name: vae\n"
@@ -80,10 +80,10 @@ def test_empty_experiment(default_path: str, tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 空の experiment を用意して読み込む
+    # 空の experiment を用意して読み込み
     experiment_path = write_yaml(tmp_path / "experiment.yaml", "")
     cfg, diff = load_config(default_path, experiment_path)
 
@@ -106,7 +106,7 @@ def test_missing_file(default_path: str, tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
     # experiment が無い場合
@@ -131,10 +131,10 @@ def test_experiment_override(default_path: str, tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 値を変える項目, default と同じ値の項目, null の項目, params への追加を混ぜる
+    # 値を変える項目, default と同じ値の項目, null の項目, params への追加の混在
     text = (
         "trainer:\n"
         "  epochs: 300\n"
@@ -173,10 +173,10 @@ def test_same_class_keeps_params(default_path: str, tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # StepLR のまま gamma だけを変える
+    # StepLR のまま gamma だけを変更
     text = "scheduler:\n  params:\n    gamma: 0.1\n"
     experiment_path = write_yaml(tmp_path / "experiment.yaml", text)
     cfg, _ = load_config(default_path, experiment_path)
@@ -198,10 +198,10 @@ def test_switch_class_resets_params(
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # StepLR から CosineAnnealingLR に変える
+    # StepLR から CosineAnnealingLR に変更
     text = (
         "scheduler:\n"
         "  name: CosineAnnealingLR\n"
@@ -245,10 +245,10 @@ def test_experiment_invalid_structure(
         typo や構造の変更を含む experiment の内容
 
     Returns
-    -------
+    ----------
     None
     """
-    # 正しくない experiment を用意する
+    # 正しくない experiment を用意
     experiment_path = write_yaml(tmp_path / "experiment.yaml", text)
 
     with pytest.raises(ValueError, match="experiment"):
@@ -265,10 +265,10 @@ def test_default_invalid(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 空の experiment を用意する
+    # 空の experiment を用意
     experiment_path = write_yaml(tmp_path / "experiment.yaml", "")
 
     # typo の場合
@@ -292,10 +292,10 @@ def test_unresolvable_interpolation(tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # 存在しない項目を参照する default を用意する
+    # 存在しない項目を参照する default を用意
     path = write_yaml(
         tmp_path / "default.yaml", "model:\n  dim: ${data.dim}\n"
     )
@@ -317,16 +317,16 @@ def test_save_config(default_path: str, tmp_path: Path) -> None:
         pytest が用意する一時ディレクトリ
 
     Returns
-    -------
+    ----------
     None
     """
-    # experiment を重ねて読み込む
+    # experiment を重ねて読み込み
     experiment_path = write_yaml(
         tmp_path / "experiment.yaml", "trainer:\n  epochs: 300\n"
     )
     cfg, diff = load_config(default_path, experiment_path)
 
-    # 保存して, 保存した config を default として読み込み直す
+    # 保存して, 保存した config を default として再読み込み
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     save_config(cfg, diff, str(run_dir))

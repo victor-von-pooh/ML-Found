@@ -4,6 +4,30 @@ import numpy as np
 import torch
 
 
+def set_seed(seed: int) -> None:
+    """
+    Python, NumPy, PyTorch の乱数のシードを設定する関数
+
+    Parameters
+    ----------
+    seed: int
+        乱数シードの値
+
+    Returns
+    ----------
+    None
+    """
+    # Python 標準の乱数を固定
+    random.seed(seed)
+
+    # NumPy の乱数を固定
+    np.random.seed(seed)
+
+    # PyTorch の乱数を CPU, GPU ともに固定 (torch.manual_seed は CUDA と MPS も設定)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
 def fix_seed(seed: int, deterministic: bool = True) -> None:
     """
     乱数シードを固定する関数
@@ -19,15 +43,8 @@ def fix_seed(seed: int, deterministic: bool = True) -> None:
     ----------
     None
     """
-    # Python 標準の乱数を固定
-    random.seed(seed)
-
-    # NumPy の乱数を固定
-    np.random.seed(seed)
-
-    # PyTorch の乱数を CPU, GPU ともに固定
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    # Python, NumPy, PyTorch の乱数を固定
+    set_seed(seed)
 
     # 速度より再現性を優先する場合は cuDNN の自動選択の停止
     torch.backends.cudnn.deterministic = deterministic

@@ -259,7 +259,32 @@ class Checkpoint:
 
         return improved
 
-    def save(self, state: dict, improved: bool) -> None:
+    def needs_save(self, improved: bool, write_last: bool = True) -> bool:
+        """
+        今回ファイルに保存するものがあるかを判定する関数
+
+        Parameters
+        ----------
+        improved: bool
+            今回ベストモデルが更新されたかどうか
+        write_last: bool = True
+            今回 last.pt を書く順番かどうか
+
+        Returns
+        ----------
+        needed: bool
+            best.pt か last.pt のどちらかを書く場合は True
+        """
+        # 保存の設定と今回の状況から判定
+        needed = (improved and self.save_best) or (
+            write_last and self.save_last
+        )
+
+        return needed
+
+    def save(
+        self, state: dict, improved: bool, write_last: bool = True
+    ) -> None:
         """
         ベストモデルと最後のモデルをファイルに保存する関数
 
@@ -269,6 +294,8 @@ class Checkpoint:
             チェックポイントとして保存する内容, update の後に作ったもの
         improved: bool
             今回ベストモデルが更新されたかどうか
+        write_last: bool = True
+            今回 last.pt を書く順番かどうか, 保存の間隔を空ける場合に使用
 
         Returns
         ----------
@@ -278,8 +305,8 @@ class Checkpoint:
         if improved and self.save_best:
             save_checkpoint(state, self.run_dir / "best.pt")
 
-        # 学習を再開できるように最後のモデルを毎回上書きで保存
-        if self.save_last:
+        # 学習を再開できるように最後のモデルを上書きで保存
+        if write_last and self.save_last:
             save_checkpoint(state, self.run_dir / "last.pt")
 
     def restore_best(self, model: nn.Module) -> None:

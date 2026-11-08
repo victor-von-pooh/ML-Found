@@ -2,28 +2,33 @@ import math
 from pathlib import Path
 import shutil
 import time
-from typing import Any, Callable, Iterable, Optional
+import warnings
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
 
 import torch
 from torch import nn, optim
 from tqdm import tqdm
 
-from ml_found.experiment.seed import get_rng_state, set_rng_state
-from ml_found.experiment.setup import Experiment
+from ml_found.experiment.seed import get_rng_state, set_rng_state, set_seed
 from ml_found.training.callbacks import (
     Checkpoint, EarlyStopping, load_checkpoint, save_checkpoint
 )
 from ml_found.training.history import History, MetricTracker, to_float
 from ml_found.training.optim import (
-    build_optimizer, build_scheduler, check_scheduler, step_scheduler
+    build_optimizer, build_scheduler, check_scheduler, requires_closure,
+    step_scheduler, to_kwargs
 )
 from ml_found.utils.batch import get_batch_size, move_to_device
 from ml_found.utils.plotting import plot_history
 
+# Experiment は型ヒントだけに使用 (experiment は training を使うので循環を回避)
+if TYPE_CHECKING:
+    from ml_found.experiment.setup import Experiment
+
 
 class Trainer:
     def __init__(
-        self, model: nn.Module, experiment: Experiment,
+        self, model: nn.Module, experiment: "Experiment",
         step_fn: Optional[Callable[[nn.Module, Any, str], dict]] = None,
         optimizer: Optional[optim.Optimizer] = None,
         scheduler: Optional[optim.lr_scheduler.LRScheduler] = None
@@ -47,7 +52,8 @@ class Trainer:
             )
         self.optimizer = optimizer
 
-        # Scheduler が渡されていない場合は config から作成
+        # Scheduler が渡されていない場合は config から作成し, どちらかを保存
+        self.scheduler_from_config = scheduler is None
         if scheduler is None:
             scheduler = build_scheduler(
                 experiment.cfg.scheduler, self.optimizer,
@@ -89,6 +95,17 @@ class Trainer:
         # step から参照できるように, 今のエポックとパラメータの更新回数を保存
         self.epoch = 0
         self.global_step = 0
+
+        # LBFGS のように損失を計算し直す closure が必要な Optimizer かどうかを保存
+        self.use_closure = requires_closure(self.optimizer)
+
+        # closure で使う学習時のバッチと, 最後に求めた勾配のノルムの入れ物を用意
+        self.current_batch: Any = None
+        self.last_grad_norm: Optional[float] = None
+
+        # closure の中で step を呼んでいるかどうかの印を用意
+        # closure は step を何度も呼ぶので, 予測を貯める処理などを飛ばすのに使用
+        self.in_closure = False
 
     def step(self, batch: Any, phase: str) -> dict:
         """
@@ -194,6 +211,93 @@ class Trainer:
 
         return loss
 
+    def clip_gradients(self) -> Optional[float]:
+        """
+        勾配のノルムを求め, 上限が設定されていればクリップする関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        grad_norm: Optional[float]
+            クリップ前の勾配のノルム, クリップも記録もしない設定の場合は None
+        """
+        # クリップも記録もしない場合は計算なし
+        max_norm = self.trainer_cfg.grad_clip_norm
+        if max_norm is None and not self.trainer_cfg.log_grad_norm:
+            grad_norm = None
+            return grad_norm
+
+        # Optimizer が更新するパラメータだけを対象に設定
+        params = [
+            p for group in self.optimizer.param_groups for p in group["params"]
+        ]
+
+        # 上限が無い場合は勾配を変えずにノルムだけ計算
+        # (torch 2.6 より前にも対応するため, パラメータごとのノルムから計算)
+        if max_norm is None:
+            norms = [
+                torch.linalg.vector_norm(p.grad.detach())
+                for p in params if p.grad is not None
+            ]
+            grad_norm = 0.0
+            if len(norms) > 0:
+                grad_norm = to_float(
+                    torch.linalg.vector_norm(torch.stack(norms))
+                )
+            return grad_norm
+
+        # 上限でクリップし, クリップ前のノルムを取得
+        grad_norm = to_float(nn.utils.clip_grad_norm_(params, max_norm))
+
+        return grad_norm
+
+    def make_closure(self) -> Callable[[], torch.Tensor]:
+        """
+        保存した学習時のバッチで損失と勾配を計算し直す関数を作る関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        closure: Callable[[], torch.Tensor]
+            LBFGS などの Optimizer の step に渡す関数
+        """
+        def closure() -> torch.Tensor:
+            """
+            勾配を初期化して損失を計算し直し, 逆伝播とクリップを行う関数
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            ----------
+            loss: torch.Tensor
+                計算し直した損失
+            """
+            # 勾配を計算する範囲で損失を計算し直して逆伝播
+            self.optimizer.zero_grad()
+            self.in_closure = True
+            try:
+                with torch.enable_grad():
+                    outputs = self.step(self.current_batch, "train")
+                    loss = self.check_outputs(outputs, "train")
+                    loss.backward()
+            finally:
+                self.in_closure = False
+
+            # 勾配のノルムを求めてクリップ
+            self.last_grad_norm = self.clip_gradients()
+
+            return loss
+
+        return closure
+
     def update_parameters(self, loss: torch.Tensor) -> None:
         """
         損失から勾配を求めてパラメータを更新する関数
@@ -207,18 +311,22 @@ class Trainer:
         ----------
         None
         """
-        # 勾配を初期化して逆伝播を計算
-        self.optimizer.zero_grad()
-        loss.backward()
+        # 自分で更新する設定の場合は, 逆伝播と更新を行わずに回数のカウントだけ
+        if self.trainer_cfg.manual_optimization:
+            self.last_grad_norm = None
 
-        # 勾配が大きくなりすぎないようにノルムの上限でクリップ
-        if self.trainer_cfg.grad_clip_norm is not None:
-            nn.utils.clip_grad_norm_(
-                self.model.parameters(), self.trainer_cfg.grad_clip_norm
-            )
+        # closure が必要な Optimizer は損失を計算し直す関数を渡して更新
+        elif self.use_closure:
+            self.optimizer.step(self.make_closure())
 
-        # パラメータを更新して回数のカウント
-        self.optimizer.step()
+        # 勾配法では勾配を初期化して逆伝播し, クリップしてから更新
+        else:
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.last_grad_norm = self.clip_gradients()
+            self.optimizer.step()
+
+        # パラメータの更新回数のカウント
         self.global_step += 1
 
         # step ごとに学習率を更新する場合はここで更新
@@ -247,19 +355,23 @@ class Trainer:
         tracker = MetricTracker()
         self.on_epoch_start(phase)
 
+        # 学習時と, 検証時にも勾配を使う設定の場合だけ勾配を計算
+        grad_enabled = train or self.trainer_cfg.valid_grad
+
         # バッチごとに計算
         n_batches = 0
         for batch in loader:
             batch = move_to_device(batch, self.device)
             n_batches += 1
 
-            # 学習時だけ勾配を計算
-            with torch.set_grad_enabled(train):
+            # 決めた範囲だけ勾配を計算
+            with torch.set_grad_enabled(grad_enabled):
                 outputs = self.step(batch, phase)
 
-            # 戻り値を確かめて, 学習時はパラメータを更新
+            # 戻り値を確かめて, 学習時は closure 用にバッチを保存して更新
             loss = self.check_outputs(outputs, phase)
             if train:
+                self.current_batch = batch
                 self.update_parameters(loss)
 
             # サンプル数で重み付けして指標の加算
@@ -267,7 +379,12 @@ class Trainer:
             n = metrics.pop("batch_size", None)
             if n is None:
                 n = get_batch_size(batch)
+            if train and self.trainer_cfg.log_grad_norm:
+                self.add_grad_norm(metrics)
             tracker.update(metrics, int(n))
+
+        # 学習時のバッチを検証の間まで残さないように解放
+        self.current_batch = None
 
         # バッチが 1 つも無い場合は平均を求められないのでエラー
         if n_batches == 0:
@@ -278,12 +395,69 @@ class Trainer:
         for key, value in self.on_epoch_end(phase).items():
             if "/" in key:
                 raise ValueError(f"指標の名前に / は使えません: {key}")
+            if key in epoch_metrics:
+                raise ValueError(
+                    f"on_epoch_end の指標 {key} が step の指標と重複しています"
+                )
             epoch_metrics[key] = to_float(value)
 
         # 接頭辞を付けて返却
         metrics = {
             f"{phase}/{key}": value for key, value in epoch_metrics.items()
         }
+
+        return metrics
+
+    def add_grad_norm(self, metrics: dict) -> None:
+        """
+        最後に求めた勾配のノルムを指標に加える関数
+
+        Parameters
+        ----------
+        metrics: dict
+            1 バッチ分の指標, grad_norm を書き加える
+
+        Returns
+        ----------
+        None
+        """
+        # step の指標と名前が重なる場合はエラー
+        if "grad_norm" in metrics:
+            raise ValueError(
+                "log_grad_norm を使う場合は step で grad_norm を返さないでください"
+            )
+
+        # 勾配を計算しなかった場合 (自分で更新する設定など) は追加なし
+        if self.last_grad_norm is not None:
+            metrics["grad_norm"] = self.last_grad_norm
+
+    def run_valid_epoch(self, loader: Iterable) -> dict[str, float]:
+        """
+        設定に応じて乱数を固定して検証を 1 エポック行う関数
+
+        Parameters
+        ----------
+        loader: Iterable
+            検証用のバッチを返すもの
+
+        Returns
+        ----------
+        metrics: dict[str, float]
+            valid/ を付けた指標ごとの平均
+        """
+        # 乱数を固定しない場合はそのまま検証
+        seed = self.trainer_cfg.valid_seed
+        if seed is None:
+            metrics = self.run_epoch(loader, train=False)
+            return metrics
+
+        # 学習の乱数の状態を保存してから固定し, 検証の後に元の状態へ復帰
+        state = get_rng_state()
+        set_seed(seed)
+        try:
+            metrics = self.run_epoch(loader, train=False)
+        finally:
+            set_rng_state(state)
 
         return metrics
 
@@ -345,10 +519,45 @@ class Trainer:
                 else self.early_stopping.state_dict()
             ),
             "checkpoint": self.checkpoint.state_dict(),
-            "rng": get_rng_state()
+            "rng": get_rng_state(),
+            "extra": self.extra_state_dict()
         }
 
         return state
+
+    def extra_state_dict(self) -> dict:
+        """
+        継承したクラスがチェックポイントに加える状態を取得する関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        state: dict
+            加える状態, 2 つ目の Optimizer や EMA の重みなどは継承して追加
+        """
+        # 加える状態の無い空の辞書
+        state = {}
+
+        return state
+
+    def load_extra_state_dict(self, state: dict) -> None:
+        """
+        extra_state_dict で加えた状態をチェックポイントから戻す関数
+
+        Parameters
+        ----------
+        state: dict
+            extra_state_dict で取得した状態, 古いチェックポイントでは空
+
+        Returns
+        ----------
+        None
+        """
+        # 何もしない, extra_state_dict を上書きした場合は合わせて上書き
+        pass
 
     def resume(self, path: str, monitor: str) -> None:
         """
@@ -388,7 +597,9 @@ class Trainer:
         self.model.load_state_dict(state["model"])
         self.optimizer.load_state_dict(state["optimizer"])
         if self.scheduler is not None and state["scheduler"] is not None:
+            fresh_state = self.scheduler.state_dict()
             self.scheduler.load_state_dict(state["scheduler"])
+            self.warn_scheduler_params(fresh_state, state["scheduler"])
         self.history.load_state_dict(state["history"])
 
         # Early Stopping の状態の復元
@@ -401,6 +612,9 @@ class Trainer:
         # チェックポイントに含まれるベストモデルの重みと最良値の復元
         self.checkpoint.load_state_dict(state["checkpoint"])
 
+        # 継承したクラスが加えた状態の復元
+        self.load_extra_state_dict(state.get("extra", {}))
+
         # 続きの乱数を使えるように乱数の状態の復元
         set_rng_state(state["rng"])
 
@@ -408,7 +622,7 @@ class Trainer:
         run_dir = self.experiment.run_dir
         best_path = checkpoint_path.with_name("best.pt")
         if best_path.exists() and self.trainer_cfg.checkpoint.save_best:
-            shutil.copyfile(best_path, run_dir / "best.pt")
+            self.copy_best(best_path, run_dir / "best.pt")
         if self.trainer_cfg.checkpoint.save_last:
             save_checkpoint(state, run_dir / "last.pt")
 
@@ -417,6 +631,37 @@ class Trainer:
         self.epoch = state["epoch"]
         self.global_step = state["global_step"]
         self.logger.info(f"再開元: {path} (エポック {state['epoch']})")
+
+    def copy_best(self, source: Path, target: Path) -> None:
+        """
+        再開元の best.pt が再開する状態のベストモデルの場合だけ写す関数
+
+        Parameters
+        ----------
+        source: Path
+            再開元の best.pt
+        target: Path
+            新しい保存先の best.pt
+
+        Returns
+        ----------
+        None
+        """
+        # エポックだけを読むので, テンソルは読み込まずに cpu の上で参照
+        best_epoch = torch.load(
+            source, map_location="cpu", weights_only=True, mmap=True
+        )["epoch"]
+
+        # last.pt の保存の間隔を空けた場合などは, best.pt が再開で捨てる履歴の
+        # ベストモデルのことがあるので, 再開する状態のベストのエポックと一致する場合だけコピー
+        if best_epoch != self.checkpoint.best_epoch:
+            self.logger.warning(
+                f"再開元の best.pt (エポック {best_epoch}) は再開する状態の"
+                f"ベストモデル (エポック {self.checkpoint.best_epoch}) と違うので"
+                "写しません"
+            )
+            return
+        shutil.copyfile(source, target)
 
     def log_settings(self, monitor: str) -> None:
         """
@@ -443,7 +688,89 @@ class Trainer:
             else type(self.scheduler).__name__
         )
         self.logger.info(f"Scheduler: {scheduler_name}")
+        if self.scheduler is not None:
+            raw_state = self.scheduler.state_dict()
+            scheduler_state = {
+                key: value for key, value in raw_state.items()
+                if not key.startswith("_")
+            }
+            self.logger.info(f"Scheduler の状態: {scheduler_state}")
         self.logger.info(f"監視する指標: {monitor} ({self.trainer_cfg.mode})")
+
+        # 更新の手順を記録
+        if self.trainer_cfg.manual_optimization:
+            self.logger.info("更新の手順: step の中で自分で更新")
+        elif self.use_closure:
+            self.logger.info("更新の手順: closure を Optimizer に渡して更新")
+
+    def warn_scheduler_params(
+        self, fresh_state: dict, loaded_state: dict
+    ) -> None:
+        """
+        再開元の Scheduler の引数が config と違う場合に警告する関数
+
+        Parameters
+        ----------
+        fresh_state: dict
+            config から作った直後の Scheduler の状態
+        loaded_state: dict
+            再開元のチェックポイントの Scheduler の状態
+
+        Returns
+        ----------
+        None
+        """
+        # 自分で作って渡した Scheduler は config と比べられないので確認なし
+        if not self.scheduler_from_config:
+            return
+
+        # Scheduler の状態は引数ごと戻るので, config で変えた引数は無効
+        # 型をそろえるため, config の値ではなく config から作った状態と比較
+        params = to_kwargs(self.experiment.cfg.scheduler.params)
+        diffs = [
+            f"{key} (再開元 {loaded_state[key]}, config {fresh_state[key]})"
+            for key in params
+            if key in fresh_state and key in loaded_state
+            and fresh_state[key] != loaded_state[key]
+        ]
+        if len(diffs) == 0:
+            return
+
+        # 警告とログで通知
+        message = (
+            "再開元の Scheduler の引数が config と違うので, "
+            f"再開元の値を使います: {', '.join(diffs)}"
+        )
+        warnings.warn(message)
+        self.logger.warning(message)
+
+    def warn_persistent_workers(
+        self, loaders: list[Optional[Iterable]]
+    ) -> None:
+        """
+        ワーカーを使い回す DataLoader で再開する場合に警告する関数
+
+        Parameters
+        ----------
+        loaders: list[Optional[Iterable]]
+            学習と検証に使う DataLoader など, 検証しない場合は None を含む
+
+        Returns
+        ----------
+        None
+        """
+        # persistent_workers の DataLoader はワーカーの乱数の種を最初の 1 回だけ引くので,
+        # 再開すると通しで学習した場合と乱数の流れにずれが発生
+        for loader in loaders:
+            persistent = getattr(loader, "persistent_workers", False)
+            if persistent and getattr(loader, "num_workers", 0) > 0:
+                message = (
+                    "persistent_workers=True の DataLoader で再開すると, "
+                    "通しで学習した場合と結果が一致しません"
+                )
+                warnings.warn(message)
+                self.logger.warning(message)
+                return
 
     def finish(self, elapsed_time: float) -> None:
         """
@@ -458,10 +785,22 @@ class Trainer:
         ----------
         None
         """
-        # ベストモデルの重みに戻し, 推論で使いやすいように重みだけを保存
+        # 設定に応じてベストモデルの重みに戻し,
+        # 推論で使いやすいように重みだけを cpu に移して保存
         run_dir = self.experiment.run_dir
-        self.checkpoint.restore_best(self.model)
-        torch.save(self.model.state_dict(), run_dir / "final_model.pt")
+        if self.trainer_cfg.restore_best:
+            self.checkpoint.restore_best(self.model)
+            weights = "ベストモデル"
+        else:
+            weights = "最後のエポック"
+        final_state = {
+            key: (
+                value.detach().cpu() if isinstance(value, torch.Tensor)
+                else value
+            )
+            for key, value in self.model.state_dict().items()
+        }
+        torch.save(final_state, run_dir / "final_model.pt")
 
         # 記録と学習曲線を保存
         self.history.save_csv(str(run_dir / "history.csv"))
@@ -471,6 +810,7 @@ class Trainer:
         self.logger.info("学習完了")
         self.logger.info(f"ベストモデルのエポック: {self.checkpoint.best_epoch}")
         self.logger.info(f"ベストモデルの指標: {self.checkpoint.best_value}")
+        self.logger.info(f"final_model.pt の重み: {weights}")
         self.logger.info(f"学習時間: {elapsed_time:.2f} 秒")
 
     def fit(
@@ -491,11 +831,39 @@ class Trainer:
         history: History
             エポックごとの記録
         """
+        # 途中で止まった場合も原因が分かるように, エラーを train.log に記録して再送出
+        try:
+            history = self.train_epochs(train_loader, valid_loader)
+        except Exception:
+            self.logger.exception("エラーで学習が止まりました")
+            raise
+
+        return history
+
+    def train_epochs(
+        self, train_loader: Iterable, valid_loader: Optional[Iterable]
+    ) -> History:
+        """
+        エポックごとに学習と検証を繰り返す関数
+
+        Parameters
+        ----------
+        train_loader: Iterable
+            学習用のバッチを返すもの
+        valid_loader: Optional[Iterable]
+            検証用のバッチを返すもの, None の場合は検証しない
+
+        Returns
+        ----------
+        history: History
+            エポックごとの記録
+        """
         # 監視する指標の決定
         monitor = self.get_monitor(valid_loader is not None)
 
         # 再開する場合はチェックポイントから状態の復元
         if self.trainer_cfg.resume_from is not None:
+            self.warn_persistent_workers([train_loader, valid_loader])
             self.resume(self.trainer_cfg.resume_from, monitor)
 
         # Early Stopping で既に止めた学習を再開した場合は学習なし
@@ -508,9 +876,12 @@ class Trainer:
         self.log_settings(monitor)
 
         # エポックごとに学習
+        # 止めたエポックも数えられるように, 進捗バーは手動で更新
         start_time = time.time()
-        with tqdm(epochs, disable=not self.trainer_cfg.progress_bar) as pbar:
-            for epoch in pbar:
+        every = self.trainer_cfg.checkpoint.every_n_epochs
+        disable = not self.trainer_cfg.progress_bar
+        with tqdm(total=len(epochs), disable=disable) as pbar:
+            for epoch in epochs:
                 pbar.set_description(f"エポック {epoch}")
                 self.epoch = epoch
 
@@ -521,7 +892,7 @@ class Trainer:
                 record = {"epoch": epoch}
                 record.update(self.run_epoch(train_loader, train=True))
                 if valid_loader is not None:
-                    record.update(self.run_epoch(valid_loader, train=False))
+                    record.update(self.run_valid_epoch(valid_loader))
                 record["lr"] = lr
 
                 # 監視する指標があることを確かめてから記録
@@ -532,7 +903,9 @@ class Trainer:
                     )
                 value = record[monitor]
                 if not math.isfinite(value):
-                    raise ValueError(f"監視する指標 {monitor} が {value} になりました")
+                    raise ValueError(
+                        f"監視する指標 {monitor} が {value} になりました"
+                    )
                 self.history.append(record)
 
                 # epoch ごとに学習率を更新する場合はここで更新
@@ -546,8 +919,16 @@ class Trainer:
                     and self.early_stopping.step(value)
                 )
 
-                # 更新した状態でチェックポイントを保存
-                self.checkpoint.save(self.state_dict(epoch, monitor), improved)
+                # last.pt は決めた間隔と, 最後のエポックと止めるエポックに保存
+                # 保存するものがある場合だけ, 更新した状態をまとめて保存
+                write_last = (
+                    epoch % every == 0 or epoch == self.trainer_cfg.epochs
+                    or should_stop
+                )
+                if self.checkpoint.needs_save(improved, write_last):
+                    self.checkpoint.save(
+                        self.state_dict(epoch, monitor), improved, write_last
+                    )
 
                 # エポックの結果を記録して表示
                 summary = ", ".join(
@@ -556,6 +937,7 @@ class Trainer:
                 )
                 self.logger.info(f"エポック {epoch}: {summary}")
                 pbar.set_postfix_str(summary)
+                pbar.update(1)
 
                 # 改善しなくなった場合は学習の停止
                 if should_stop:
@@ -566,7 +948,7 @@ class Trainer:
                     )
                     break
 
-        # ベストモデルを戻して結果を保存
+        # 設定に応じてベストモデルを戻して結果を保存
         self.finish(time.time() - start_time)
         history = self.history
 

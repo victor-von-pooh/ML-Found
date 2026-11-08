@@ -52,6 +52,9 @@ class CheckpointConfig:
     save_best: bool = True
     save_last: bool = True
 
+    # last.pt を保存するエポックの間隔, 最後のエポックと止めたエポックは必ず保存
+    every_n_epochs: int = 1
+
 
 @dataclass
 class TrainerConfig:
@@ -65,6 +68,22 @@ class TrainerConfig:
 
     # 勾配のノルムの上限, null の場合はクリッピングなし
     grad_clip_norm: Optional[float] = None
+
+    # クリップ前の勾配のノルムを train/grad_norm として記録するかどうか
+    log_grad_norm: bool = False
+
+    # 学習後にベストモデルの重みに戻すかどうか, false の場合は最後の重みのまま
+    restore_best: bool = True
+
+    # 検証時にも勾配を計算するかどうか (入力に対する微分を損失に使う場合など)
+    valid_grad: bool = False
+
+    # 検証の前に乱数を固定するシード, null の場合は固定なし
+    # 検証の後は学習の乱数の状態に復帰
+    valid_seed: Optional[int] = None
+
+    # true の場合は逆伝播とパラメータの更新を ML-Found ではなく step の中で実行
+    manual_optimization: bool = False
 
     # 学習を再開するチェックポイントのパス, null の場合は最初から学習
     resume_from: Optional[str] = None

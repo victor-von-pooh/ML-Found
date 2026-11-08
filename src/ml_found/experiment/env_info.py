@@ -68,7 +68,10 @@ def get_git_info(repo_dir: str) -> str:
     username = run_git(["config", "user.name"], repo_dir)
 
     # 未コミットの変更があると commit id だけでは再現できないので記録
-    changes = run_git(["status", "--porcelain"], repo_dir)
+    # 未追跡のディレクトリを 1 行にまとめず, ファイルごとに集計
+    changes = run_git(
+        ["status", "--porcelain", "--untracked-files=all"], repo_dir
+    )
     n_changes = len(changes.splitlines())
 
     # 1 つの文字列に集約

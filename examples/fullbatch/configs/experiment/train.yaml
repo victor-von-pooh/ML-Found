@@ -1,0 +1,4 @@
+# default から変えたい項目だけを書く, default に無い項目は書けない
+# 例:
+# model:
+#   hidden_dim: 32

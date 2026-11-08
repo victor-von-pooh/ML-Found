@@ -1,0 +1,31 @@
+# ML-Found が使う設定, 書かなかった項目は ML-Found の既定値になる
+experiment:
+  name: graph
+  seed: 42
+
+optimizer:
+  name: Adam
+  params:
+    lr: 0.01
+    weight_decay: 0.0005
+
+trainer:
+  epochs: 200
+  # 正解率は大きい方が良いので max にする
+  monitor: valid/acc
+  mode: max
+  early_stopping:
+    use: true
+    patience: 20
+
+# プロジェクト固有の設定, 項目は自由に追加できる
+data:
+  num_nodes: 200
+  num_features: 8
+  p_in: 0.1
+  p_out: 0.01
+  noise: 6.0
+  valid_ratio: 0.3
+
+model:
+  hidden_dim: 16

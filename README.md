@@ -163,10 +163,10 @@ Optimizer や Scheduler を自分で作る場合は `Trainer(model, experiment, 
 ```yaml
 # configs/experiment/train.yaml
 trainer:
-  resume_from: /path/to/NewProject/outputs/wine/2026-11-08/16-18-27/last.pt
+  resume_from: outputs/wine/2026-11-08/16-18-27/last.pt
 ```
 
-相対パスで書いた場合は, 学習スクリプトを実行した場所から辿る.
+相対パスは, `experiment.output_dir` と同じくプロジェクトのディレクトリから辿る.
 
 ### 学習後のモデル
 
@@ -200,7 +200,7 @@ ML-Found が使う項目と既定値.
 | `trainer.monitor` | `null` | ベストモデルの判定に使う指標, `null` の場合は `valid/loss`, 検証しない場合は `train/loss` |
 | `trainer.mode` | `min` | 指標は小さい方と大きい方のどちらが良いか |
 | `trainer.grad_clip_norm` | `null` | 勾配のノルムの上限, `null` の場合はクリッピングしない |
-| `trainer.resume_from` | `null` | 再開するチェックポイントのパス |
+| `trainer.resume_from` | `null` | 再開するチェックポイントのパス, 相対パスの場合はプロジェクトのディレクトリから辿る |
 | `trainer.progress_bar` | `true` | 進捗バーを表示するかどうか |
 | `trainer.early_stopping.use` | `false` | Early Stopping を使うかどうか |
 | `trainer.early_stopping.patience` | `10` | 改善しないまま待つエポック数 |

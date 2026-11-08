@@ -21,6 +21,9 @@ class Experiment:
     # 学習に使う config
     cfg: DictConfig
 
+    # ML-Found を使っているプロジェクトのディレクトリ
+    project_dir: Path
+
     # 実験結果を保存するディレクトリ
     run_dir: Path
 
@@ -115,7 +118,7 @@ def start_experiment(
     Returns
     -------
     experiment: Experiment
-        config, 保存先, ロガー, デバイスをまとめたもの
+        config, プロジェクトのディレクトリ, 保存先, ロガー, デバイスをまとめたもの
     """
     # プロジェクトのディレクトリを決める
     if project_dir is None:
@@ -162,7 +165,8 @@ def start_experiment(
 
     # まとめて返す
     experiment = Experiment(
-        cfg=cfg, run_dir=run_dir, logger=logger, device=device
+        cfg=cfg, project_dir=project_root, run_dir=run_dir, logger=logger,
+        device=device
     )
 
     return experiment

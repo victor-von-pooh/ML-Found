@@ -314,6 +314,40 @@ def test_resume_matches_uninterrupted(tmp_path: Path) -> None:
     assert resumed_history.get("lr") == pytest.approx(full_history.get("lr"))
 
 
+def test_resume_relative_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    相対パスで指定したチェックポイントをプロジェクトのディレクトリから辿ることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        実行する場所を変えるために pytest が用意するもの
+
+    Returns
+    -------
+    None
+    """
+    # プロジェクトのディレクトリで 2 エポック学習する
+    project_dir = tmp_path / "project"
+    first = make_experiment(project_dir, "trainer:\n  epochs: 2\n")
+    Trainer(nn.Linear(1, 1), first, regression_step).fit(make_loader())
+    relative_path = (first.run_dir / "last.pt").relative_to(project_dir)
+
+    # プロジェクトの外に移動し, 相対パスで指定して再開する
+    monkeypatch.chdir(tmp_path)
+    text = f"trainer:\n  epochs: 3\n  resume_from: {relative_path}\n"
+    second = make_experiment(project_dir, text)
+    history = Trainer(nn.Linear(1, 1), second, regression_step).fit(
+        make_loader()
+    )
+
+    assert history.get("epoch") == [1, 2, 3]
+
+
 def test_resume_keeps_best(tmp_path: Path) -> None:
     """
     再開前のベストモデルより悪いエポックをベストとみなさないことを確かめる関数

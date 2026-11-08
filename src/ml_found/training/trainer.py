@@ -349,12 +349,18 @@ class Trainer:
         Parameters
         ----------
         path: str
-            チェックポイントのパス
+            チェックポイントのパス, 相対パスの場合はプロジェクトのディレクトリから辿る
 
         Returns
         -------
         None
         """
+        # 出力先と同じく, 相対パスはプロジェクトのディレクトリから辿る
+        checkpoint_path = Path(path)
+        if not checkpoint_path.is_absolute():
+            checkpoint_path = self.experiment.project_dir / checkpoint_path
+        path = str(checkpoint_path)
+
         # チェックポイントを読み込む
         state = load_checkpoint(path, self.device)
 

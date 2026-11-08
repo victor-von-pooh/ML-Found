@@ -2,16 +2,38 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from ml_found.training.history import History
+
+def get_keys(records: list[dict]) -> list[str]:
+    """
+    記録されている項目の名前を取得する関数
+
+    Parameters
+    ----------
+    records: list[dict]
+        エポックごとの記録
+
+    Returns
+    -------
+    keys: list[str]
+        現れた順に並べた項目の名前
+    """
+    # 途中から増えた項目も含めて現れた順に並べる
+    keys = []
+    for record in records:
+        for key in record:
+            if key not in keys:
+                keys.append(key)
+
+    return keys
 
 
-def get_metric_names(history: History) -> list[str]:
+def get_metric_names(records: list[dict]) -> list[str]:
     """
     学習曲線を描く指標の名前を取得する関数
 
     Parameters
     ----------
-    history: History
+    records: list[dict]
         エポックごとの記録
 
     Returns
@@ -21,7 +43,7 @@ def get_metric_names(history: History) -> list[str]:
     """
     # train/loss と valid/loss は同じ loss として 1 つの図にまとめる
     names = []
-    for key in history.keys():
+    for key in get_keys(records):
         if key == "epoch":
             continue
         name = key.split("/", 1)[1] if "/" in key else key
@@ -31,13 +53,13 @@ def get_metric_names(history: History) -> list[str]:
     return names
 
 
-def plot_metric(history: History, name: str, output_path: str) -> None:
+def plot_metric(records: list[dict], name: str, output_path: str) -> None:
     """
     1 つの指標の学習曲線を描いて保存する関数
 
     Parameters
     ----------
-    history: History
+    records: list[dict]
         エポックごとの記録
     name: str
         指標の名前
@@ -55,15 +77,15 @@ def plot_metric(history: History, name: str, output_path: str) -> None:
     ax.set_xlabel("Epoch")
     ax.set_ylabel(name)
 
-    # train と valid, または接頭辞の無い指標を描く
-    epochs = history.get("epoch")
+    # train と valid, または接頭辞の無い指標を, 記録があるエポックだけ描く
+    keys = get_keys(records)
     for key in (f"train/{name}", f"valid/{name}", name):
-        if key not in history.keys():
+        if key not in keys:
             continue
         points = [
-            (epoch, value)
-            for epoch, value in zip(epochs, history.get(key))
-            if value is not None
+            (record["epoch"], record[key])
+            for record in records
+            if record.get(key) is not None
         ]
         ax.plot(
             [epoch for epoch, _ in points], [value for _, value in points],
@@ -76,14 +98,14 @@ def plot_metric(history: History, name: str, output_path: str) -> None:
     plt.close(fig)
 
 
-def plot_history(history: History, output_dir: str) -> list[Path]:
+def plot_history(records: list[dict], output_dir: str) -> list[Path]:
     """
     全ての指標の学習曲線を描いて保存する関数
 
     Parameters
     ----------
-    history: History
-        エポックごとの記録
+    records: list[dict]
+        エポックごとの記録, History.records を渡す
     output_dir: str
         画像の保存先のディレクトリ
 
@@ -94,9 +116,9 @@ def plot_history(history: History, output_dir: str) -> list[Path]:
     """
     # 指標ごとに <指標名>_curve.png として保存する
     paths = []
-    for name in get_metric_names(history):
+    for name in get_metric_names(records):
         path = Path(output_dir) / f"{name}_curve.png"
-        plot_metric(history, name, str(path))
+        plot_metric(records, name, str(path))
         paths.append(path)
 
     return paths

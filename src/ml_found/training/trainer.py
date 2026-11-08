@@ -350,7 +350,7 @@ class Trainer:
 
         # 記録と学習曲線を保存する
         self.history.save_csv(str(run_dir / "history.csv"))
-        plot_history(self.history, str(run_dir))
+        plot_history(self.history.records, str(run_dir))
 
         # 結果をログに記録する
         self.logger.info("学習完了")

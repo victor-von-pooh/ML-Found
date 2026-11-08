@@ -92,7 +92,7 @@ def test_plot_history(tmp_path: Path):
     指標ごとに学習曲線の画像が保存されることを確かめる関数
     """
     # 学習曲線を保存する
-    paths = plot_history(make_history(), str(tmp_path))
+    paths = plot_history(make_history().records, str(tmp_path))
 
     assert [path.name for path in paths] == ["loss_curve.png", "lr_curve.png"]
     assert all(path.exists() for path in paths)

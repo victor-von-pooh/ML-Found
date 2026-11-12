@@ -1,11 +1,12 @@
+import inspect
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Union
 
 import pytest
-from torch import optim
+from torch import Tensor, optim
 
 from ml_found.training.registry import (
-    describe_optimizers, describe_schedulers
+    describe_optimizers, describe_schedulers, refine_kind
 )
 from test_trainer import make_experiment
 
@@ -83,6 +84,8 @@ def test_describe_schedulers() -> None:
         for param in specs["ReduceLROnPlateau"]["params"]
     }
     assert plateau["min_lr"]["kind"] == "float"
+    cyclic = {param["name"]: param for param in specs["CyclicLR"]["params"]}
+    assert cyclic["scale_fn"]["kind"] == "none"
 
 
 def test_param_typos_are_errors(tmp_path: Path) -> None:
@@ -187,3 +190,39 @@ def test_one_cycle_steps(tmp_path: Path) -> None:
         tmp_path / "epochs",
         base + "    max_lr: 0.1\n    epochs: 2\n    steps_per_epoch: 5\n"
     )
+
+
+@pytest.mark.parametrize(
+    ("kind", "annotation", "expected"),
+    [
+        ("none", Optional[int], "int"),
+        ("int", Union[float, Tensor], "float"),
+        ("none", int | None, "int"),
+        ("int", "list[float] | float", "float"),
+        ("none", "Optional[float]", "float"),
+        ("int", "float", "float"),
+        ("none", "Callable[[float], float] | None", "none"),
+        ("none", list[int] | None, "none"),
+        ("none", "dict[str, float] | None", "none"),
+        ("none", bool | None, "none"),
+        ("int", inspect.Parameter.empty, "int"),
+    ],
+)
+def test_refine_kind(kind: str, annotation: Any, expected: str) -> None:
+    """
+    型の注釈で引数の種類を補う規則を確かめる関数
+
+    Parameters
+    ----------
+    kind: str
+        既定値から決めた種類
+    annotation: Any
+        型の注釈
+    expected: str
+        期待する種類
+
+    Returns
+    ----------
+    None
+    """
+    assert refine_kind(kind, annotation) == expected

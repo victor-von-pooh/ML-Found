@@ -91,8 +91,59 @@ CLASS_PARAM_NOTES: dict[tuple[str, str], dict[str, Any]] = {
         "description": "周期の形 (triangular, triangular2, exp_range)"
     },
     ("Adafactor", "eps"): {"description": "0 除算を避ける小さな値の組"},
+    # 以下は PyTorch が初期化で確かめる範囲か, 外れると学習中に 0 除算になる範囲
+    # 範囲は両端を含む形なので, 端を含まない境界は説明に記載
     ("OneCycleLR", "total_steps"): {
-        "description": "全ステップ数. 省略する場合は epochs と steps_per_epoch が必要"
+        "description": "全ステップ数. 省略する場合は epochs と steps_per_epoch が必要",
+        "minimum": 1
+    },
+    ("OneCycleLR", "epochs"): {
+        "description": "エポック数 (total_steps を省略する場合)", "minimum": 1
+    },
+    ("OneCycleLR", "steps_per_epoch"): {
+        "description": "1 エポックのステップ数 (total_steps を省略する場合)",
+        "minimum": 1
+    },
+    ("OneCycleLR", "pct_start"): {
+        "description": "学習率を上げる期間の割合", "minimum": 0.0,
+        "maximum": 1.0
+    },
+    ("ConstantLR", "factor"): {
+        "description": "total_iters の間だけ学習率に掛ける倍率",
+        "minimum": 0.0, "maximum": 1.0
+    },
+    ("LinearLR", "start_factor"): {
+        "description": "最初の学習率の倍率 (0 より大きい値)",
+        "minimum": 0.0, "maximum": 1.0
+    },
+    ("LinearLR", "end_factor"): {
+        "description": "total_iters の後の学習率の倍率",
+        "minimum": 0.0, "maximum": 1.0
+    },
+    ("ReduceLROnPlateau", "factor"): {
+        "description": "改善しないときに学習率に掛ける倍率 (1 より小さい値)",
+        "minimum": 0.0, "maximum": 1.0
+    },
+    ("CosineAnnealingWarmRestarts", "T_0"): {
+        "description": "最初に学習率を戻すまでのエポック数", "minimum": 1
+    },
+    ("CosineAnnealingWarmRestarts", "T_mult"): {
+        "description": "学習率を戻すたびに周期に掛ける倍率", "minimum": 1
+    },
+    ("OneCycleLR", "div_factor"): {
+        "description": "最初の学習率を max_lr / div_factor にする値 (0 より大きい値)",
+        "minimum": 0.0
+    },
+    ("OneCycleLR", "final_div_factor"): {
+        "description": "最後の学習率を最初の学習率の 1 / final_div_factor にする値"
+        " (0 より大きい値)",
+        "minimum": 0.0
+    },
+    ("CyclicLR", "step_size_up"): {
+        "description": "学習率を上げるステップ数", "minimum": 1
+    },
+    ("PolynomialLR", "power"): {
+        "description": "学習率を下げる多項式の次数", "minimum": 0.0
     }
 }
 

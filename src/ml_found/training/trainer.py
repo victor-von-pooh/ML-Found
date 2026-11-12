@@ -931,18 +931,8 @@ class Trainer:
         """
         # 途中で止まった場合も原因が分かるように, エラーを train.log に記録して再送出
         # 外から読める状態にも, 完了, 中断, 失敗のどれかを記録
-        # 結果のファイルを全て保存した後に完了を書くので, 読み手は完了を見てから読める
         try:
             history = self.train_epochs(train_loader, valid_loader)
-            self.run_status.finish(
-                "stopped" if self.stopped_by_request else "completed",
-                completed_epochs=len(self.history.records),
-                best_epoch=self.checkpoint.best_epoch,
-                best_value=self.checkpoint.best_value,
-                final_weights=(
-                    "best" if self.trainer_cfg.restore_best else "last"
-                )
-            )
         except KeyboardInterrupt:
             self.logger.warning("キーボードの割り込みで学習が止まりました")
             self.run_status.finish("stopped", error="KeyboardInterrupt")
@@ -953,6 +943,15 @@ class Trainer:
                 "failed", error=f"{type(error).__name__}: {error}"
             )
             raise
+
+        # 結果のファイルを全て保存した後に完了の書き込み (読み手は完了を見てから読み込み可能)
+        self.run_status.finish(
+            "stopped" if self.stopped_by_request else "completed",
+            completed_epochs=len(self.history.records),
+            best_epoch=self.checkpoint.best_epoch,
+            best_value=self.checkpoint.best_value,
+            final_weights="best" if self.trainer_cfg.restore_best else "last"
+        )
 
         return history
 
@@ -1103,7 +1102,7 @@ class Trainer:
                     break
 
                 # 外から止める要求があった場合は, このエポックで学習の停止
-                # 予定の最後のエポックの場合は全て学習したので完了として扱い
+                # 予定の最後のエポックの場合は全て学習したので完了扱い
                 if stop_requested and epoch < self.trainer_cfg.epochs:
                     self.stopped_by_request = True
                     message = f"中断の要求で学習を止めました (エポック {epoch})"

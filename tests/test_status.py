@@ -6,7 +6,6 @@ import pytest
 from torch import nn
 
 from ml_found.training.callbacks import load_checkpoint
-
 from ml_found.training.trainer import Trainer
 from test_trainer import make_experiment, make_loader, regression_step
 
@@ -333,7 +332,7 @@ def test_stop_on_last_epoch_and_with_early_stopping(tmp_path: Path) -> None:
     ----------
     None
     """
-    # 予定の最後のエポックで STOP を置いても, 全て学習したので完了
+    # 予定の最後より前のエポックで止めた場合は中断
     last = make_experiment(tmp_path / "last", "trainer:\n  epochs: 2\n")
     (last.run_dir / "STOP").touch()
     trainer = Trainer(nn.Linear(1, 1), last, regression_step)
@@ -341,24 +340,52 @@ def test_stop_on_last_epoch_and_with_early_stopping(tmp_path: Path) -> None:
     assert len(trainer.history.records) == 1
     assert read_json(last.run_dir / "run.json")["status"] == "stopped"
 
+    # 予定の最後のエポックで STOP を置いても, 全て学習したので完了
     one = make_experiment(tmp_path / "one", "trainer:\n  epochs: 1\n")
     (one.run_dir / "STOP").touch()
     trainer = Trainer(nn.Linear(1, 1), one, regression_step)
     trainer.fit(make_loader(), make_loader())
     assert read_json(one.run_dir / "run.json")["status"] == "completed"
 
-    # Early Stopping と同じエポックの場合は Early Stopping を優先して完了
+    # 損失が大きいほど良いとすると, エポック 2 で改善せず Early Stopping
+    # 同じエポック 2 の途中で STOP を置いても, Early Stopping を優先して完了
     both = make_experiment(
         tmp_path / "both",
         "trainer:\n  epochs: 20\n  mode: max\n"
         "  early_stopping:\n    use: true\n    patience: 1\n"
     )
-    (both.run_dir / "STOP").touch()
-    trainer = Trainer(nn.Linear(1, 1), both, regression_step)
+
+    def step(model: nn.Module, batch: tuple, phase: str) -> dict:
+        """
+        エポック 2 で止める要求を出してから誤差を求める関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            平均二乗誤差と平均絶対誤差
+        """
+        # エポック 2 の途中で止める要求の作成
+        if trainer.epoch == 2:
+            (both.run_dir / "STOP").touch()
+        outputs = regression_step(model, batch, phase)
+
+        return outputs
+
+    trainer = Trainer(nn.Linear(1, 1), both, step)
     trainer.fit(make_loader(), make_loader())
     status = read_json(both.run_dir / "run.json")
-    assert status["status"] in ("completed", "stopped")
-    assert len(trainer.history.records) == 1
+    assert status["status"] == "completed"
+    assert status["early_stopped_epoch"] == 2
+    assert trainer.stopped_by_request is False
 
 
 def test_write_failure_does_not_stop_training(
@@ -480,3 +507,112 @@ def test_resume_status(tmp_path: Path) -> None:
     assert status["start_epoch"] == 3
     assert status["completed_epochs"] == 4
     assert status["best_epoch"] == resumed.checkpoint.best_epoch
+
+
+def test_write_failure_keeps_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    状態を書けない場合も, 学習のエラーと割り込みがそのまま出ることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        関数を差し替える仕組み
+
+    Returns
+    ----------
+    None
+    """
+
+    def fail(path: Path, data: dict) -> None:
+        """
+        ディスクの不足を再現する関数
+
+        Parameters
+        ----------
+        path: Path
+            書き込むファイル
+        data: dict
+            書き込む内容
+
+        Returns
+        ----------
+        None
+        """
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("ml_found.training.status.write_json", fail)
+    for error in (RuntimeError("壊れたバッチ"), KeyboardInterrupt()):
+        experiment = make_experiment(
+            tmp_path / type(error).__name__, "trainer:\n  epochs: 3\n"
+        )
+
+        def step(model: nn.Module, batch: tuple, phase: str) -> dict:
+            """
+            エポック 2 でエラーか割り込みを起こす関数
+
+            Parameters
+            ----------
+            model: nn.Module
+                学習するモデル
+            batch: tuple
+                x と y
+            phase: str
+                train または valid
+
+            Returns
+            ----------
+            outputs: dict
+                平均二乗誤差と平均絶対誤差
+            """
+            # エポック 2 でエラーの発生
+            if trainer.epoch == 2:
+                raise error
+            outputs = regression_step(model, batch, phase)
+
+            return outputs
+
+        trainer = Trainer(nn.Linear(1, 1), experiment, step)
+        with pytest.raises(type(error)):
+            trainer.fit(make_loader(), make_loader())
+
+
+def test_resume_early_stopped_status(tmp_path: Path) -> None:
+    """
+    Early Stopping で止めた学習を再開した場合の run.json を確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 損失が大きいほど良いとして, エポック 2 で止まる学習
+    text = (
+        "trainer:\n  epochs: 20\n  mode: max\n"
+        "  early_stopping:\n    use: true\n    patience: 1\n"
+    )
+    first = make_experiment(tmp_path / "first", text)
+    trainer = Trainer(nn.Linear(1, 1), first, regression_step)
+    trainer.fit(make_loader(), make_loader())
+    assert len(trainer.history.records) == 2
+
+    # 再開しても学習はせず, 止めたエポックとベストを引き継いで完了
+    second = make_experiment(
+        tmp_path / "second",
+        text + f"  resume_from: {first.run_dir / 'last.pt'}\n"
+    )
+    resumed = Trainer(nn.Linear(1, 1), second, regression_step)
+    resumed.fit(make_loader(), make_loader())
+    status = read_json(second.run_dir / "run.json")
+    assert status["status"] == "completed"
+    assert status["early_stopped_epoch"] == 2
+    assert status["completed_epochs"] == 2
+    assert status["best_epoch"] == trainer.checkpoint.best_epoch
+    assert status["best_value"] == trainer.checkpoint.best_value

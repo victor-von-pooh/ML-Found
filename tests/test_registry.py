@@ -1,6 +1,8 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
+from torch import optim
 
 from ml_found.training.registry import (
     describe_optimizers, describe_schedulers
@@ -51,6 +53,7 @@ def test_describe_schedulers() -> None:
     ----------
     None
     """
+    # StepLR の step_size は必須で, 組み合わせる Scheduler は除外
     specs = {spec["name"]: spec for spec in describe_schedulers()}
     step = {param["name"]: param for param in specs["StepLR"]["params"]}
     assert step["step_size"]["required"] is True
@@ -90,4 +93,75 @@ def test_param_typos_are_errors(tmp_path: Path) -> None:
         tmp_path / "ok",
         "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n    momentum: 0.9\n"
         "scheduler:\n  name: ReduceLROnPlateau\n  params:\n    patience: 2\n"
+    )
+
+
+class RenamedSGD(optim.SGD):
+    def __init__(self, model_params: Any, lr: float = 0.1):
+        # 親クラスのコンストラクタを呼び出す
+        super(RenamedSGD, self).__init__(model_params, lr=lr)
+
+
+class FlexibleSGD(optim.SGD):
+    def __init__(self, params: Any, **kwargs: Any):
+        # 親クラスのコンストラクタを呼び出す
+        super(FlexibleSGD, self).__init__(params, lr=kwargs.get("lr", 0.1))
+
+
+def test_custom_classes(tmp_path: Path) -> None:
+    """
+    自作のクラスの引数の名前と, 任意の名前の引数を受け取るクラスを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # ML-Found が最初に渡す引数は名前に関係なく対象外
+    make_experiment(
+        tmp_path / "renamed",
+        "optimizer:\n  name: test_registry.RenamedSGD\n  params:\n"
+        "    lr: 0.2\n"
+    )
+    with pytest.raises(ValueError, match="無い引数です: momentum"):
+        make_experiment(
+            tmp_path / "renamed_typo",
+            "optimizer:\n  name: test_registry.RenamedSGD\n  params:\n"
+            "    momentum: 0.9\n"
+        )
+
+    # 任意の名前の引数を受け取るクラスは確認しない
+    make_experiment(
+        tmp_path / "flexible",
+        "optimizer:\n  name: test_registry.FlexibleSGD\n  params:\n"
+        "    anything: 1\n"
+    )
+
+
+def test_one_cycle_steps(tmp_path: Path) -> None:
+    """
+    OneCycleLR の総ステップ数の指定が無い場合にエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    base = "scheduler:\n  name: OneCycleLR\n  interval: step\n  params:\n"
+    with pytest.raises(ValueError, match="total_steps"):
+        make_experiment(tmp_path / "none", base + "    max_lr: 0.1\n")
+    make_experiment(
+        tmp_path / "steps", base + "    max_lr: 0.1\n    total_steps: 10\n"
+    )
+    make_experiment(
+        tmp_path / "epochs",
+        base + "    max_lr: 0.1\n    epochs: 2\n    steps_per_epoch: 5\n"
     )

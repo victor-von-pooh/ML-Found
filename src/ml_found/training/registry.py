@@ -3,6 +3,7 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
+from omegaconf import DictConfig
 from torch import optim
 
 from ml_found.training.optim import (
@@ -15,7 +16,7 @@ ADVANCED = {
     "verbose", "maximize"
 }
 
-# Optimizer の説明 (無いものは引数だけを返す)
+# Optimizer の説明 (無いものは説明なしで, 引数だけを返す設定)
 OPTIMIZER_NOTES = {
     "Adam": "勾配の 1 次と 2 次のモーメントで学習率を調整する. 多くの問題の最初の選択肢",
     "AdamW": "Adam の重み減衰を勾配から切り離したもの. Transformer などで標準的",
@@ -56,7 +57,7 @@ SCHEDULER_NOTES = {
 # 引数の説明と範囲 (名前ごと, 全てのクラスで共通)
 PARAM_NOTES: dict[str, dict[str, Any]] = {
     "lr": {"description": "学習率", "minimum": 0.0},
-    "weight_decay": {"description": "重み減衰 (L2 正則化の強さ)", "minimum": 0.0},
+    "weight_decay": {"description": "重み減衰の強さ", "minimum": 0.0},
     "momentum": {"description": "慣性の強さ", "minimum": 0.0, "maximum": 1.0},
     "betas": {"description": "1 次と 2 次のモーメントの減衰率"},
     "eps": {"description": "0 除算を避ける小さな値", "minimum": 0.0},
@@ -74,6 +75,23 @@ PARAM_NOTES: dict[str, dict[str, Any]] = {
     "mode": {"description": "監視する指標の向き (min か max)"},
     "max_iter": {"description": "1 ステップの中の最大の反復回数", "minimum": 1},
     "history_size": {"description": "保存する過去の勾配の数", "minimum": 1}
+}
+
+# 同じ名前でもクラスによって意味が違う引数の説明 (上の説明より優先)
+CLASS_PARAM_NOTES: dict[tuple[str, str], dict[str, Any]] = {
+    ("ReduceLROnPlateau", "eps"): {
+        "description": "これより小さい学習率の変化は無視", "minimum": 0.0
+    },
+    ("ReduceLROnPlateau", "mode"): {
+        "description": "監視する指標の向き. 省略すると ML-Found が trainer.mode を使用"
+    },
+    ("CyclicLR", "mode"): {
+        "description": "周期の形 (triangular, triangular2, exp_range)"
+    },
+    ("Adafactor", "eps"): {"description": "0 除算を避ける小さな値の組"},
+    ("OneCycleLR", "total_steps"): {
+        "description": "全ステップ数. 省略する場合は epochs と steps_per_epoch が必要"
+    }
 }
 
 
@@ -114,24 +132,26 @@ def to_plain(value: Any) -> tuple[str, Any]:
     plain: Any
         JSON で表せる値, 表せない場合は文字列
     """
+    # 型ごとに種類を決め, JSON で表せない値は文字列に変換
+    kind = "other"
+    plain: Any = repr(value)
     if value is None:
-        return "none", None
-    if isinstance(value, bool):
-        return "bool", value
-    if isinstance(value, int):
-        return "int", value
-    if isinstance(value, float):
-        return "float", value if math.isfinite(value) else str(value)
-    if isinstance(value, str):
-        return "str", value
-    if isinstance(value, (tuple, list)):
-        items = [to_plain(item)[1] for item in value]
-        return "list", items
+        kind, plain = "none", None
+    elif isinstance(value, bool):
+        kind, plain = "bool", value
+    elif isinstance(value, int):
+        kind, plain = "int", value
+    elif isinstance(value, float):
+        kind, plain = "float", value if math.isfinite(value) else str(value)
+    elif isinstance(value, str):
+        kind, plain = "str", value
+    elif isinstance(value, (tuple, list)):
+        kind, plain = "list", [to_plain(item)[1] for item in value]
 
-    return "other", repr(value)
+    return kind, plain
 
 
-def describe_params(cls: type, skip: set[str]) -> list[ParamSpec]:
+def describe_params(cls: type) -> list[ParamSpec]:
     """
     クラスの初期化の引数を仕様として取り出す関数
 
@@ -139,19 +159,17 @@ def describe_params(cls: type, skip: set[str]) -> list[ParamSpec]:
     ----------
     cls: type
         Optimizer か Scheduler のクラス
-    skip: set[str]
-        ML-Found が渡すので仕様に含めない引数 (params, optimizer)
 
     Returns
     ----------
     specs: list[ParamSpec]
         引数の名前, 種類, 既定値, 必須か, 説明
     """
+    # self と, ML-Found が最初の位置で渡す引数 (params か optimizer) は名前に
+    # 関係なく除外し, 可変長の引数も除外
+    parameters = list(inspect.signature(cls.__init__).parameters.values())[2:]
     specs = []
-    for param in inspect.signature(cls.__init__).parameters.values():
-        # self, ML-Found が渡す引数, 可変長の引数は除外
-        if param.name == "self" or param.name in skip:
-            continue
+    for param in parameters:
         if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
             continue
 
@@ -159,7 +177,9 @@ def describe_params(cls: type, skip: set[str]) -> list[ParamSpec]:
         kind, default = ("required", None) if required else to_plain(
             param.default
         )
-        notes = PARAM_NOTES.get(param.name, {})
+        notes = CLASS_PARAM_NOTES.get(
+            (cls.__name__, param.name), PARAM_NOTES.get(param.name, {})
+        )
         specs.append(
             ParamSpec(
                 name=param.name, kind=kind, default=default,
@@ -214,7 +234,7 @@ def describe_optimizers() -> list[dict[str, Any]]:
     for name in list_classes(optim, optim.Optimizer):
         spec = ClassSpec(
             name=name, description=OPTIMIZER_NOTES.get(name, ""),
-            params=describe_params(getattr(optim, name), {"params"}),
+            params=describe_params(getattr(optim, name)),
             supported=name not in UNSUPPORTED,
             note=UNSUPPORTED.get(name, "")
         )
@@ -237,71 +257,99 @@ def describe_schedulers() -> list[dict[str, Any]]:
         torch.optim.lr_scheduler の Scheduler ごとの名前, 説明, 引数
     """
     module = optim.lr_scheduler
-    bases = (module.LRScheduler, module.ReduceLROnPlateau)
-    names = sorted(
-        set(list_classes(module, bases[0])) | {"ReduceLROnPlateau"}
-    )
 
-    # 他の Scheduler を組み合わせるものは config だけでは作れないので除外
-    composite = {"SequentialLR", "ChainedScheduler", "LambdaLR",
-                 "MultiplicativeLR"}
+    # 他の Scheduler を組み合わせるものと, 関数を受け取るものは
+    # config だけでは作れないので除外
+    excluded = {
+        "SequentialLR", "ChainedScheduler", "LambdaLR", "MultiplicativeLR"
+    }
     specs = []
-    for name in names:
-        if name in composite or name.startswith("_"):
+    for name in list_classes(module, module.LRScheduler):
+        if name in excluded:
             continue
         spec = ClassSpec(
             name=name, description=SCHEDULER_NOTES.get(name, ""),
-            params=describe_params(getattr(module, name), {"optimizer"})
+            params=describe_params(getattr(module, name))
         )
         specs.append(asdict(spec))
 
     return specs
 
 
-def check_params(cls: type, params: dict[str, Any], skip: set[str]) -> None:
+def check_params(cls: type, names: set[str]) -> None:
     """
-    config の引数が, クラスの引数として正しいかを確かめる関数
+    config の引数の名前が, クラスの引数として正しいかを確かめる関数
 
     Parameters
     ----------
     cls: type
         Optimizer か Scheduler のクラス
-    params: dict[str, Any]
-        config の params
-    skip: set[str]
-        ML-Found が渡す引数
+    names: set[str]
+        config の params に書かれた引数の名前
 
     Returns
     ----------
     None
     """
-    # 任意の名前の引数を受け取るクラス (自作のものなど) は確認しない
-    signature = inspect.signature(cls.__init__)
+    # 引数を取り出せないクラスと, 任意の名前の引数や位置だけの引数を受け取る
+    # クラス (自作のものなど) は確認の対象外
+    try:
+        parameters = list(inspect.signature(cls.__init__).parameters.values())
+    except (TypeError, ValueError):
+        return
     if any(
-        param.kind == param.VAR_KEYWORD
-        for param in signature.parameters.values()
+        param.kind in (param.VAR_KEYWORD, param.POSITIONAL_ONLY)
+        for param in parameters[2:]
     ):
         return
 
     # 存在しない名前の引数 (typo など) の確認
-    specs = describe_params(cls, skip)
-    names = {spec.name for spec in specs}
-    unknown = sorted(set(params) - names)
+    specs = describe_params(cls)
+    valid = {spec.name for spec in specs}
+    unknown = sorted(names - valid)
     if unknown:
         raise ValueError(
             f"{cls.__name__} に無い引数です: {', '.join(unknown)} "
-            f"(使える引数: {', '.join(sorted(names))})"
+            f"(使える引数: {', '.join(sorted(valid))})"
         )
 
-    # 必須の引数の確認
+    # 必須の引数の確認 (OneCycleLR は総ステップ数の指定方法が 2 通り)
     missing = [
         spec.name for spec in specs
-        if spec.required and spec.name not in params
+        if spec.required and spec.name not in names
     ]
+    if issubclass(cls, optim.lr_scheduler.OneCycleLR) and not (
+        "total_steps" in names
+        or {"epochs", "steps_per_epoch"} <= names
+    ):
+        missing.append("total_steps (または epochs と steps_per_epoch)")
     if missing:
         raise ValueError(
             f"{cls.__name__} の必須の引数がありません: {', '.join(missing)}"
         )
+
+
+def param_names(params: Any, section: str) -> set[str]:
+    """
+    config の params から引数の名前を取り出す関数
+
+    Parameters
+    ----------
+    params: Any
+        optimizer.params か scheduler.params
+    section: str
+        エラーの文に使う項目名
+
+    Returns
+    ----------
+    names: set[str]
+        引数の名前 (値は読まないので, 補間や ??? があっても可)
+    """
+    if not isinstance(params, (dict, DictConfig)):
+        raise ValueError(f"{section}.params は「引数の名前: 値」の形で書いてください")
+    names = {str(key) for key in params.keys()}
+
+    return names
 
 
 def check_optim_params(cfg: Any) -> None:
@@ -317,10 +365,15 @@ def check_optim_params(cfg: Any) -> None:
     ----------
     None
     """
+    # 自分で作った Optimizer を Trainer に渡す場合も, config の引数は確認
     optimizer_cls = resolve_optimizer_class(cfg.optimizer.name)
-    check_params(optimizer_cls, dict(cfg.optimizer.params), {"params"})
+    check_params(
+        optimizer_cls, param_names(cfg.optimizer.params, "optimizer")
+    )
 
-    # ReduceLROnPlateau の mode は ML-Found が trainer.mode から補うので省略可
+    # Scheduler を使う場合だけ確認
     if cfg.scheduler.name is not None:
         scheduler_cls = resolve_scheduler_class(cfg.scheduler.name)
-        check_params(scheduler_cls, dict(cfg.scheduler.params), {"optimizer"})
+        check_params(
+            scheduler_cls, param_names(cfg.scheduler.params, "scheduler")
+        )

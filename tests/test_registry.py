@@ -85,6 +85,18 @@ def test_describe_schedulers() -> None:
     }
     assert plateau["min_lr"]["kind"] == "float"
     cyclic = {param["name"]: param for param in specs["CyclicLR"]["params"]}
+
+    # PyTorch が初期化で確かめる範囲をクラスごとに持つ
+    constant = {
+        param["name"]: param for param in specs["ConstantLR"]["params"]
+    }
+    assert constant["factor"]["maximum"] == 1.0
+    restarts = {
+        param["name"]: param
+        for param in specs["CosineAnnealingWarmRestarts"]["params"]
+    }
+    assert restarts["T_mult"]["minimum"] == 1
+    assert plateau["factor"]["maximum"] == 1.0
     assert cyclic["scale_fn"]["kind"] == "none"
 
 

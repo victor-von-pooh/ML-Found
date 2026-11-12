@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 import pytest
+import torch
 from torch import Tensor, optim
 
 from ml_found.training.registry import (
@@ -85,18 +86,6 @@ def test_describe_schedulers() -> None:
     }
     assert plateau["min_lr"]["kind"] == "float"
     cyclic = {param["name"]: param for param in specs["CyclicLR"]["params"]}
-
-    # PyTorch が初期化で確かめる範囲をクラスごとに持つ
-    constant = {
-        param["name"]: param for param in specs["ConstantLR"]["params"]
-    }
-    assert constant["factor"]["maximum"] == 1.0
-    restarts = {
-        param["name"]: param
-        for param in specs["CosineAnnealingWarmRestarts"]["params"]
-    }
-    assert restarts["T_mult"]["minimum"] == 1
-    assert plateau["factor"]["maximum"] == 1.0
     assert cyclic["scale_fn"]["kind"] == "none"
 
 
@@ -238,3 +227,106 @@ def test_refine_kind(kind: str, annotation: Any, expected: str) -> None:
     None
     """
     assert refine_kind(kind, annotation) == expected
+
+
+# 範囲の端を含まない (説明に記載) 引数. 端の値では PyTorch が例外を出す
+EXCLUSIVE_BOUNDS = {
+    ("LinearLR", "start_factor", "minimum"),
+    ("ReduceLROnPlateau", "factor", "maximum"),
+    ("OneCycleLR", "div_factor", "minimum"),
+    ("OneCycleLR", "final_div_factor", "minimum"),
+}
+
+# Scheduler を作るのに必要な引数
+SCHEDULER_KWARGS: dict[str, dict[str, Any]] = {
+    "StepLR": {"step_size": 1},
+    "MultiStepLR": {"milestones": [1]},
+    "CosineAnnealingLR": {"T_max": 2},
+    "ConstantLR": {},
+    "LinearLR": {},
+    "ReduceLROnPlateau": {},
+    "CosineAnnealingWarmRestarts": {"T_0": 1},
+    "OneCycleLR": {"max_lr": 0.1, "total_steps": 10},
+    "CyclicLR": {"base_lr": 0.01, "max_lr": 0.1},
+    "PolynomialLR": {}
+}
+
+
+def bound_cases() -> list[tuple[str, str, str, Any]]:
+    """
+    Scheduler の範囲を持つ引数の, 端の値の組を列挙する関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    cases: list[tuple[str, str, str, Any]]
+        クラスの名前, 引数の名前, minimum か maximum, 端の値
+    """
+    # 登録簿の Scheduler の仕様から, 範囲を持つ引数を集める
+    cases = []
+    for spec in describe_schedulers():
+        for param in spec["params"]:
+            for side in ("minimum", "maximum"):
+                if param[side] is not None:
+                    cases.append(
+                        (spec["name"], param["name"], side, param[side])
+                    )
+
+    return cases
+
+
+@pytest.mark.parametrize(("name", "param", "side", "value"), bound_cases())
+def test_scheduler_bounds_match_torch(
+    name: str, param: str, side: str, value: Any
+) -> None:
+    """
+    登録簿の範囲の端の値で, PyTorch が Scheduler を作れるかを確かめる関数
+
+    端を含む範囲は作れること, 端を含まない範囲は例外になることを確かめ,
+    PyTorch を更新したときの範囲のずれを検出する
+
+    Parameters
+    ----------
+    name: str
+        Scheduler のクラスの名前
+    param: str
+        引数の名前
+    side: str
+        minimum か maximum
+    value: Any
+        端の値
+
+    Returns
+    ----------
+    None
+    """
+    # 端の値を入れて Scheduler を作成 (epochs などは total_steps の代わり)
+    kwargs = dict(SCHEDULER_KWARGS.get(name, {}))
+    if name == "OneCycleLR" and param in ("epochs", "steps_per_epoch"):
+        kwargs.update(total_steps=None, epochs=1, steps_per_epoch=1)
+    kwargs[param] = value
+    model = torch.nn.Linear(1, 1)
+    optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+    cls = getattr(optim.lr_scheduler, name)
+
+    # 作るだけでなく数回進め, 学習中の 0 除算も検出 (OneCycleLR は全ステップ数まで)
+    total = kwargs.get("total_steps") or (
+        kwargs.get("epochs", 3) * kwargs.get("steps_per_epoch", 1)
+    )
+    steps = min(3, total - 1) if name == "OneCycleLR" else 3
+    metric = [0.0] if name == "ReduceLROnPlateau" else []
+
+    def run() -> None:
+        scheduler = cls(optimizer, **kwargs)
+        for _ in range(steps):
+            optimizer.step()
+            scheduler.step(*metric)
+
+    if (name, param, side) in EXCLUSIVE_BOUNDS:
+        with pytest.raises((ValueError, ZeroDivisionError)):
+            run()
+    else:
+        run()

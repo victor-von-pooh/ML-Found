@@ -1,5 +1,6 @@
 import inspect
 import math
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
@@ -151,6 +152,41 @@ def to_plain(value: Any) -> tuple[str, Any]:
     return kind, plain
 
 
+def refine_kind(kind: str, annotation: Any) -> str:
+    """
+    既定値から決めた種類を, 引数の型の注釈で補う関数
+
+    既定値が 0 の float の引数 (weight_decay: float = 0 など) を int と,
+    既定値が None の数の引数 (total_steps: int | None = None など) を
+    none と判定しないために使う
+
+    Parameters
+    ----------
+    kind: str
+        既定値から決めた種類
+    annotation: Any
+        signature から取得した型の注釈 (文字列の場合もある)
+
+    Returns
+    ----------
+    kind: str
+        補った種類
+    """
+    # 注釈を文字列にし, 単語に分けて float と int を探す
+    if annotation is inspect.Parameter.empty:
+        return kind
+    text = annotation if isinstance(annotation, str) else str(
+        getattr(annotation, "__name__", annotation)
+    )
+    words = set(re.findall(r"[A-Za-z_]+", text))
+    if "float" in words and kind in ("int", "none"):
+        return "float"
+    if "int" in words and "bool" not in words and kind == "none":
+        return "int"
+
+    return kind
+
+
 def describe_params(cls: type) -> list[ParamSpec]:
     """
     クラスの初期化の引数を仕様として取り出す関数
@@ -177,6 +213,8 @@ def describe_params(cls: type) -> list[ParamSpec]:
         kind, default = ("required", None) if required else to_plain(
             param.default
         )
+        if not required:
+            kind = refine_kind(kind, param.annotation)
         notes = CLASS_PARAM_NOTES.get(
             (cls.__name__, param.name), PARAM_NOTES.get(param.name, {})
         )

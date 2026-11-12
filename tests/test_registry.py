@@ -34,6 +34,16 @@ def test_describe_optimizers() -> None:
     assert adam["foreach"]["advanced"] is True
     assert "params" not in adam
 
+    # 既定値が 0 や None でも, 型の注釈から float や int と判定
+    sgd = {param["name"]: param for param in specs["SGD"]["params"]}
+    assert sgd["momentum"]["kind"] == "float"
+    assert sgd["momentum"]["default"] == 0
+    assert adam["foreach"]["kind"] == "none"
+    lbfgs = {param["name"]: param for param in specs["LBFGS"]["params"]}
+    assert lbfgs["lr"]["kind"] == "float"
+    assert lbfgs["max_iter"]["kind"] == "int"
+    assert lbfgs["max_eval"]["kind"] == "int"
+
     # ML-Found でそのままでは使えないものは理由付き
     assert specs["SGD"]["supported"] is True
     assert specs["SparseAdam"]["supported"] is False
@@ -61,6 +71,18 @@ def test_describe_schedulers() -> None:
     assert "optimizer" not in step
     assert "ReduceLROnPlateau" in specs
     assert "SequentialLR" not in specs
+
+    # 注釈が文字列の場合も判定
+    one_cycle = {
+        param["name"]: param for param in specs["OneCycleLR"]["params"]
+    }
+    assert one_cycle["total_steps"]["kind"] == "int"
+    assert one_cycle["total_steps"]["default"] is None
+    plateau = {
+        param["name"]: param
+        for param in specs["ReduceLROnPlateau"]["params"]
+    }
+    assert plateau["min_lr"]["kind"] == "float"
 
 
 def test_param_typos_are_errors(tmp_path: Path) -> None:

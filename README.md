@@ -305,6 +305,20 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | `best.pt` | ベストモデルのチェックポイント |
 | `last.pt` | 最後のエポックのチェックポイント, ベストモデルの重みも含む. 再開に使う |
 | `final_model.pt` | ベストモデルの重みだけ (`restore_best: false` の場合は最後のエポックの重み), cpu のテンソル |
+| `run.json` | 実験の状態 (`running`, `completed`, `stopped`, `failed`), 開始と終了の時刻, 予定と終えたエポック数, 監視する指標, ベストのエポックと値, Early Stopping で止めたエポック, 乱数シード, デバイス, エラーの内容. 学習を始めたときに作り, エポックごとと終了時に更新 |
+| `progress.json` | 学習中だけ置かれる, 今のフェーズ (`train`, `valid`), エポック, エポックの中で終えたバッチの数と総数, 経過時間. 1 秒以上の間隔で上書きし, 学習を終えると消す |
+
+### 学習の外からの確認と中断
+
+`run.json` と `progress.json` は, 書きかけを読まないように一時ファイルに書いてから置き換える. ダッシュボードや別の端末のスクリプトから, 学習中の状態と進み具合を読める.
+
+学習中の実験のディレクトリに `STOP` という名前のファイルを置くと, そのエポックを終えたところで学習を止める. `last.pt` を保存し, `final_model.pt` などの結果も残して, 状態を `stopped` にする. エポックの途中では止めないので, 1 エポックが長い学習では止まるまで時間がかかる.
+
+```bash
+touch outputs/wine/2026-11-12/10-00-00/STOP
+```
+
+キーボードの割り込み (Ctrl-C) で止めた場合も `stopped`, エラーで止まった場合は `failed` になる. プロセスが強制終了された場合は `running` のまま残るので, `run.json` の `pid` のプロセスが動いているかで見分ける.
 
 ## ディレクトリ構成
 
@@ -313,7 +327,7 @@ ML-Found/
 ├── src/ml_found/
 │   ├── config/             # config の型定義, 読み込み, 差分
 │   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報
-│   ├── training/           # Trainer, Optimizer と Scheduler, Early Stopping, チェックポイント, 記録
+│   ├── training/           # Trainer, Optimizer と Scheduler, Early Stopping, チェックポイント, 記録, 実験の状態
 │   └── utils/              # デバイス, バッチの転送, 学習曲線
 ├── examples/
 │   ├── minibatch/          # wine データセットの分類, DataLoader で学習する例

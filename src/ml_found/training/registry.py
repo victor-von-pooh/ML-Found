@@ -1,7 +1,9 @@
 import inspect
 import math
+import re
+import types
 from dataclasses import asdict, dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, Union, get_args, get_origin
 
 from omegaconf import DictConfig
 from torch import optim
@@ -151,6 +153,106 @@ def to_plain(value: Any) -> tuple[str, Any]:
     return kind, plain
 
 
+def split_top(text: str, separator: str) -> list[str]:
+    """
+    括弧の外にある区切り文字だけで文字列を分ける関数
+
+    Parameters
+    ----------
+    text: str
+        型の注釈の文字列
+    separator: str
+        区切り文字 (| か ,)
+
+    Returns
+    ----------
+    parts: list[str]
+        前後の空白を除いた要素
+    """
+    # 括弧の深さを数え, 深さ 0 の区切り文字で分割
+    parts, depth, current = [], 0, ""
+    for char in text:
+        depth += char in "[("
+        depth -= char in "])"
+        if char == separator and depth == 0:
+            parts.append(current.strip())
+            current = ""
+        else:
+            current += char
+    parts.append(current.strip())
+
+    return parts
+
+
+def union_members(annotation: Any) -> list[str]:
+    """
+    型の注釈を, 最上位の Union の要素の名前に分ける関数
+
+    Parameters
+    ----------
+    annotation: Any
+        signature から取得した型の注釈 (文字列の場合もある)
+
+    Returns
+    ----------
+    members: list[str]
+        要素の名前 (float, int, None など). 入れ子の型は分けない
+    """
+    # 文字列の注釈は | で分け, Optional[...] と Union[...] は 1 段だけ展開
+    if isinstance(annotation, str):
+        text = annotation.strip()
+        match = re.fullmatch(r"(?:typing\.)?(Optional|Union)\[(.*)\]", text)
+        if match is None:
+            return split_top(text, "|")
+        members = split_top(match.group(2), ",")
+        return members + ["None"] if match.group(1) == "Optional" else members
+
+    # 型の注釈は Union (X | Y も含む) なら要素に分け, 型は名前に変換
+    args = (
+        get_args(annotation)
+        if get_origin(annotation) in (Union, types.UnionType)
+        else (annotation,)
+    )
+    return [
+        "None" if arg is type(None) else
+        arg.__name__ if isinstance(arg, type) else repr(arg)
+        for arg in args
+    ]
+
+
+def refine_kind(kind: str, annotation: Any) -> str:
+    """
+    既定値から決めた種類を, 引数の型の注釈で補う関数
+
+    既定値が 0 の float の引数 (weight_decay: float = 0 など) を int と,
+    既定値が None の数の引数 (total_steps: int | None = None など) を
+    none と判定しないために使う. Callable[[float], float] のような
+    入れ子の型は対象外
+
+    Parameters
+    ----------
+    kind: str
+        既定値から決めた種類
+    annotation: Any
+        signature から取得した型の注釈 (文字列の場合もある)
+
+    Returns
+    ----------
+    kind: str
+        補った種類
+    """
+    # 最上位の Union の要素に float か int そのものがあるかを確認
+    if annotation is inspect.Parameter.empty:
+        return kind
+    members = union_members(annotation)
+    if "float" in members and kind in ("int", "none"):
+        return "float"
+    if "int" in members and kind == "none":
+        return "int"
+
+    return kind
+
+
 def describe_params(cls: type) -> list[ParamSpec]:
     """
     クラスの初期化の引数を仕様として取り出す関数
@@ -177,6 +279,8 @@ def describe_params(cls: type) -> list[ParamSpec]:
         kind, default = ("required", None) if required else to_plain(
             param.default
         )
+        if not required:
+            kind = refine_kind(kind, param.annotation)
         notes = CLASS_PARAM_NOTES.get(
             (cls.__name__, param.name), PARAM_NOTES.get(param.name, {})
         )

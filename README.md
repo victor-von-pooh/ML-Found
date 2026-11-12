@@ -86,6 +86,16 @@ optimizer:
 experiment で書けるのは default にある項目の値だけで, 項目の追加や構造の変更はエラーになる.
 例外は `optimizer.params` と `scheduler.params` で, クラスを変えると必要な引数も変わるので自由に書ける.
 クラス名を変えた場合は default の引数は捨てられる.
+`start_experiment` は出力先を作る前に, `optimizer.params` と `scheduler.params` の名前がクラスの引数にあるか (typo の確認) と, 必須の引数 (`StepLR` の `step_size` など) があるかを確かめる. 任意の名前の引数 (`**kwargs`) や位置だけの引数を受け取る自作のクラスは確かめない. 自分で作った Optimizer や Scheduler を `Trainer` に渡す場合も, config の引数は確かめるので, 使わない引数は消しておく.
+
+選べる Optimizer と Scheduler とその引数 (種類, 既定値, 必須か, 説明, 範囲) は `describe_optimizers()` と `describe_schedulers()` で取得できる. ダッシュボードの入力フォームなどに使う.
+
+```python
+from ml_found.training import describe_optimizers
+
+adam = next(spec for spec in describe_optimizers() if spec["name"] == "Adam")
+print([(param["name"], param["default"]) for param in adam["params"]])
+```
 
 ### 学習スクリプト
 

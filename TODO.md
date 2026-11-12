@@ -12,19 +12,15 @@ ML-Found はその下で動く学習ライブラリとして, ダッシュボー
 
 ## 項目
 
-### 1. Optimizer と Scheduler の登録簿
+### 1. Optimizer と Scheduler の登録簿 (一部対応)
 
-ダッシュボードで Optimizer と Scheduler を選べるように, 選べるものとその設定項目をデータとして返す API を用意する.
+`describe_optimizers()` と `describe_schedulers()` で, `torch.optim` の Optimizer と Scheduler ごとの引数の種類, 既定値, 必須か, 説明, 範囲を返すようにした. 引数は signature から取り出し, よく使うものには説明と範囲を付けた. Muon と SparseAdam は, そのままでは使えないことを理由付きで返す.
+`start_experiment` は, config の引数の名前の typo と必須の引数の不足を, 出力先を作る前に確かめる.
 
-- Optimizer と Scheduler ごとに, 引数の型, 既定値, 範囲, 説明を仕様として登録する
-- 登録した仕様の一覧を返す API を用意する
-- `build_optimizer` と `build_scheduler` も登録簿を参照し, 引数名の typo や範囲外の値を確認する
-- プロジェクト側で作った Optimizer も, 同じ仕組みで登録できるようにする
+残っていること.
 
-現状は `torch.optim` から名前でクラスを探して作るだけなので, 何が選べるのか, どの引数が有効なのかを外から知る方法が無い.
-また, Muon のように, そのままでは動かないものも区別できない (closure が必要な LBFGS は, 項目 2 の対応で動くようになった).
-
-着手するときは, まず登録する仕様の項目を決める.
+- 範囲外の値の確認 (今は範囲を返すだけ)
+- プロジェクト側で作った Optimizer を, 同じ仕組みで登録する方法
 
 ### 2. closure を渡す更新手順への対応 (対応済み)
 

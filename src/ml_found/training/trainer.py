@@ -18,6 +18,7 @@ from ml_found.training.optim import (
     build_optimizer, build_scheduler, check_scheduler, requires_closure,
     step_scheduler, to_kwargs
 )
+from ml_found.training.status import RunStatus
 from ml_found.utils.batch import get_batch_size, move_to_device
 from ml_found.utils.plotting import plot_history
 
@@ -108,6 +109,12 @@ class Trainer:
         # closure の中で step を呼んでいるかどうかの印を用意
         # closure は step を何度も呼ぶので, 予測を貯める処理などを飛ばすのに使用
         self.in_closure = False
+
+        # 外から読める実験の状態と進み具合を書く仕組みの作成
+        self.run_status = RunStatus(experiment.run_dir, self.logger)
+
+        # 外からの要求で学習を止めたかどうかの印を用意
+        self.stopped_by_request = False
 
     def step(self, batch: Any, phase: str) -> dict:
         """
@@ -360,6 +367,17 @@ class Trainer:
         # 学習時と, 検証時にも勾配を使う設定の場合だけ勾配を計算
         grad_enabled = train or self.trainer_cfg.valid_grad
 
+        # 進み具合を外に知らせるため, 分かる場合は 1 エポックのバッチの数を取得
+        total_batches: Optional[int] = None
+        try:
+            total_batches = len(loader)
+        except (TypeError, NotImplementedError):
+            pass
+        self.run_status.progress(
+            phase, self.epoch, self.trainer_cfg.epochs, 0, total_batches,
+            force=True
+        )
+
         # バッチごとに計算, 設定に応じてエポックの中の進捗バーも表示
         show = (
             self.trainer_cfg.progress_bar
@@ -391,6 +409,18 @@ class Trainer:
                 if train and self.trainer_cfg.log_grad_norm:
                     self.add_grad_norm(metrics)
                 tracker.update(metrics, int(n))
+
+                # 一定の間隔で進み具合を書き出し
+                self.run_status.progress(
+                    phase, self.epoch, self.trainer_cfg.epochs, n_batches,
+                    total_batches
+                )
+
+        # フェーズの終わりの進み具合を間隔に関係なく書き出し
+        self.run_status.progress(
+            phase, self.epoch, self.trainer_cfg.epochs, n_batches,
+            total_batches, force=True
+        )
 
         # 学習時のバッチを検証の間まで残さないように解放
         self.current_batch = None
@@ -900,11 +930,28 @@ class Trainer:
             エポックごとの記録
         """
         # 途中で止まった場合も原因が分かるように, エラーを train.log に記録して再送出
+        # 外から読める状態にも, 完了, 中断, 失敗のどれかを記録
         try:
             history = self.train_epochs(train_loader, valid_loader)
-        except Exception:
-            self.logger.exception("エラーで学習が止まりました")
+        except KeyboardInterrupt:
+            self.logger.warning("キーボードの割り込みで学習が止まりました")
+            self.run_status.finish("stopped", error="KeyboardInterrupt")
             raise
+        except Exception as error:
+            self.logger.exception("エラーで学習が止まりました")
+            self.run_status.finish(
+                "failed", error=f"{type(error).__name__}: {error}"
+            )
+            raise
+
+        # 結果のファイルを全て保存した後に完了の書き込み (読み手は完了を見てから読み込み可能)
+        self.run_status.finish(
+            "stopped" if self.stopped_by_request else "completed",
+            completed_epochs=len(self.history.records),
+            best_epoch=self.checkpoint.best_epoch,
+            best_value=self.checkpoint.best_value,
+            final_weights="best" if self.trainer_cfg.restore_best else "last"
+        )
 
         return history
 
@@ -929,10 +976,32 @@ class Trainer:
         # 監視する指標の決定
         monitor = self.get_monitor(valid_loader is not None)
 
+        # 同じ Trainer で fit を繰り返す場合に備えて, 中断の印を初期化
+        self.stopped_by_request = False
+
+        # 再開の前に失敗しても分かるように, 学習を始めたことを書き出し
+        self.run_status.start(
+            planned_epochs=self.trainer_cfg.epochs, start_epoch=1,
+            monitor=monitor, mode=self.trainer_cfg.mode,
+            seed=self.experiment.cfg.experiment.seed,
+            device=str(self.device)
+        )
+
         # 再開する場合はチェックポイントから状態の復元
         if self.trainer_cfg.resume_from is not None:
             self.warn_persistent_workers([train_loader, valid_loader])
             self.resume(self.trainer_cfg.resume_from, monitor)
+            self.run_status.update(
+                start_epoch=self.start_epoch,
+                completed_epochs=len(self.history.records),
+                best_epoch=self.checkpoint.best_epoch or None,
+                best_value=self.checkpoint.best_value,
+                early_stopped_epoch=(
+                    self.start_epoch - 1
+                    if self.early_stopping is not None
+                    and self.early_stopping.stopped else None
+                )
+            )
 
         # Early Stopping で既に止めた学習を再開した場合は学習なし
         epochs = range(self.start_epoch, self.trainer_cfg.epochs + 1)
@@ -992,11 +1061,14 @@ class Trainer:
                     and self.early_stopping.step(value, tiebreak)
                 )
 
+                # 外から止める要求があるかの確認
+                stop_requested = self.run_status.stop_requested()
+
                 # last.pt は決めた間隔と, 最後のエポックと止めるエポックに保存
                 # 保存するものがある場合だけ, 更新した状態をまとめて保存
                 write_last = (
                     epoch % every == 0 or epoch == self.trainer_cfg.epochs
-                    or should_stop
+                    or should_stop or stop_requested
                 )
                 if self.checkpoint.needs_save(improved, write_last):
                     self.checkpoint.save(
@@ -1012,6 +1084,14 @@ class Trainer:
                 pbar.set_postfix_str(summary)
                 pbar.update(1)
 
+                # 外から読める状態の更新
+                self.run_status.update(
+                    completed_epochs=len(self.history.records),
+                    best_epoch=self.checkpoint.best_epoch,
+                    best_value=self.checkpoint.best_value,
+                    early_stopped_epoch=epoch if should_stop else None
+                )
+
                 # 改善しなくなった場合は学習の停止
                 if should_stop:
                     self.logger.info(f"Early Stopping (エポック {epoch})")
@@ -1019,6 +1099,15 @@ class Trainer:
                         f"Early Stopping (エポック {epoch}), "
                         f"ベストモデルのエポック: {self.checkpoint.best_epoch}"
                     )
+                    break
+
+                # 外から止める要求があった場合は, このエポックで学習の停止
+                # 予定の最後のエポックの場合は全て学習したので完了扱い
+                if stop_requested and epoch < self.trainer_cfg.epochs:
+                    self.stopped_by_request = True
+                    message = f"中断の要求で学習を止めました (エポック {epoch})"
+                    self.logger.info(message)
+                    pbar.write(message)
                     break
 
         # 設定に応じてベストモデルを戻して結果を保存

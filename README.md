@@ -305,6 +305,20 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | `best.pt` | ベストモデルのチェックポイント |
 | `last.pt` | 最後のエポックのチェックポイント, ベストモデルの重みも含む. 再開に使う |
 | `final_model.pt` | ベストモデルの重みだけ (`restore_best: false` の場合は最後のエポックの重み), cpu のテンソル |
+| `run.json` | 実験の状態 (`running`, `completed`, `stopped`, `failed`), 開始, 更新, 終了の時刻 (タイムゾーン付き), 予定と終えたエポック数, 再開した最初のエポック, 監視する指標, ベストのエポックと値, Early Stopping で止めたエポック, `final_model.pt` の重み (`best` か `last`), 乱数シード, デバイス, プロセスの ID とホスト名, エラーの内容, 形式の版. 学習を始めたときに作り, エポックごとと終了時に更新 |
+| `progress.json` | 学習中だけ置かれる, 今のフェーズ (`train`, `valid`), エポック, エポックの中で終えたバッチの数と総数, 経過時間. フェーズの始めと終わりに書き, 途中は 1 秒以上の間隔で上書きする. 学習を終えると消す |
+
+### 学習の外からの確認と中断
+
+`run.json` と `progress.json` は, 書きかけを読まないように一時ファイルに書いてから置き換える. ダッシュボードや別の端末のスクリプトから, 学習中の状態と進み具合を読める. 書き込めない場合 (ディスクの不足など) は `train.log` に警告を 1 回残し, 学習は続ける. 状態は `Trainer.fit` が書くので, `fit` を使わずに `train_epochs` などを直接呼んだ場合や, `train_epochs` を上書きした場合は残らない.
+
+学習中の実験のディレクトリに `STOP` という名前のファイルを置くと, そのエポックを終えたところで学習を止める. 結果 (`final_model.pt` など) を保存し, 状態を `stopped` にする. `checkpoint.save_last` が true の場合は, 保存の間隔に関係なく `last.pt` も保存するので, そこから再開できる. エポックの途中では止めないので, 1 エポックが長い学習では止まるまで時間がかかる. 予定の最後のエポックで置いた場合と, Early Stopping と同じエポックで止まった場合は `completed` になる. `STOP` は学習を止めた後も残るので, 同じ出力先で `fit` をやり直す場合は消しておく.
+
+```bash
+touch outputs/wine/2026-11-12/10-00-00/STOP
+```
+
+キーボードの割り込み (Ctrl-C) で止めた場合も `stopped`, エラーで止まった場合は `failed` になる. プロセスが強制終了された場合は `running` のまま残るので, 同じ端末であれば `run.json` の `hostname` と `pid` のプロセスが動いているかで見分ける. 別の端末からは, `progress.json` の `updated_at` が長く更新されていないかで見分ける.
 
 ## ディレクトリ構成
 
@@ -313,7 +327,7 @@ ML-Found/
 ├── src/ml_found/
 │   ├── config/             # config の型定義, 読み込み, 差分
 │   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報
-│   ├── training/           # Trainer, Optimizer と Scheduler, Early Stopping, チェックポイント, 記録
+│   ├── training/           # Trainer, Optimizer と Scheduler, Early Stopping, チェックポイント, 記録, 実験の状態
 │   └── utils/              # デバイス, バッチの転送, 学習曲線
 ├── examples/
 │   ├── minibatch/          # wine データセットの分類, DataLoader で学習する例

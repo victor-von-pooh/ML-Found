@@ -1,4 +1,5 @@
 import inspect
+import json
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -14,6 +15,7 @@ from ml_found.training.registry import (
     is_in_range,
     refine_kind,
 )
+from ml_found.training.trainer import Trainer
 from test_trainer import make_experiment
 
 
@@ -300,12 +302,22 @@ def test_exclusive_flags() -> None:
     """
     flagged = {
         (spec["name"], param["name"], side)
-        for spec in describe_schedulers() + describe_optimizers()
+        for spec in describe_schedulers()
         for param in spec["params"]
         for side in ("minimum", "maximum")
         if param[f"exclusive_{side}"]
     }
     assert flagged == EXCLUSIVE_BOUNDS
+
+    # Optimizer では betas の上限だけが端を含まない (PyTorch も 1 未満を要求)
+    optimizer_flags = {
+        (param["name"], side)
+        for spec in describe_optimizers()
+        for param in spec["params"]
+        for side in ("minimum", "maximum")
+        if param[f"exclusive_{side}"]
+    }
+    assert optimizer_flags == {("betas", "maximum")}
 
 
 @pytest.mark.parametrize(("name", "param", "side", "value"), bound_cases())
@@ -507,3 +519,57 @@ def test_is_in_range() -> None:
         name="y", kind="float", default=0.0, required=False, advanced=False
     )
     assert is_in_range(unbounded, -1e9)
+
+
+def test_array_values_and_init_errors(tmp_path: Path) -> None:
+    """
+    配列の値も要素ごとに範囲を確かめ, Trainer の作成のエラーを記録する
+    ことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # betas の要素が範囲の外なら, 出力先を作る前にエラー
+    message = r"betas は 0.0 以上 1.0 未満 \(今は 1.5\)"
+    with pytest.raises(ValueError, match=message):
+        make_experiment(
+            tmp_path / "betas",
+            "optimizer:\n  name: Adam\n  params:\n    betas: [1.5, 0.999]\n"
+        )
+    assert not (tmp_path / "betas" / "outputs").exists()
+
+    # 配列の中の ??? と解決できない補間は, スカラーと同じく確かめない
+    make_experiment(
+        tmp_path / "missing",
+        "optimizer:\n  name: Adam\n  params:\n    betas: ['???', 0.9]\n"
+    )
+
+    # PyTorch も betas は 0 以上 1 未満を求める
+    for name in ("Adam", "AdamW", "Adamax", "NAdam", "RAdam"):
+        cls = getattr(optim, name)
+        cls(torch.nn.Linear(1, 1).parameters(), betas=(0.0, 0.0))
+        with pytest.raises(ValueError):
+            cls(torch.nn.Linear(1, 1).parameters(), betas=(0.9, 1.0))
+
+    # 範囲の確認から外れる誤り (自作の Optimizer の引数) は Trainer の作成で
+    # エラーになり, train.log と run.json に残る
+    experiment = make_experiment(
+        tmp_path / "init",
+        "optimizer:\n  name: test_registry.RenamedSGD\n  params:\n"
+        "    lr: -0.1\n"
+    )
+    with pytest.raises(ValueError):
+        Trainer(torch.nn.Linear(1, 1), experiment, lambda m, b, p: {})
+    status = json.loads(
+        (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+    )
+    assert status["status"] == "failed"
+    assert "learning rate" in status["error"]
+    log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
+    assert "Trainer の作成でエラーが起きました" in log

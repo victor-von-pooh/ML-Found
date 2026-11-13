@@ -1063,7 +1063,11 @@ class Trainer:
         if self.scheduler is not None and state["scheduler"] is not None:
             fresh_state = self.scheduler.state_dict()
             self.scheduler.load_state_dict(state["scheduler"])
-            self.warn_scheduler_params(fresh_state, state["scheduler"])
+            diffs = self.scheduler_param_diffs(fresh_state, state["scheduler"])
+            if diffs and self.trainer_cfg.resume_scheduler == "config":
+                self.replay_scheduler(state["scheduler"], diffs)
+            else:
+                self.warn_scheduler_params(diffs)
 
             # 再開元の総ステップ数の確認 (ファイルを写す前)
             self.check_total_steps()
@@ -1325,11 +1329,11 @@ class Trainer:
         elif self.use_closure:
             self.logger.info("更新の手順: closure を Optimizer に渡して更新")
 
-    def warn_scheduler_params(
+    def scheduler_param_diffs(
         self, fresh_state: dict, loaded_state: dict
-    ) -> None:
+    ) -> list[str]:
         """
-        再開元の Scheduler の引数が config と違う場合に警告する関数
+        再開元の Scheduler の引数のうち config と違うものを求める関数
 
         Parameters
         ----------
@@ -1340,13 +1344,14 @@ class Trainer:
 
         Returns
         ----------
-        None
+        diffs: list[str]
+            違う引数と, 再開元と config の値の説明
         """
         # 自分で作って渡した Scheduler は config と比べられないので確認なし
         if not self.scheduler_from_config:
-            return
+            diffs = []
+            return diffs
 
-        # Scheduler の状態は引数ごと戻るので, config で変えた引数は無効
         # 型をそろえるため, config の値ではなく config から作った状態と比較
         params = to_kwargs(self.experiment.cfg.scheduler.params)
         diffs = [
@@ -1355,16 +1360,86 @@ class Trainer:
             if key in fresh_state and key in loaded_state
             and fresh_state[key] != loaded_state[key]
         ]
+
+        return diffs
+
+    def warn_scheduler_params(self, diffs: list[str]) -> None:
+        """
+        再開元の Scheduler の引数が config と違う場合に警告する関数
+
+        Parameters
+        ----------
+        diffs: list[str]
+            違う引数と, 再開元と config の値の説明
+
+        Returns
+        ----------
+        None
+        """
+        # Scheduler の状態は引数ごと戻るので, config で変えた引数は無効
         if len(diffs) == 0:
             return
-
-        # 警告とログで通知
         message = (
             "再開元の Scheduler の引数が config と違うので, "
-            f"再開元の値を使います: {', '.join(diffs)}"
+            f"再開元の値を使います: {', '.join(diffs)}. config の値を使う"
+            "場合は trainer.resume_scheduler: config にしてください"
         )
         warnings.warn(message)
         self.logger.warning(message)
+
+    def replay_scheduler(self, loaded_state: dict, diffs: list[str]) -> None:
+        """
+        config の引数で Scheduler を作り直し, 再開元と同じステップ数まで
+        進める関数
+
+        通しで config の引数で学習した場合と同じ学習率になる. 指標の値で
+        学習率を変える ReduceLROnPlateau は進め直せないので, 再開元の状態を
+        使って警告
+
+        Parameters
+        ----------
+        loaded_state: dict
+            再開元のチェックポイントの Scheduler の状態
+        diffs: list[str]
+            違う引数と, 再開元と config の値の説明
+
+        Returns
+        ----------
+        None
+        """
+        # 指標の値に依存する Scheduler は再開元の状態のまま
+        if isinstance(self.scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+            message = (
+                "ReduceLROnPlateau は進め直せないので, 再開元の Scheduler の"
+                f"状態を使います: {', '.join(diffs)}"
+            )
+            warnings.warn(message)
+            self.logger.warning(message)
+            return
+
+        # 学習率を最初の値に戻してから, config の引数で作り直し
+        # 再開元と同じ回数だけ進める (Optimizer の更新は伴わないので,
+        # 順番についての PyTorch の警告は抑制)
+        steps = int(loaded_state["last_epoch"])
+        for group in self.optimizer.param_groups:
+            group["lr"] = group["initial_lr"]
+        self.scheduler = build_scheduler(
+            self.experiment.cfg.scheduler, self.optimizer,
+            self.trainer_cfg.mode
+        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message=".*lr_scheduler.step\\(\\)",
+                category=UserWarning
+            )
+            for _ in range(steps):
+                self.scheduler.step()
+
+        # 作り直したことをログに記録
+        self.logger.info(
+            "再開元と config で Scheduler の引数が違うので, config の引数で"
+            f"作り直して {steps} ステップ進めました: {', '.join(diffs)}"
+        )
 
     def warn_persistent_workers(
         self, loaders: list[Optional[Iterable]]

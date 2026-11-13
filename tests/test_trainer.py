@@ -699,7 +699,9 @@ def test_resume_keeps_lr_steps(tmp_path: Path) -> None:
 
         return rows
 
-    full = make_experiment(tmp_path / "full", text + "trainer:\n  epochs: 4\n")
+    full = make_experiment(
+        tmp_path / "full", text + "trainer:\n  epochs: 4\n"
+    )
     Trainer(nn.Linear(1, 1), full, regression_step).fit(make_loader())
 
     first = make_experiment(
@@ -1124,7 +1126,9 @@ def test_one_cycle_steps_resume(tmp_path: Path) -> None:
         "scheduler:\n  name: OneCycleLR\n  interval: step\n"
         "  params:\n    max_lr: 0.1\n    epochs: 4\n"
     )
-    full = make_experiment(tmp_path / "full", text + "trainer:\n  epochs: 4\n")
+    full = make_experiment(
+        tmp_path / "full", text + "trainer:\n  epochs: 4\n"
+    )
     full_history = Trainer(nn.Linear(1, 1), full, regression_step).fit(
         make_loader()
     )
@@ -2689,3 +2693,110 @@ def test_eval_train_monitor(tmp_path: Path) -> None:
                 tmp_path / key, f"trainer:\n  {key}: train_eval/loss\n"
             )
         assert not (tmp_path / key / "outputs").exists()
+
+
+def test_resume_scheduler_config(tmp_path: Path) -> None:
+    """
+    再開時に Scheduler の引数を config の値にする設定で, 通しで学習した
+    場合と同じ学習率になることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # T_max をエポック数に合わせる CosineAnnealingLR を, 通しで 4 エポック学習
+    text = (
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "scheduler:\n  name: CosineAnnealingLR\n  params:\n"
+        "    T_max: ${trainer.epochs}\n"
+    )
+    full = make_experiment(
+        tmp_path / "full", text + "trainer:\n  epochs: 4\n"
+    )
+    full_history = Trainer(nn.Linear(1, 1), full, regression_step).fit(
+        make_loader(shuffle=True)
+    )
+
+    # 2 エポックで止めて (T_max は 2), エポック数を 4 にして再開
+    first = make_experiment(
+        tmp_path / "first", text + "trainer:\n  epochs: 2\n"
+    )
+    Trainer(nn.Linear(1, 1), first, regression_step).fit(
+        make_loader(shuffle=True)
+    )
+    last_path = first.run_dir / "last.pt"
+
+    def resume(name: str, mode: str) -> History:
+        """
+        決めた設定で再開する関数
+
+        Parameters
+        ----------
+        name: str
+            出力先の名前
+        mode: str
+            trainer.resume_scheduler の値
+
+        Returns
+        ----------
+        history: History
+            エポックごとの記録
+        """
+        # エポック数を 4 にして再開
+        experiment = make_experiment(
+            tmp_path / name,
+            text + f"trainer:\n  epochs: 4\n  resume_from: {last_path}\n"
+            f"  resume_scheduler: {mode}\n"
+        )
+        history = Trainer(nn.Linear(1, 1), experiment, regression_step).fit(
+            make_loader(shuffle=True)
+        )
+
+        return history
+
+    # 再開元の状態のままでは学習率が 0 になり, 警告が出る
+    with pytest.warns(UserWarning, match="resume_scheduler: config"):
+        kept = resume("kept", "checkpoint")
+    assert kept.get("lr")[2] == pytest.approx(0.0)
+
+    # config の値にすると, 再開した後の学習率は通しで学習した場合と一致
+    # (再開元までのエポックは元の引数で学習したまま)
+    replayed = resume("replayed", "config")
+    assert replayed.get("lr")[2:] == pytest.approx(full_history.get("lr")[2:])
+    assert replayed.get("lr")[2] > 0
+    log = next((tmp_path / "replayed").rglob("train.log")).read_text(
+        encoding="utf-8"
+    )
+    assert "2 ステップ進めました" in log
+
+    # 指標で学習率を変える ReduceLROnPlateau は進め直せないので警告
+    plateau = (
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "scheduler:\n  name: ReduceLROnPlateau\n  params:\n"
+        "    patience: ${trainer.epochs}\n"
+    )
+    first = make_experiment(
+        tmp_path / "plateau_first", plateau + "trainer:\n  epochs: 1\n"
+    )
+    Trainer(nn.Linear(1, 1), first, regression_step).fit(make_loader())
+    experiment = make_experiment(
+        tmp_path / "plateau",
+        plateau + "trainer:\n  epochs: 2\n"
+        f"  resume_from: {first.run_dir / 'last.pt'}\n"
+        "  resume_scheduler: config\n"
+    )
+    with pytest.warns(UserWarning, match="進め直せない"):
+        Trainer(nn.Linear(1, 1), experiment, regression_step).fit(
+            make_loader()
+        )
+
+    # 決まった値以外はエラー
+    with pytest.raises(ValueError, match="resume_scheduler"):
+        make_experiment(
+            tmp_path / "wrong", "trainer:\n  resume_scheduler: latest\n"
+        )

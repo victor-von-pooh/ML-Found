@@ -316,7 +316,7 @@ trainer:
 - `last.pt` にはベストモデルの重みも含まれるので, `last.pt` だけで再開できる. `trainer.checkpoint.last_with_best: false` の場合は, 同じディレクトリの `best.pt` からベストモデルの重みを戻す. `best.pt` が無いか, `every_n_epochs` で `last.pt` の後に `best.pt` が更新されていてエポックが合わない場合は警告が出て, 再開後に改善しなければ最後のエポックの重みが残る (`run.json` の `final_weights` は `last`). `best_weights_only: true` の `best.pt` と `final_model.pt` は学習の状態を含まないので, 再開に指定すると出力先を作る前にエラーになる
 - `trainer.monitor` や `trainer.mode` を再開元から変えるとエラーになる
 - Early Stopping で止めた学習を再開しても学習しない
-- Scheduler の状態は引数 (`T_max` など) ごと再開元から戻る. config で引数を変えて再開すると効かず, 警告が出る. 例えば `T_max: ${trainer.epochs}` は再開時に `epochs` を増やしても変わらない. 警告は config と同じ名前で状態に入っている引数だけを比べるので, `OneCycleLR` の `epochs` や `max_lr` のように名前を変えて持つ引数の変更は警告されない. Optimizer の引数 (`lr` など) も再開元の値が使われる
+- Scheduler の状態は引数 (`T_max` など) ごと再開元から戻る. config で引数を変えて再開すると効かず, 警告が出る. 例えば `T_max: ${trainer.epochs}` は再開時に `epochs` を増やしても変わらない. `trainer.resume_scheduler: config` にすると, 引数が違う場合は config の引数で Scheduler を作り直し, 再開元と同じステップ数まで進める. 再開した後の学習率は, config の引数で通しで学習した場合と同じになる (再開元までのエポックは元の引数で学習したまま). 引数を書き換えるだけでは, 例えば `T_max` を過ぎて 0 になった学習率は戻らないため. 指標で学習率を変える ReduceLROnPlateau は進め直せないので, 警告を出して再開元の状態を使う. 自分で作って渡した Scheduler は対象外. 警告は config と同じ名前で状態に入っている引数だけを比べるので, `OneCycleLR` の `epochs` や `max_lr` のように名前を変えて持つ引数の変更は警告されない. Optimizer の引数 (`lr` など) も再開元の値が使われる
 - `last.pt` の保存の間隔を空けていて, 再開元の `best.pt` が `last.pt` より後のエポックのベストモデルの場合は, 再開で捨てる履歴のものなので新しい出力先に写さない (`train.log` に警告が出る)
 - `persistent_workers=True` の DataLoader では, ワーカーの乱数の種を最初の 1 回だけ引くので, 再開した学習は通しで学習した場合と一致しない (警告が出る). 一致させたい場合は `num_workers: 0` にする
 - 存在しない `resume_from` は, 出力先を作る前にエラーになる
@@ -364,6 +364,7 @@ ML-Found が使う項目と既定値.
 | `trainer.valid_seed` | `null` | 検証の前に乱数を固定するシード, 検証の後は学習の乱数の状態に戻す |
 | `trainer.eval_train` | `false` | 学習の後に学習用データを推論モードで評価し直し, `train_eval/` を付けて記録するかどうか |
 | `trainer.manual_optimization` | `false` | ML-Found が逆伝播と更新を行わず, `step` の中で更新するかどうか |
+| `trainer.resume_scheduler` | `checkpoint` | 再開時に Scheduler の引数が config と違う場合に, 再開元の状態のまま (`checkpoint`) か, config の引数で作り直して同じステップ数まで進めるか (`config`) |
 | `trainer.resume_from` | `null` | 再開するチェックポイントのパス, 相対パスの場合はプロジェクトのディレクトリから辿る |
 | `trainer.progress_bar` | `true` | 進捗バーを表示するかどうか |
 | `trainer.progress_bar_batches` | `false` | エポックの中のバッチ単位の進捗バーも表示するかどうか (1 エポックが長い場合に使う) |

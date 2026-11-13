@@ -108,6 +108,12 @@ class TrainerConfig:
     # 学習を再開するチェックポイントのパス, null の場合は最初から学習
     resume_from: Optional[str] = None
 
+    # 再開時に Scheduler の引数が config と違う場合に, どちらを使うか
+    # checkpoint は再開元の状態のまま, config は config の引数で作り直して
+    # 再開元と同じステップ数まで進めた状態 (再開した後の学習率は, config の
+    # 引数で通しで学習した場合と同じ)
+    resume_scheduler: str = "checkpoint"
+
     # 進捗バーを表示するかどうかと, エポックの中のバッチ単位の進捗バーも出すかどうか
     progress_bar: bool = True
     progress_bar_batches: bool = False

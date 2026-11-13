@@ -249,6 +249,17 @@ Optimizer や Scheduler を自分で作る場合は `Trainer(model, experiment, 
 `OneCycleLR` の総ステップ数 (`total_steps`, または `epochs` と `steps_per_epoch`) は, 書かなければ `fit` が学習を始めるときに補う. `steps_per_epoch` は `scheduler.interval: step` なら学習用データのバッチ数 (`len(train_loader)`), `epoch` なら 1 (1 エポックに 1 回進めるため), `epochs` は `trainer.epochs` にする. 補った値は `config.yaml` と `train.log` に残る. そのため config から作る `OneCycleLR` は `fit` を呼ぶまで作られない (`trainer.scheduler` は `None`). `scheduler.interval: step` で `len()` を持たない `train_loader` では補えないのでエラーになり, `total_steps` か `steps_per_epoch` を書く. `OneCycleLR` は, 補ったかどうかに関係なく, 総ステップ数が `trainer.epochs` とバッチ数から求めた予定より少ないと学習を始める前にエラーに, 多いと警告にする (学習率が下がりきらない). 再開した場合は再開元の総ステップ数が使われるので, `trainer.epochs` やバッチ数を変えて再開した場合や, 補った値の入った `config.yaml` を default にして条件を変えた場合も, この確認で分かる. エポック数を増やして再開する場合は, `trainer.resume_scheduler: config` にすると, 補い直した総ステップ数で作り直して続きを学習する (下の「学習の再開」を参照).
 
 学習全体で決まる他の Scheduler の引数 (`CosineAnnealingLR` の `T_max`, `LinearLR`, `ConstantLR`, `PolynomialLR` の `total_iters`) は, 値に `auto` と書くと, `fit` が学習を始めるときに学習全体のステップ数で補う. `scheduler.interval: step` ならエポック数 × 学習用データのバッチ数, `epoch` ならエポック数. 補った値は `config.yaml` と `train.log` に残る. `auto` と書けるのはこれらのクラス (と継承したクラス) の引数だけで, 他の引数 (範囲を持たない `eta_min` などや, Optimizer の引数も) に書くと出力先を作る前にエラーになる. warmup のように学習の一部の長さを表す値には使えない (`auto` は学習全体の長さ). `OneCycleLR` と同じく, Scheduler は `fit` を呼ぶまで作られない (`trainer.scheduler` は `None`). エポック数などを変えて再開すると補う値が再開元と変わるので, 既定の `trainer.resume_scheduler: checkpoint` ではエラーになり, `config` にすると補い直した値で作り直す. 補った値の入った `config.yaml` を default にすると, `auto` ではなく数値になるので, エポック数を変える場合は `auto` に書き直す.
+
+学習の始めに学習率を少しずつ上げる warmup は, `scheduler.warmup_steps` (回数, `interval` の単位) か `scheduler.warmup_ratio` (学習全体のステップ数に対する割合) で書く. 学習率は最初の値の `scheduler.warmup_start_factor` (既定 0.01) 倍から線形に上げ, その後は `scheduler.name` の Scheduler に続ける (`SequentialLR` で組み合わせる). `auto` と書いた引数は, warmup の後の残りのステップ数で補う. `warmup_ratio` は `fit` が学習を始めるときに回数に直し, `config.yaml` の `warmup_steps` に残す. `scheduler.name` が無い場合は warmup だけで, その後の学習率は一定. ReduceLROnPlateau, OneCycleLR, CyclicLR とは組み合わせられない (エラー).
+
+```yaml
+scheduler:
+  name: CosineAnnealingLR
+  interval: step
+  params:
+    T_max: auto        # warmup の後の残りのステップ数
+  warmup_ratio: 0.1    # 学習全体の 1 割で学習率を上げる
+```
 自分で値を決める場合は, これまで通り `load_config` の後, `start_experiment` の前に config に書き込むと `config.yaml` にも残る.
 
 ```python
@@ -353,6 +364,9 @@ ML-Found が使う項目と既定値.
 | `scheduler.name` | `null` | `torch.optim.lr_scheduler` のクラス名, `null` の場合は使わない |
 | `scheduler.params` | `{}` | Scheduler に渡す引数 |
 | `scheduler.interval` | `epoch` | 学習率を更新する間隔, `epoch` か `step` |
+| `scheduler.warmup_steps` | `null` | 学習の始めに学習率を線形に上げる回数 (`interval` の単位) |
+| `scheduler.warmup_ratio` | `null` | warmup の回数を学習全体のステップ数に対する割合で書く (学習を始めるときに `warmup_steps` に直す) |
+| `scheduler.warmup_start_factor` | `0.01` | warmup の最初の学習率の倍率 |
 | `trainer.epochs` | `100` | エポック数 |
 | `trainer.monitor` | `null` | ベストモデルの判定に使う指標, `null` の場合は `valid/loss`, 検証しない場合は `train/loss` |
 | `trainer.mode` | `min` | 指標は小さい方と大きい方のどちらが良いか |

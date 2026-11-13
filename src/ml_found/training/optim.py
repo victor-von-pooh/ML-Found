@@ -245,9 +245,10 @@ def check_optim_config(cfg: DictConfig) -> None:
     # 自分で作った Optimizer を Trainer に渡す場合も config の名前を確認
     resolve_optimizer_class(cfg.optimizer.name)
 
-    # 学習率を更新する間隔の確認
+    # 学習率を更新する間隔と warmup の確認
     interval = cfg.scheduler.interval
     check_interval(interval)
+    check_warmup(cfg.scheduler)
 
     # Scheduler を使わない場合は以上で確認終了
     if cfg.scheduler.name is None:
@@ -259,6 +260,61 @@ def check_optim_config(cfg: DictConfig) -> None:
     if issubclass(scheduler_cls, optim.lr_scheduler.ReduceLROnPlateau):
         plateau_mode = cfg.scheduler.params.get("mode", cfg.trainer.mode)
         check_plateau(interval, plateau_mode, cfg.trainer.mode)
+
+
+# warmup と組み合わせられない Scheduler (指標で変えるものと, 自分で上げ下げ
+# するもの)
+NO_WARMUP_SCHEDULERS = (
+    optim.lr_scheduler.ReduceLROnPlateau, optim.lr_scheduler.OneCycleLR,
+    optim.lr_scheduler.CyclicLR
+)
+
+
+def check_warmup(cfg: DictConfig) -> None:
+    """
+    scheduler の warmup の設定を確かめる関数
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        scheduler の config
+
+    Returns
+    ----------
+    None
+    """
+    # 回数と割合はどちらか一方, 回数は 0 以上の整数, 割合は 0 以上 1 未満
+    steps = cfg.get("warmup_steps")
+    ratio = cfg.get("warmup_ratio")
+    factor = cfg.get("warmup_start_factor", 0.01)
+    if steps is not None and ratio is not None:
+        raise ValueError(
+            "scheduler.warmup_steps と warmup_ratio はどちらか一方にしてください"
+        )
+    if steps is not None and (
+        not isinstance(steps, int) or isinstance(steps, bool) or steps < 0
+    ):
+        raise ValueError(
+            f"scheduler.warmup_steps は 0 以上の整数にしてください: {steps}"
+        )
+    if ratio is not None and not 0.0 <= float(ratio) < 1.0:
+        raise ValueError(
+            f"scheduler.warmup_ratio は 0 以上 1 未満にしてください: {ratio}"
+        )
+    if not 0.0 < float(factor) <= 1.0:
+        raise ValueError(
+            "scheduler.warmup_start_factor は 0 より大きく 1 以下にしてください: "
+            f"{factor}"
+        )
+
+    # warmup の要らない Scheduler との組み合わせはエラー
+    if (steps or ratio) and cfg.name is not None:
+        scheduler_cls = resolve_scheduler_class(cfg.name)
+        if issubclass(scheduler_cls, NO_WARMUP_SCHEDULERS):
+            raise ValueError(
+                f"{cfg.name} には scheduler.warmup_steps と warmup_ratio を"
+                "使えません"
+            )
 
 
 def check_scheduler(
@@ -348,6 +404,30 @@ def auto_params(cfg: DictConfig) -> list[str]:
     return names
 
 
+def needs_data(cfg: DictConfig) -> bool:
+    """
+    Scheduler を作るのに学習用データの量が要るかを返す関数
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        scheduler の config
+
+    Returns
+    ----------
+    needed: bool
+        データの量で決まる引数か, 割合で書いた warmup がある場合は True
+    """
+    # 補う引数か, 回数に直していない warmup の割合があるかを確認
+    ratio_only = (
+        cfg.get("warmup_ratio") is not None
+        and cfg.get("warmup_steps") is None
+    )
+    needed = bool(missing_data_size_params(cfg)) or ratio_only
+
+    return needed
+
+
 def missing_data_size_params(cfg: DictConfig) -> list[str]:
     """
     データの量で決まる Scheduler の引数のうち, config に無いものを返す関数
@@ -403,22 +483,38 @@ def build_scheduler(
     scheduler: Optional[optim.lr_scheduler.LRScheduler]
         作成した Scheduler, 使わない場合は None
     """
-    # 名前が指定されていない場合は不使用
-    if cfg.name is None:
-        scheduler = None
-        return scheduler
+    # warmup の回数 (割合で書いた場合は学習を始めるときに補った値)
+    warmup = cfg.get("warmup_steps")
+    if cfg.get("warmup_ratio") is not None and warmup is None:
+        raise ValueError(
+            "scheduler.warmup_ratio は学習を始めるときに回数に直すので, "
+            "その前には Scheduler を作れません"
+        )
 
-    # クラスを取得
-    scheduler_cls = resolve_scheduler_class(cfg.name)
+    # 名前が指定されていない場合は, warmup だけか不使用
+    main = None
+    if cfg.name is not None:
+        # ReduceLROnPlateau の向きを指定しない場合は監視する指標の向きに統一
+        scheduler_cls = resolve_scheduler_class(cfg.name)
+        kwargs = to_kwargs(cfg.params)
+        if issubclass(scheduler_cls, optim.lr_scheduler.ReduceLROnPlateau):
+            kwargs.setdefault("mode", mode)
+        main = scheduler_cls(optimizer, **kwargs)
 
-    # ReduceLROnPlateau の向きを指定しない場合は監視する指標の向きに統一
-    kwargs = to_kwargs(cfg.params)
-    if issubclass(scheduler_cls, optim.lr_scheduler.ReduceLROnPlateau):
-        kwargs.setdefault("mode", mode)
+    # warmup がある場合は, 線形に上げる Scheduler の後に続ける
+    scheduler = main
+    if warmup:
+        warm = optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=cfg.get("warmup_start_factor", 0.01),
+            end_factor=1.0, total_iters=int(warmup)
+        )
+        scheduler = warm if main is None else optim.lr_scheduler.SequentialLR(
+            optimizer, [warm, main], milestones=[int(warmup)]
+        )
 
-    # 引数を渡して作り, 間隔と向きの組み合わせの確認
-    scheduler = scheduler_cls(optimizer, **kwargs)
-    check_scheduler(scheduler, cfg.interval, mode)
+    # 間隔と向きの組み合わせの確認
+    if scheduler is not None:
+        check_scheduler(scheduler, cfg.interval, mode)
 
     return scheduler
 
@@ -509,6 +605,9 @@ def try_build_optim(cfg: DictConfig, device: torch.device) -> None:
             scheduler_cfg.params[name] = (
                 1 if name == "steps_per_epoch" else int(cfg.trainer.epochs)
             )
+        if scheduler_cfg.get("warmup_ratio") is not None:
+            scheduler_cfg.warmup_steps = 1
+            scheduler_cfg.warmup_ratio = None
         try:
             build_scheduler(scheduler_cfg, optimizer, cfg.trainer.mode)
         except Exception as error:

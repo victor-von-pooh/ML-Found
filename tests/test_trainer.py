@@ -3256,6 +3256,58 @@ def test_warmup(tmp_path: Path) -> None:
     trainer.fit(make_loader())
     assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(0.0)
 
+    # warmup の有無を変えた再開は, 既定ではエラー, config なら作り直す
+    for name, text in (("add", "  warmup_steps: 2\n"), ("remove", "")):
+        source = make_experiment(
+            tmp_path / f"{name}_first",
+            base + ("" if name == "add" else "  warmup_steps: 2\n")
+            + "trainer:\n  epochs: 2\n"
+        )
+        Trainer(nn.Linear(1, 1), source, regression_step).fit(make_loader())
+        resume = f"  resume_from: {source.run_dir / 'last.pt'}\n"
+        changed = base + text + "trainer:\n  epochs: 2\n" + resume
+        experiment = make_experiment(tmp_path / f"{name}_kept", changed)
+        with pytest.raises(ValueError, match="組み立て"):
+            Trainer(nn.Linear(1, 1), experiment, regression_step).fit(
+                make_loader()
+            )
+        experiment = make_experiment(
+            tmp_path / f"{name}_replayed",
+            changed + "  resume_scheduler: config\n"
+        )
+        trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+        trainer.fit(make_loader())
+        assert trainer.optimizer.param_groups[0]["lr"] <= 0.1
+
+    # 割合から補った回数が再開元と違う場合も, 既定ではエラー
+    ratio = base.replace("T_max: auto", "T_max: 4") + "  warmup_ratio: 0.25\n"
+    source = make_experiment(
+        tmp_path / "ratio_first", ratio + "trainer:\n  epochs: 2\n"
+    )
+    Trainer(nn.Linear(1, 1), source, regression_step).fit(make_loader())
+    experiment = make_experiment(
+        tmp_path / "ratio_kept",
+        ratio + "trainer:\n  epochs: 4\n"
+        f"  resume_from: {source.run_dir / 'last.pt'}\n"
+    )
+    with pytest.raises(ValueError, match="warmup_steps"):
+        Trainer(nn.Linear(1, 1), experiment, regression_step).fit(
+            make_loader()
+        )
+
+    # 学習全体以上の warmup は警告し, ログには中の Scheduler の状態も残る
+    experiment = make_experiment(
+        tmp_path / "long",
+        base.replace("T_max: auto", "T_max: 4")
+        + "  warmup_steps: 100\ntrainer:\n  epochs: 1\n"
+    )
+    with pytest.warns(UserWarning, match="切り替わりません"):
+        Trainer(nn.Linear(1, 1), experiment, regression_step).fit(
+            make_loader()
+        )
+    log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
+    assert "Scheduler の状態 (CosineAnnealingLR)" in log
+
     # 設定の誤りは出力先を作る前にエラー
     for name, text in (
         ("both", "  warmup_steps: 2\n  warmup_ratio: 0.1\n"),

@@ -73,6 +73,11 @@ def check_trainer_config(cfg: DictConfig) -> None:
     """
     # last.pt を保存する間隔は 1 以上に制限
     trainer_cfg = cfg.trainer
+    if trainer_cfg.resume_scheduler not in ("checkpoint", "config"):
+        raise ValueError(
+            "trainer.resume_scheduler は checkpoint か config にしてください: "
+            f"{trainer_cfg.resume_scheduler}"
+        )
     if trainer_cfg.checkpoint.every_n_epochs < 1:
         raise ValueError(
             "trainer.checkpoint.every_n_epochs は 1 以上にしてください: "

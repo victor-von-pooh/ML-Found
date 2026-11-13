@@ -48,5 +48,4 @@ ML-Found はその下で動く学習ライブラリとして, ダッシュボー
 - チェックポイントに記録の全て (`history` と, step ごとの Scheduler では更新ごとの学習率 `lr_steps`) を毎回入れず, `history.csv` と `lr_steps.csv` に追記する形にする. 1 エポックが短く毎エポック改善する学習 (フルバッチなど) では, `best.pt` を改善のたびに記録ごと保存する時間が残る (`best_weights_only: true` なら重みだけ)
 - エポックの途中で止めた場合に, 捨てたエポックの更新回数, Optimizer, Scheduler, 乱数の状態をメモリの上でも戻す (同じ `Trainer` で `fit` を呼び直す場合のため)
 - `OneCycleLR` 以外のデータの量で決まる引数 (warmup 付きの Scheduler, step ごとに使う `CosineAnnealingLR` の `T_max` など) も補う仕組み
-- 再開時に Scheduler の引数が config と違う場合に, config の値で上書きするかを選べる設定 (今は警告だけ)
 

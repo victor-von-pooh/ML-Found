@@ -1692,3 +1692,83 @@ def test_warn_without_best_weights(tmp_path: Path) -> None:
             "trainer:\n  checkpoint:\n    last_with_best: false\n"
             "    save_best: false\n"
         )
+
+
+def test_step_extra(tmp_path: Path) -> None:
+    """
+    step の extra で返した値を, 平均せずにエポックの最後の値で記録することを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    class ScheduleTrainer(Trainer):
+        def step(self, batch: tuple, phase: str) -> dict:
+            """
+            損失と, エポックで決まる重みを extra で返す関数
+
+            Parameters
+            ----------
+            batch: tuple
+                x と y
+            phase: str
+                train または valid
+
+            Returns
+            ----------
+            outputs: dict
+                損失と, 記録だけする重み
+            """
+            outputs = regression_step(self.model, batch, phase)
+            outputs["extra"] = {"weight": 0.1 * self.epoch}
+
+            return outputs
+
+    experiment = make_experiment(tmp_path / "ok", "trainer:\n  epochs: 3\n")
+    trainer = ScheduleTrainer(nn.Linear(1, 1), experiment)
+    history = trainer.fit(make_loader(), make_loader())
+
+    # train/ と valid/ が付かず, 平均の誤差も無い
+    assert history.get("weight") == [0.1, 0.2, 0.30000000000000004]
+    assert "train/weight" not in history.keys()
+    assert "valid/weight" not in history.keys()
+
+    # 名前と値の形の誤りはエラー
+    for name, extra in (
+        ("slash", {"a/b": 1.0}), ("reserved", {"lr": 1.0}),
+        ("shape", {"w": torch.ones(2)}), ("type", [1.0]),
+        ("comma", {"a, b": 1.0}), ("empty", {"": 1.0}), ("key", {1: 1.0}),
+        ("string", {"w": "abc"}), ("none", {"w": None}),
+        ("metric", {"loss": 1.0})
+    ):
+        class BadTrainer(Trainer):
+            def step(self, batch: tuple, phase: str) -> dict:
+                """
+                誤った extra を返す関数
+
+                Parameters
+                ----------
+                batch: tuple
+                    x と y
+                phase: str
+                    train または valid
+
+                Returns
+                ----------
+                outputs: dict
+                    損失と誤った extra
+                """
+                outputs = regression_step(self.model, batch, phase)
+                outputs["extra"] = extra
+
+                return outputs
+
+        bad = make_experiment(tmp_path / name, "trainer:\n  epochs: 1\n")
+        with pytest.raises(ValueError, match="extra"):
+            BadTrainer(nn.Linear(1, 1), bad).fit(make_loader())

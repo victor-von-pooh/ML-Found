@@ -1,6 +1,6 @@
 from collections import UserDict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import warnings
 
 import pytest
@@ -1037,4 +1037,90 @@ def test_tiebreak_errors(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="monitor_tiebreak_mode"):
         make_experiment(
             tmp_path / "mode", "trainer:\n  monitor_tiebreak_mode: low\n"
+        )
+
+
+class RandomSearch(torch.optim.Optimizer):
+    # 勾配を使わない Optimizer (損失が下がる場合だけ乱数で動かした値を採用)
+    uses_gradients = False
+
+    def __init__(self, params: Any, lr: float = 0.1):
+        # 親クラスのコンストラクタを呼び出す
+        super(RandomSearch, self).__init__(params, {"lr": lr})
+
+    def step(self, closure: Callable[[], torch.Tensor]) -> torch.Tensor:
+        """
+        パラメータを乱数で動かし, 損失が下がった場合だけ残す関数
+
+        Parameters
+        ----------
+        closure: Callable[[], torch.Tensor]
+            今のパラメータの損失を求める関数
+
+        Returns
+        ----------
+        loss: torch.Tensor
+            更新した後の損失
+        """
+        # 今の損失を求めてから, 全てのパラメータを動かして比較
+        loss = closure()
+        saved = []
+        for group in self.param_groups:
+            for param in group["params"]:
+                saved.append(param.detach().clone())
+                param.add_(torch.randn_like(param) * group["lr"])
+        new_loss = closure()
+
+        # 損失が下がらなければ元に戻す
+        if new_loss >= loss:
+            params = [
+                param for group in self.param_groups
+                for param in group["params"]
+            ]
+            for param, value in zip(params, saved):
+                param.copy_(value)
+            new_loss = loss
+
+        return new_loss
+
+
+def test_gradient_free_optimizer(tmp_path: Path) -> None:
+    """
+    勾配を使わないと宣言した Optimizer では, 逆伝播をせず損失だけを求める
+    closure を渡して学習することを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 1 次関数を乱数の探索で学習
+    experiment = make_experiment(
+        tmp_path / "ok", "trainer:\n  epochs: 20\n"
+    )
+    model = nn.Linear(1, 1)
+    trainer = Trainer(
+        model, experiment, regression_step, RandomSearch(model.parameters())
+    )
+    assert not trainer.use_gradients
+    history = trainer.fit(make_loader())
+    losses = history.get("train/loss")
+    assert losses[-1] < losses[0]
+    assert all(param.grad is None for param in model.parameters())
+    log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
+    assert "勾配を使わず" in log
+
+    # 勾配を使う設定とは一緒に使えない
+    experiment = make_experiment(
+        tmp_path / "clip", "trainer:\n  grad_clip_norm: 1.0\n"
+    )
+    model = nn.Linear(1, 1)
+    with pytest.raises(ValueError, match="勾配を使わない"):
+        Trainer(
+            model, experiment, regression_step,
+            RandomSearch(model.parameters())
         )

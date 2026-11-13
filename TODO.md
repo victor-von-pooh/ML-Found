@@ -18,14 +18,12 @@ ML-Found はその下で動く学習ライブラリとして, ダッシュボー
 
 プロジェクト側で作った Optimizer は `register_optimizer` で, 名前と説明, 引数の範囲を登録できる.
 
-### 2. closure を渡す更新手順への対応 (一部対応)
+### 2. closure を渡す更新手順への対応 (対応済み)
 
 `update_parameters` が, `step` に closure が必要な Optimizer (LBFGS など) を自動で見分け, 同じバッチで損失と勾配を計算し直す closure を渡すようにした. closure が必要かは, クラスの属性 `requires_closure` (自作の Optimizer が宣言), 登録簿の仕様 (`describe_optimizers()` の `requires_closure`), `step` のシグネチャの順に決める.
 あわせて `trainer.manual_optimization` で, ML-Found が逆伝播と更新を行わない設定も加えた.
 
-残っていること.
-
-- Nelder-Mead 法のような勾配を使わない最適化法. 勾配を使うかどうかも 1 の登録簿の仕様に持たせる (closure が必要かは対応済み)
+勾配を使わない最適化法 (Nelder-Mead 法など) は, Optimizer がクラスの属性 `uses_gradients = False` で宣言すると, 逆伝播をせず損失だけを求める closure を渡す. 登録簿の仕様にも `uses_gradients` を返す. ML-Found 自身は勾配を使わない Optimizer を持たない (プロジェクトで作る).
 
 ### 3. 進捗を渡す仕組みと学習の中断 (対応済み)
 

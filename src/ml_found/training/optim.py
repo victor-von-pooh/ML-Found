@@ -220,6 +220,30 @@ def requires_closure(optimizer: optim.Optimizer) -> bool:
     return required
 
 
+def class_uses_gradients(optimizer_cls: type) -> bool:
+    """
+    Optimizer のクラスが勾配を使うかを判定する関数
+
+    Nelder-Mead 法のような勾配を使わない Optimizer は, クラスの属性
+    uses_gradients = False で宣言する. その場合 ML-Found は逆伝播をせず,
+    損失だけを求める closure を step に渡す
+
+    Parameters
+    ----------
+    optimizer_cls: type
+        判定する Optimizer のクラス
+
+    Returns
+    ----------
+    uses: bool
+        勾配を使う場合は True (宣言が無い場合も True)
+    """
+    # クラスの属性で False と宣言した場合だけ勾配を使わない
+    uses = getattr(optimizer_cls, "uses_gradients", True) is not False
+
+    return uses
+
+
 def class_requires_closure(optimizer_cls: type) -> bool:
     """
     Optimizer のクラスの step が closure を必要とするかを判定する関数

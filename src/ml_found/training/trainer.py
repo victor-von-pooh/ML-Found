@@ -23,8 +23,8 @@ from ml_found.training.history import (
 )
 from ml_found.training.optim import (
     auto_params, build_optimizer, build_scheduler, check_scheduler,
-    missing_data_size_params, needs_data, requires_closure, step_scheduler,
-    to_kwargs
+    class_uses_gradients, missing_data_size_params, needs_data,
+    requires_closure, step_scheduler, to_kwargs
 )
 from ml_found.training.status import RunStatus
 from ml_found.utils.batch import find_batch_size, move_to_device
@@ -474,8 +474,18 @@ class Trainer:
         self.epoch = 0
         self.global_step = 0
 
-        # LBFGS のように損失を計算し直す closure が必要な Optimizer かどうかを保存
+        # LBFGS のように損失を計算し直す closure が必要な Optimizer かどうかと,
+        # 勾配を使わない Optimizer かどうかを保存
         self.use_closure = requires_closure(self.optimizer)
+        self.use_gradients = class_uses_gradients(type(self.optimizer))
+        if not self.use_gradients and (
+            self.trainer_cfg.grad_clip_norm is not None
+            or self.trainer_cfg.log_grad_norm
+        ):
+            raise ValueError(
+                f"{type(self.optimizer).__name__} は勾配を使わないので, "
+                "trainer.grad_clip_norm と log_grad_norm は使えません"
+            )
 
         # closure で使う学習時のバッチと, 最後に求めた勾配のノルムの入れ物を用意
         self.current_batch: Any = None
@@ -864,6 +874,46 @@ class Trainer:
 
         return closure
 
+    def make_loss_closure(self) -> Callable[[], torch.Tensor]:
+        """
+        保存した学習時のバッチで, 勾配を使わずに損失だけを計算し直す関数を
+        作る関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        closure: Callable[[], torch.Tensor]
+            勾配を使わない Optimizer の step に渡す関数
+        """
+        def closure() -> torch.Tensor:
+            """
+            勾配を計算せずに損失を計算し直す関数
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            ----------
+            loss: torch.Tensor
+                計算し直した損失
+            """
+            # 勾配を計算しない範囲で, 今のパラメータの損失を計算
+            self.in_closure = True
+            try:
+                with torch.no_grad():
+                    outputs = self.step(self.current_batch, "train")
+                    loss = self.check_outputs(outputs, "train")
+            finally:
+                self.in_closure = False
+
+            return loss
+
+        return closure
+
     def update_parameters(self, loss: torch.Tensor) -> None:
         """
         損失から勾配を求めてパラメータを更新する関数
@@ -880,6 +930,13 @@ class Trainer:
         # 自分で更新する設定の場合は, 逆伝播と更新を行わずに回数のカウントだけ
         if self.trainer_cfg.manual_optimization:
             self.last_grad_norm = None
+
+        # 勾配を使わない Optimizer は, 損失だけを求める関数を渡して更新
+        # (パラメータを直接書き換えられるように, 勾配の記録を止めて実行)
+        elif not self.use_gradients:
+            self.last_grad_norm = None
+            with torch.no_grad():
+                self.optimizer.step(self.make_loss_closure())
 
         # closure が必要な Optimizer は損失を計算し直す関数を渡して更新
         elif self.use_closure:
@@ -936,8 +993,11 @@ class Trainer:
         tracker = MetricTracker()
         self.on_epoch_start(phase)
 
-        # 学習時と, 検証時にも勾配を使う設定の場合だけ勾配を計算
-        grad_enabled = train or self.trainer_cfg.valid_grad
+        # 学習時 (勾配を使う Optimizer の場合) と, 検証時にも勾配を使う設定の
+        # 場合だけ勾配を計算
+        grad_enabled = (
+            (train and self.use_gradients) or self.trainer_cfg.valid_grad
+        )
 
         # 進み具合を外に知らせるため, 分かる場合は 1 エポックのバッチの数を取得
         total_batches: Optional[int] = None
@@ -1616,6 +1676,11 @@ class Trainer:
         # 更新の手順を記録
         if self.trainer_cfg.manual_optimization:
             self.logger.info("更新の手順: step の中で自分で更新")
+        elif not self.use_gradients:
+            self.logger.info(
+                "更新の手順: 勾配を使わず, 損失を求める closure を Optimizer "
+                "に渡して更新"
+            )
         elif self.use_closure:
             self.logger.info("更新の手順: closure を Optimizer に渡して更新")
 

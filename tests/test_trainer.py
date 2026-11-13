@@ -2666,3 +2666,26 @@ def test_eval_train_persistent_workers(tmp_path: Path) -> None:
     with pytest.warns(UserWarning, match="persistent_workers"):
         trainer.fit(loader)
     assert "train_eval/loss" in trainer.history.records[0]
+
+
+def test_eval_train_monitor(tmp_path: Path) -> None:
+    """
+    学習用データを評価し直さない設定で train_eval/ の指標を監視すると,
+    出力先を作る前にエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 監視する指標と, 同じ値の場合に比べる指標の両方を確認
+    for key in ("monitor", "monitor_tiebreak"):
+        with pytest.raises(ValueError, match="eval_train"):
+            make_experiment(
+                tmp_path / key, f"trainer:\n  {key}: train_eval/loss\n"
+            )
+        assert not (tmp_path / key / "outputs").exists()

@@ -1817,3 +1817,151 @@ def test_warn_unknown_batch_size(tmp_path: Path) -> None:
     assert sum("サンプル数" in str(item.message) for item in record) == 1
     log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
     assert log.count("サンプル数を推定できない") == 1
+
+
+def test_select_best_false(tmp_path: Path) -> None:
+    """
+    ベストモデルを選ばない設定で, best.pt を作らず最後の重みを残すことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 損失が 2 エポック目で最小になり, その後は悪化する学習 (重みは毎回動く)
+    experiment = make_experiment(
+        tmp_path / "ok",
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "trainer:\n  epochs: 4\n  select_best: false\n"
+    )
+    trainer = Trainer(
+        nn.Linear(1, 1), experiment, moving_step([3.0, 1.0, 2.0, 4.0])
+    )
+    trainer.fit(make_loader(n=8, batch_size=8))
+
+    run_dir = experiment.run_dir
+    assert not (run_dir / "best.pt").exists()
+    final = torch.load(
+        run_dir / "final_model.pt", map_location="cpu", weights_only=True
+    )
+    last = torch.load(
+        run_dir / "last.pt", map_location="cpu", weights_only=True
+    )
+    assert all(torch.equal(final[key], last["model"][key]) for key in final)
+    status = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert status["final_weights"] == "last"
+    assert status["best_epoch"] is None
+    log = (run_dir / "train.log").read_text(encoding="utf-8")
+    assert "select_best: false" in log
+
+    # Early Stopping とは一緒に使えない
+    with pytest.raises(ValueError, match="select_best"):
+        make_experiment(
+            tmp_path / "early",
+            "trainer:\n  select_best: false\n  early_stopping:\n"
+            "    use: true\n"
+        )
+
+
+def test_select_best_resume(tmp_path: Path) -> None:
+    """
+    select_best を変えて再開した場合と, エポックの途中で止めた場合を
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    sgd = "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+
+    # ベストモデルを選ぶ学習 (2 エポック目がベスト) を 3 エポック
+    first = make_experiment(
+        tmp_path / "first", sgd + "trainer:\n  epochs: 3\n"
+    )
+    Trainer(
+        nn.Linear(1, 1), first, moving_step([3.0, 1.0, 2.0])
+    ).fit(make_loader(n=8, batch_size=8))
+    assert (first.run_dir / "best.pt").exists()
+
+    # 選ばない設定で再開し, 5 エポック目の途中で止める
+    second = make_experiment(
+        tmp_path / "second",
+        sgd + "trainer:\n  epochs: 6\n  select_best: false\n"
+        f"  resume_from: {first.run_dir / 'last.pt'}\n"
+    )
+    calls = {"count": 0}
+
+    def step(model: nn.Module, batch: tuple, phase: str) -> dict:
+        """
+        再開した 2 エポック目 (エポック 5) の学習で, 途中で止める要求を出す関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            平均二乗誤差
+        """
+        if phase == "train":
+            calls["count"] += 1
+            if calls["count"] == 6:
+                (second.run_dir / "STOP").write_text("now\n")
+        outputs = regression_step(model, batch, phase)
+
+        return outputs
+
+    with pytest.warns(UserWarning, match="select_best: false"):
+        trainer = Trainer(nn.Linear(1, 1), second, step)
+        trainer.run_status.progress_interval = 0.0
+        trainer.fit(make_loader(n=8, batch_size=2))
+
+    # best.pt を写さず, 止めたエポックの前の last.pt の重みに戻る
+    run_dir = second.run_dir
+    assert not (run_dir / "best.pt").exists()
+    status = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert status["best_epoch"] is None
+    assert status["select_best"] is False
+    assert status["final_weights"] == "last"
+    last = torch.load(
+        run_dir / "last.pt", map_location="cpu", weights_only=True
+    )
+    assert last["epoch"] == 4
+    final = torch.load(
+        run_dir / "final_model.pt", map_location="cpu", weights_only=True
+    )
+    assert all(torch.equal(final[key], last["model"][key]) for key in final)
+
+    # 選ばない設定から選ぶ設定で再開すると警告
+    third = make_experiment(
+        tmp_path / "third",
+        sgd + f"trainer:\n  epochs: 5\n  resume_from: {run_dir / 'last.pt'}\n"
+    )
+    with pytest.warns(UserWarning, match="再開した後のエポックから"):
+        Trainer(nn.Linear(1, 1), third, regression_step).fit(
+            make_loader(n=8, batch_size=8)
+        )
+
+    # 同じ値の場合に比べる指標とは一緒に使えない
+    with pytest.raises(ValueError, match="monitor_tiebreak"):
+        make_experiment(
+            tmp_path / "tiebreak",
+            "trainer:\n  select_best: false\n"
+            "  monitor_tiebreak: valid/loss\n"
+        )

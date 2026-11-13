@@ -51,7 +51,6 @@ ML-Found はその下で動く学習ライブラリとして, ダッシュボー
 - 範囲の確認から外れる引数の値 (範囲を持たない引数, 自作のクラス) の誤りも, 出力先を作る前に確かめる. 今は `Trainer` の作成で PyTorch のエラーになり, 出力先が残る (`train.log` と `run.json` には記録する)
 - チェックポイントに記録の全て (`history` と, step ごとの Scheduler では更新ごとの学習率 `lr_steps`) を毎回入れず, `history.csv` と `lr_steps.csv` に追記する形にする. 1 エポックが短く毎エポック改善する学習 (フルバッチなど) では, `best.pt` を改善のたびに記録ごと保存する時間が残る (`best_weights_only: true` なら重みだけ)
 - エポックの途中で止めた場合に, 捨てたエポックの更新回数, Optimizer, Scheduler, 乱数の状態をメモリの上でも戻す (同じ `Trainer` で `fit` を呼び直す場合のため)
-- ベストモデルの判定 (`best.pt` と監視する指標) 自体を使わない設定 (GAN のように損失で良し悪しを決められない学習のため. 今は `restore_best: false` で最後の重みを残せる)
 - `OneCycleLR` 以外のデータの量で決まる引数 (warmup 付きの Scheduler, step ごとに使う `CosineAnnealingLR` の `T_max` など) も補う仕組み
 - 再開時に Scheduler の引数が config と違う場合に, config の値で上書きするかを選べる設定 (今は警告だけ)
 

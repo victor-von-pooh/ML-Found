@@ -394,8 +394,8 @@ def try_build_optim(cfg: DictConfig, device: torch.device) -> None:
     ----------
     None
     """
-    # 値の決まっていない引数 (??? や解決できない補間) がある場合は,
-    # 範囲の確認と同じく対象外
+    # 値の決まっていない引数 (???) がある場合は, 範囲の確認と同じく対象外
+    # (解決できない補間は, その前の確認でエラー)
     sections = [cfg.optimizer]
     if cfg.scheduler.name is not None:
         sections.append(cfg.scheduler)
@@ -409,10 +409,10 @@ def try_build_optim(cfg: DictConfig, device: torch.device) -> None:
 
     # 学習と同じデバイスの仮のパラメータで Optimizer を作成
     # 作るときの警告は学習の本番でも出るので, ここでは非表示
-    parameter = torch.nn.Parameter(torch.zeros(2, 2, device=device))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         try:
+            parameter = torch.nn.Parameter(torch.zeros(2, 2, device=device))
             optimizer = build_optimizer(cfg.optimizer, [parameter])
         except Exception as error:
             raise ValueError(

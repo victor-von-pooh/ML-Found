@@ -71,8 +71,18 @@ def check_trainer_config(cfg: DictConfig) -> None:
     ----------
     None
     """
-    # last.pt を保存する間隔は 1 以上に制限
+    # エポック数は 1 以上, 監視する指標の向きは min か max に制限
     trainer_cfg = cfg.trainer
+    if not isinstance(trainer_cfg.epochs, int) or trainer_cfg.epochs < 1:
+        raise ValueError(
+            f"trainer.epochs は 1 以上の整数にしてください: {trainer_cfg.epochs}"
+        )
+    if trainer_cfg.mode not in ("min", "max"):
+        raise ValueError(
+            f"trainer.mode は min か max にしてください: {trainer_cfg.mode}"
+        )
+
+    # last.pt を保存する間隔は 1 以上に制限
     if trainer_cfg.resume_scheduler not in ("checkpoint", "config"):
         raise ValueError(
             "trainer.resume_scheduler は checkpoint か config にしてください: "
@@ -264,8 +274,8 @@ def start_experiment(
     device = get_device(cfg.experiment.device)
     check_optim_config(cfg)
     check_optim_params(cfg)
-    try_build_optim(cfg, device)
     check_trainer_config(cfg)
+    try_build_optim(cfg, device)
     check_resume_path(cfg, project_root)
 
     # 出力先を作ると未コミットの変更として数えられるので, 先に環境の情報の収集

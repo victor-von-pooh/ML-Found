@@ -635,6 +635,14 @@ def test_try_build_optim(tmp_path: Path) -> None:
             make_experiment(tmp_path / name, text)
         assert not (tmp_path / name / "outputs").exists()
 
+    # 原因が trainer の値の場合は, trainer の誤りとしてエラー
+    for name, text in (
+        ("epochs", "trainer:\n  epochs: 0\n"),
+        ("mode", "trainer:\n  mode: minimize\n"),
+    ):
+        with pytest.raises(ValueError, match=f"trainer.{name} は"):
+            make_experiment(tmp_path / f"trainer_{name}", text)
+
     # データの量で決まる引数を書かない OneCycleLR は, 仮の値で補って確認
     make_experiment(
         tmp_path / "one_cycle",

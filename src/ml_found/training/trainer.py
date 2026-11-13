@@ -36,6 +36,42 @@ class StopWithinEpoch(Exception):
     pass
 
 
+# extra に使えない名前 (記録の他の列と重なるもの)
+RESERVED_EXTRA = {"epoch", "lr"}
+
+
+def check_extra(extra: Any) -> None:
+    """
+    step の戻り値の extra (平均せずに記録だけする値) を確かめる関数
+
+    Parameters
+    ----------
+    extra: Any
+        step の戻り値の extra, 無い場合は None
+
+    Returns
+    ----------
+    None
+    """
+    if extra is None:
+        return
+    if not isinstance(extra, dict):
+        raise ValueError(
+            "step の extra は「名前: 値」の辞書で返してください"
+        )
+    for key, value in extra.items():
+        if "/" in key or key in RESERVED_EXTRA:
+            raise ValueError(
+                f"extra の名前に / と {sorted(RESERVED_EXTRA)} は使えません: "
+                f"{key}"
+            )
+        if isinstance(value, torch.Tensor) and value.numel() != 1:
+            raise ValueError(
+                f"extra の {key} は 1 つの値にしてください: "
+                f"形状 {tuple(value.shape)}"
+            )
+
+
 def record_init_error(
     experiment: "Experiment", error: BaseException
 ) -> None:
@@ -220,6 +256,9 @@ class Trainer:
         # 外からの要求で学習を止めたかどうかの印を用意
         self.stopped_by_request = False
 
+        # step の extra で返した, 平均せずに記録だけする値の入れ物を用意
+        self.epoch_extra: dict[str, float] = {}
+
         # エポックの途中で止めたときに戻す, 学習を始めた時点の重みと,
         # 戻せずに途中までの重みが残ったかどうかの印を用意
         self.start_weights: Optional[dict] = None
@@ -309,7 +348,11 @@ class Trainer:
 
         # 学習曲線の画像のファイル名に使うので / を含む名前を禁止し,
         # バッチごとの平均を求めるので指標は 1 つの値に制限
+        # (平均せずに記録だけする値の extra は, 中の値を別に確認)
+        check_extra(outputs.get("extra"))
         for key, value in outputs.items():
+            if key == "extra":
+                continue
             if "/" in key:
                 raise ValueError(f"指標の名前に / は使えません: {key}")
             if isinstance(value, torch.Tensor) and value.numel() != 1:
@@ -518,6 +561,10 @@ class Trainer:
 
                 # サンプル数で重み付けして指標の加算
                 metrics = dict(outputs)
+                extra = metrics.pop("extra", None) or {}
+                self.epoch_extra.update(
+                    {key: to_float(value) for key, value in extra.items()}
+                )
                 n = metrics.pop("batch_size", None)
                 if n is None:
                     n = get_batch_size(batch)
@@ -1442,6 +1489,7 @@ class Trainer:
                 # 学習し, 検証用のデータがある場合は検証
                 # エポックの途中で止める要求があれば, このエポックを捨てて終了
                 record = {"epoch": epoch}
+                self.epoch_extra = {}
                 try:
                     record.update(self.run_epoch(train_loader, train=True))
                     if valid_loader is not None:
@@ -1453,6 +1501,9 @@ class Trainer:
                     )
                     break
                 record["lr"] = lr
+
+                # step の extra で返した値は, 平均せずにエポックの最後の値を記録
+                record.update(self.epoch_extra)
 
                 # 監視する指標があることを確かめてから記録
                 if monitor not in record:

@@ -407,7 +407,7 @@ def test_write_failure_does_not_stop_training(
     """
     experiment = make_experiment(tmp_path, "trainer:\n  epochs: 3\n")
 
-    def fail(path: Path, data: dict) -> None:
+    def fail(path: Path, data: dict, sync: bool = False) -> None:
         """
         ディスクの不足を再現する関数
 
@@ -417,6 +417,8 @@ def test_write_failure_does_not_stop_training(
             書き込むファイル
         data: dict
             書き込む内容
+        sync: bool = False
+            ディスクまで書き出すか
 
         Returns
         ----------
@@ -451,7 +453,7 @@ def test_progress_throttle(tmp_path: Path) -> None:
     trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
     original = trainer.run_status.write
 
-    def record(name: str, data: dict) -> None:
+    def record(name: str, data: dict, sync: bool = False) -> None:
         """
         書き込んだファイル名を記録してから書き込む関数
 
@@ -461,20 +463,23 @@ def test_progress_throttle(tmp_path: Path) -> None:
             ファイル名
         data: dict
             書き込む内容
+        sync: bool = False
+            ディスクまで書き出すか
 
         Returns
         ----------
         None
         """
         writes.append(name)
-        original(name, data)
+        original(name, data, sync)
 
     trainer.run_status.write = record  # type: ignore[method-assign]
     trainer.run_status.progress_interval = 3600.0
     trainer.fit(make_loader(n=64, batch_size=4), make_loader())
 
-    # 学習と検証の始めと終わりの強制の 4 回だけ (バッチは 16 + 4 個)
-    assert writes.count("progress.json") == 4
+    # 間隔の中では最初の 1 回だけ (バッチは 16 + 4 個, フェーズの始めと終わりも
+    # 間隔を守る)
+    assert writes.count("progress.json") == 1
 
 
 def test_resume_status(tmp_path: Path) -> None:
@@ -527,7 +532,7 @@ def test_write_failure_keeps_original_error(
     None
     """
 
-    def fail(path: Path, data: dict) -> None:
+    def fail(path: Path, data: dict, sync: bool = False) -> None:
         """
         ディスクの不足を再現する関数
 
@@ -537,6 +542,8 @@ def test_write_failure_keeps_original_error(
             書き込むファイル
         data: dict
             書き込む内容
+        sync: bool = False
+            ディスクまで書き出すか
 
         Returns
         ----------

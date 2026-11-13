@@ -36,7 +36,7 @@ def now_iso() -> str:
     return now
 
 
-def write_json(path: Path, data: dict) -> None:
+def write_json(path: Path, data: dict, sync: bool = False) -> None:
     """
     読み手が書きかけのファイルを読まないように JSON を書き込む関数
 
@@ -46,13 +46,16 @@ def write_json(path: Path, data: dict) -> None:
         書き込むファイル
     data: dict
         書き込む内容
+    sync: bool = False
+        置き換えの前にディスクに書き出すか (開始と終了の状態のように,
+        電源が落ちても残したい場合だけ. 書き出しは 1 回 0.4 ms ほどかかる)
 
     Returns
     ----------
     None
     """
     # 一時ファイルに書いてから置き換え, 読み手が読むのは古いか新しいかのどちらか
-    # 置き換えの前にディスクに書き出し, 失敗した場合は一時ファイルの削除
+    # 失敗した場合は一時ファイルの削除
     temp = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -61,8 +64,9 @@ def write_json(path: Path, data: dict) -> None:
         ) as file:
             temp = Path(file.name)
             json.dump(data, file, ensure_ascii=False, indent=2)
-            file.flush()
-            os.fsync(file.fileno())
+            if sync:
+                file.flush()
+                os.fsync(file.fileno())
         os.replace(temp, path)
         temp = None
     finally:
@@ -85,13 +89,16 @@ class RunStatus:
         self.last_progress = 0.0
         self.started = time.monotonic()
 
+        # 最後に run.json を書いた時刻 (エポックごとの更新の間隔の確保に使用)
+        self.last_update = 0.0
+
         # 最後にエポックの途中の中断の要求を確かめた時刻を用意
         self.last_stop_check = 0.0
 
         # 書き込みの失敗を 1 回だけ警告するための印を用意
         self.warned = False
 
-    def write(self, name: str, data: dict) -> None:
+    def write(self, name: str, data: dict, sync: bool = False) -> None:
         """
         状態のファイルを書き込み, 失敗しても学習を止めない関数
 
@@ -101,6 +108,8 @@ class RunStatus:
             ファイル名
         data: dict
             書き込む内容
+        sync: bool = False
+            置き換えの前にディスクに書き出すか
 
         Returns
         ----------
@@ -108,7 +117,7 @@ class RunStatus:
         """
         # 状態の書き出しは補助の機能なので, ディスクの不足などでは学習を続行
         try:
-            write_json(self.run_dir / name, data)
+            write_json(self.run_dir / name, data, sync)
         except OSError as error:
             if not self.warned and self.logger is not None:
                 self.logger.warning(f"実験の状態を書き込めませんでした: {error}")
@@ -165,14 +174,20 @@ class RunStatus:
             "device": device,
             "error": None
         }
-        self.write("run.json", self.data)
+        self.last_update = time.monotonic()
+        self.write("run.json", self.data, sync=True)
 
-    def update(self, **fields: Any) -> None:
+    def update(self, force: bool = False, **fields: Any) -> None:
         """
         run.json の項目を更新する関数
 
+        1 エポックが短い学習の邪魔にならないように, 進み具合と同じ間隔より
+        短い間は内容だけを更新し, ファイルには次の書き込みでまとめて書く
+
         Parameters
         ----------
+        force: bool = False
+            間隔に関係なく書く場合は True
         **fields: Any
             更新する項目と値
 
@@ -186,6 +201,10 @@ class RunStatus:
 
         self.data.update(fields)
         self.data["updated_at"] = now_iso()
+        now = time.monotonic()
+        if not force and now - self.last_update < self.progress_interval:
+            return
+        self.last_update = now
         self.write("run.json", self.data)
 
     def finish(self, status: str, **fields: Any) -> None:
@@ -203,10 +222,16 @@ class RunStatus:
         ----------
         None
         """
-        self.update(
+        # 終わった状態は間隔に関係なく, ディスクまで書き出し
+        if not self.data:
+            return
+        self.data.update(
             status=status, finished_at=now_iso(),
             duration_sec=round(time.monotonic() - self.started, 3), **fields
         )
+        self.data["updated_at"] = now_iso()
+        self.last_update = time.monotonic()
+        self.write("run.json", self.data, sync=True)
 
         # 終わった学習の進み具合の削除
         try:

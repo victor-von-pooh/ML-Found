@@ -488,9 +488,9 @@ class Trainer:
             total_batches = len(loader)
         except (TypeError, NotImplementedError):
             pass
+        # 1 エポックが短い学習の邪魔にならないように, フェーズの始めも間隔を確保
         self.run_status.progress(
-            phase, self.epoch, self.trainer_cfg.epochs, 0, total_batches,
-            force=True
+            phase, self.epoch, self.trainer_cfg.epochs, 0, total_batches
         )
 
         # バッチごとに計算, 設定に応じてエポックの中の進捗バーも表示
@@ -539,10 +539,10 @@ class Trainer:
                 if not is_last and self.run_status.stop_now_requested():
                     raise StopWithinEpoch()
 
-        # フェーズの終わりの進み具合を間隔に関係なく書き出し
+        # フェーズの終わりの進み具合の書き出し (間隔の中なら次の機会に)
         self.run_status.progress(
             phase, self.epoch, self.trainer_cfg.epochs, n_batches,
-            total_batches, force=True
+            total_batches
         )
 
         # 学習時のバッチを検証の間まで残さないように解放

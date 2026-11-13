@@ -13,14 +13,16 @@ from ml_found.experiment.seed import get_rng_state, set_rng_state, set_seed
 from ml_found.training.callbacks import (
     Checkpoint, EarlyStopping, load_checkpoint, save_checkpoint
 )
-from ml_found.training.history import History, MetricTracker, to_float
+from ml_found.training.history import (
+    History, LrSteps, MetricTracker, to_float
+)
 from ml_found.training.optim import (
     build_optimizer, build_scheduler, check_scheduler, requires_closure,
     step_scheduler, to_kwargs
 )
 from ml_found.training.status import RunStatus
 from ml_found.utils.batch import get_batch_size, move_to_device
-from ml_found.utils.plotting import plot_history
+from ml_found.utils.plotting import plot_history, plot_lr_steps
 
 # Experiment は型ヒントだけに使用 (experiment は training を使うので循環を回避)
 if TYPE_CHECKING:
@@ -94,6 +96,9 @@ class Trainer:
         # エポックごとの記録と, 最初のエポックを保存
         self.history = History()
         self.start_epoch = 1
+
+        # step ごとに学習率を変える場合の, 更新ごとの学習率の記録
+        self.lr_steps = LrSteps()
 
         # step から参照できるように, 今のエポックとパラメータの更新回数を保存
         self.epoch = 0
@@ -338,8 +343,14 @@ class Trainer:
         # パラメータの更新回数のカウント
         self.global_step += 1
 
-        # step ごとに学習率を更新する場合はここで更新
+        # step ごとに学習率を更新する場合は, この更新に使った学習率を記録して
+        # から更新 (エポックの記録の lr はエポックを始めた時点の値だけ)
         if self.scheduler_interval == "step":
+            if self.scheduler is not None:
+                self.lr_steps.append(
+                    self.global_step, self.epoch,
+                    float(self.optimizer.param_groups[0]["lr"])
+                )
             step_scheduler(self.scheduler)
 
     def run_epoch(self, loader: Iterable, train: bool) -> dict[str, float]:
@@ -589,6 +600,7 @@ class Trainer:
                 else self.scheduler.state_dict()
             ),
             "history": self.history.state_dict(),
+            "lr_steps": self.lr_steps.state_dict(),
             "early_stopping": (
                 None if self.early_stopping is None
                 else self.early_stopping.state_dict()
@@ -693,6 +705,9 @@ class Trainer:
             self.scheduler.load_state_dict(state["scheduler"])
             self.warn_scheduler_params(fresh_state, state["scheduler"])
         self.history.load_state_dict(state["history"])
+        self.lr_steps = LrSteps()
+        if state.get("lr_steps") is not None:
+            self.lr_steps.load_state_dict(state["lr_steps"])
 
         # Early Stopping の状態の復元
         if (
@@ -903,6 +918,14 @@ class Trainer:
         # 記録と学習曲線を保存
         self.history.save_csv(str(run_dir / "history.csv"))
         plot_history(self.history.records, str(run_dir))
+
+        # step ごとに学習率を変えた場合は, 更新ごとの学習率も保存
+        # 画像の名前は, 指標の学習曲線 (<指標>_curve.png) と重ならない形
+        if self.scheduler_interval == "step" and len(self.lr_steps) > 0:
+            self.lr_steps.save_csv(str(run_dir / "lr_steps.csv"))
+            plot_lr_steps(
+                self.lr_steps.records(), str(run_dir / "lr_steps.png")
+            )
 
         # 結果をログに記録
         self.logger.info("学習完了")

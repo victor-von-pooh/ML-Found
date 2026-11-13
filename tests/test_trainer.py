@@ -1137,3 +1137,44 @@ def test_one_cycle_steps_resume(tmp_path: Path) -> None:
         make_loader()
     )
     assert resumed.get("lr") == pytest.approx(full_history.get("lr"))
+
+    # 補う設定でエポック数を増やして再開すると, 学習を始める前にエラー
+    auto = (
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "scheduler:\n  name: OneCycleLR\n  interval: step\n"
+        "  params:\n    max_lr: 0.1\n"
+    )
+    short = make_experiment(
+        tmp_path / "short", auto + "trainer:\n  epochs: 2\n"
+    )
+    Trainer(nn.Linear(1, 1), short, regression_step).fit(make_loader())
+    longer = make_experiment(
+        tmp_path / "longer",
+        auto + "trainer:\n  epochs: 4\n"
+        f"  resume_from: {short.run_dir / 'last.pt'}\n"
+    )
+    with pytest.raises(ValueError, match="変えられません"):
+        Trainer(nn.Linear(1, 1), longer, regression_step).fit(make_loader())
+    assert not (longer.run_dir / "last.pt").exists()
+
+    # 書いた総ステップ数が予定より少ない場合も, 学習を始める前にエラー.
+    # 多い場合は警告
+    for total, error in ((2, True), (100, False)):
+        explicit = make_experiment(
+            tmp_path / f"explicit_{total}",
+            auto + f"    total_steps: {total}\ntrainer:\n  epochs: 2\n"
+        )
+        trainer = Trainer(nn.Linear(1, 1), explicit, regression_step)
+        if error:
+            with pytest.raises(ValueError, match="予定の総ステップ数"):
+                trainer.fit(make_loader())
+        else:
+            with pytest.warns(UserWarning, match="下がりきりません"):
+                trainer.fit(make_loader())
+
+    # 空の loader は分かりやすいエラー
+    empty = make_experiment(
+        tmp_path / "empty", auto + "trainer:\n  epochs: 2\n"
+    )
+    with pytest.raises(ValueError, match="train の loader が空です"):
+        Trainer(nn.Linear(1, 1), empty, regression_step).fit([])

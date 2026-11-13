@@ -63,6 +63,8 @@ class Trainer:
         self.pending_scheduler = scheduler is None and bool(
             missing_data_size_params(experiment.cfg.scheduler)
         )
+        # 予定の総ステップ数 (OneCycleLR の総ステップ数との食い違いの確認に使用)
+        self.planned_total_steps: Optional[int] = None
         if scheduler is None and not self.pending_scheduler:
             scheduler = build_scheduler(
                 experiment.cfg.scheduler, self.optimizer,
@@ -712,6 +714,9 @@ class Trainer:
             fresh_state = self.scheduler.state_dict()
             self.scheduler.load_state_dict(state["scheduler"])
             self.warn_scheduler_params(fresh_state, state["scheduler"])
+
+            # 再開元の総ステップ数の確認 (ファイルを写す前)
+            self.check_total_steps()
         self.history.load_state_dict(state["history"])
         self.lr_steps = LrSteps()
         if state.get("lr_steps") is not None:
@@ -1011,6 +1016,8 @@ class Trainer:
             else:
                 try:
                     values[name] = len(train_loader)
+                    if values[name] == 0:
+                        raise ValueError("train の loader が空です")
                 except TypeError as error:
                     raise ValueError(
                         f"{cfg.scheduler.name} の steps_per_epoch を補えません. "
@@ -1026,13 +1033,75 @@ class Trainer:
             cfg.scheduler, self.optimizer, self.trainer_cfg.mode
         )
         self.pending_scheduler = False
-        OmegaConf.save(
-            cfg, self.experiment.run_dir / "config.yaml", resolve=True
-        )
+
+        # 学習中に読まれても壊れた中身が見えないように, 一時ファイルから置き換え
+        path = self.experiment.run_dir / "config.yaml"
+        temp = path.with_name("config.yaml.tmp")
+        OmegaConf.save(cfg, temp, resolve=True)
+        temp.replace(path)
         filled = ", ".join(f"{name}={value}" for name, value in values.items())
         self.logger.info(
             f"{cfg.scheduler.name} の引数を学習用データから補いました: {filled}"
         )
+
+    def plan_total_steps(self, train_loader: Iterable) -> None:
+        """
+        OneCycleLR を使う場合に, 予定の総ステップ数を求めて保存する関数
+
+        Parameters
+        ----------
+        train_loader: Iterable
+            学習用のバッチを返すもの, len() が無い場合は求めない
+
+        Returns
+        ----------
+        None
+        """
+        self.planned_total_steps = None
+        if not isinstance(self.scheduler, optim.lr_scheduler.OneCycleLR):
+            return
+        if self.scheduler_interval == "epoch":
+            per_epoch = 1
+        else:
+            try:
+                per_epoch = len(train_loader)
+            except TypeError:
+                return
+        self.planned_total_steps = self.trainer_cfg.epochs * per_epoch
+
+    def check_total_steps(self) -> None:
+        """
+        OneCycleLR の総ステップ数が, 予定の総ステップ数と合うかを確かめる関数
+
+        総ステップ数を超えて進めると学習の途中で PyTorch がエラーを出すので,
+        学習を始める前にエラーにする. 少ない場合は学習率が下がりきらないので警告.
+        再開した場合は再開元の総ステップ数が使われるので, trainer.epochs や
+        バッチ数を変えて再開した場合も確認
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        total = getattr(self.scheduler, "total_steps", None)
+        planned = self.planned_total_steps
+        if total is None or planned is None or total == planned:
+            return
+
+        message = (
+            f"{type(self.scheduler).__name__} の総ステップ数 ({total}) と, "
+            f"trainer.epochs と学習用データのバッチ数から求めた予定の総ステップ数 "
+            f"({planned}) が違います. 再開した場合は再開元の総ステップ数が使われ, "
+            "変えられません"
+        )
+        if planned > total:
+            raise ValueError(message)
+        message += " (学習率は最後まで下がりきりません)"
+        self.logger.warning(message)
+        warnings.warn(message, stacklevel=2)
 
     def train_epochs(
         self, train_loader: Iterable, valid_loader: Optional[Iterable]
@@ -1067,8 +1136,12 @@ class Trainer:
         )
 
         # データの量で決まる Scheduler の引数を補って作成 (再開の復元の前)
+        # 予定の総ステップ数を求め, 再開しない場合はここで確認
         if self.pending_scheduler:
             self.build_scheduler_from_data(train_loader)
+        self.plan_total_steps(train_loader)
+        if self.trainer_cfg.resume_from is None:
+            self.check_total_steps()
 
         # 再開する場合はチェックポイントから状態の復元
         if self.trainer_cfg.resume_from is not None:

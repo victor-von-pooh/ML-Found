@@ -196,6 +196,32 @@ class MyTrainer(Trainer):
 | --- | --- |
 | `update_parameters(loss)` | 更新の手順を変える. `super().update_parameters(loss)` の後に EMA の重みを更新する, など |
 | `extra_state_dict()` | チェックポイントに加える状態を辞書で返す (2 つ目の Optimizer, EMA の重みなど). `load_extra_state_dict(state)` も合わせて上書きすると, 再開時に戻る |
+| `eval_model()` | 検証, ベストモデルの判定, `final_model.pt` に使うモデルを返す (既定は `self.model`). EMA の重みで検証する場合は EMA のモデルを返す |
+
+`eval_model` を上書きした場合の動作.
+
+- 検証では, `step_fn` にこのモデルが渡され, 推論モードになる. `step` を上書きしている場合は, 検証 (`phase` が `valid`) で自分で `self.eval_model()` を使う
+- ベストモデルの重みはこのモデルから取り, 学習後に `self.model` に戻す. ベストモデルに戻さない設定 (`restore_best: false` か `select_best: false`) では, 最後のこのモデルの重みを `self.model` に読み込んで `final_model.pt` に保存する. どちらも `self.model` に読み込むので, `self.model` と同じ名前の重みを持つ必要がある (違う場合は学習を始める前にエラー)
+- `last.pt` の `model` は学習している `self.model` の重みのまま. このモデルの状態 (EMA の重みなど) は `extra_state_dict` で加える
+- エポックの途中で止めた場合, このモデルの途中の更新は戻せないので, ベストモデルに戻さない設定では `final_model.pt` は途中までの重み (`final_weights` は `partial`) になる
+- `torch.optim.swa_utils.AveragedModel` は既定で BatchNorm の統計量を平均しない (`use_buffers=True` で平均する)
+
+```python
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
+
+
+class EMATrainer(Trainer):
+    def __init__(self, model: nn.Module, experiment: Experiment, step_fn, decay: float):
+        super(EMATrainer, self).__init__(model, experiment, step_fn)
+        self.ema = AveragedModel(self.model, multi_avg_fn=get_ema_multi_avg_fn(decay))
+
+    def update_parameters(self, loss: torch.Tensor) -> None:
+        super(EMATrainer, self).update_parameters(loss)
+        self.ema.update_parameters(self.model)
+
+    def eval_model(self) -> nn.Module:
+        return self.ema.module
+```
 
 `on_epoch_end` は勾配の計算を止める範囲の外で呼ばれる (検証の後でも勾配の計算が有効). 中で推論する場合は `torch.no_grad()` を書く.
 指標を返さない場合 (画像を保存するだけ, など) は空の辞書を返す. `step` の指標と同じ名前は使えない (以前は `on_epoch_end` の値で黙って上書きしていたが, エラーにした).
@@ -245,7 +271,7 @@ trainer:
 
 ### 学習後のモデル
 
-`fit` の後の `trainer.model` はベストモデルの重みになっている (`trainer.restore_best: true` かつ `select_best: true` の場合).
+`fit` の後の `trainer.model` はベストモデルの重みになっている (`trainer.restore_best: true` かつ `select_best: true` の場合). `eval_model` を上書きした場合は, そのモデルの重み (EMA の重みなど) になる.
 後から使う場合は `final_model.pt` を読み込む. `final_model.pt` は cpu のテンソルで保存するので, 学習したデバイスに関わらず読み込める.
 
 GAN のように損失が良し悪しの指標にならない場合は, `trainer.select_best: false` にするとベストモデルを選ばず (`best.pt` も作らない), 最後のエポックの重みが残る. 学習の途中で損失の定義が変わる場合 (β-VAE など) のように, ベストモデルは記録しておきたいが最後の重みも残したい場合は `trainer.restore_best: false` にする.

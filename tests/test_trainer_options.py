@@ -12,7 +12,9 @@ from ml_found.training.callbacks import (
     is_improved_with_tiebreak, load_checkpoint
 )
 from ml_found.training.optim import requires_closure
-from ml_found.training.registry import describe_optimizers
+from ml_found.training.registry import (
+    describe_optimizers, register_optimizer, unregister_optimizer
+)
 from ml_found.training.trainer import Trainer
 from ml_found.utils.batch import get_batch_size
 from test_trainer import make_experiment, make_loader, regression_step
@@ -1113,6 +1115,59 @@ def test_gradient_free_optimizer(tmp_path: Path) -> None:
     assert all(param.grad is None for param in model.parameters())
     log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
     assert "勾配を使わず" in log
+
+    # 検証で勾配を使う設定でも, 学習では勾配を記録しない
+    grad_flags = []
+
+    def step(model: nn.Module, batch: tuple, phase: str) -> dict:
+        """
+        勾配を記録しているかを残して平均二乗誤差を求める関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            平均二乗誤差
+        """
+        # フェーズと勾配の記録の有無を保存
+        grad_flags.append((phase, torch.is_grad_enabled()))
+        outputs = regression_step(model, batch, phase)
+
+        return outputs
+
+    experiment = make_experiment(
+        tmp_path / "valid_grad",
+        "trainer:\n  epochs: 1\n  valid_grad: true\n"
+    )
+    model = nn.Linear(1, 1)
+    trainer = Trainer(
+        model, experiment, step, RandomSearch(model.parameters())
+    )
+    trainer.fit(make_loader(), make_loader())
+    assert any(flag for phase, flag in grad_flags if phase == "valid")
+    assert not any(flag for phase, flag in grad_flags if phase == "train")
+
+    # config で指定した場合は, 勾配を使う設定との組み合わせを出力先を作る前に
+    # エラー
+    register_optimizer(RandomSearch)
+    try:
+        with pytest.raises(ValueError, match="勾配を使わない"):
+            make_experiment(
+                tmp_path / "config",
+                "optimizer:\n  name: RandomSearch\n"
+                "trainer:\n  log_grad_norm: true\n"
+            )
+        assert not (tmp_path / "config" / "outputs").exists()
+    finally:
+        unregister_optimizer("RandomSearch")
 
     # 勾配を使う設定とは一緒に使えない
     experiment = make_experiment(

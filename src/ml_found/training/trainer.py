@@ -993,11 +993,14 @@ class Trainer:
         tracker = MetricTracker()
         self.on_epoch_start(phase)
 
-        # 学習時 (勾配を使う Optimizer の場合) と, 検証時にも勾配を使う設定の
-        # 場合だけ勾配を計算
-        grad_enabled = (
-            (train and self.use_gradients) or self.trainer_cfg.valid_grad
-        )
+        # 学習時 (勾配を使う Optimizer か, 自分で更新する設定の場合) と,
+        # 検証時にも勾配を使う設定の場合だけ勾配を計算
+        if train:
+            grad_enabled = (
+                self.use_gradients or self.trainer_cfg.manual_optimization
+            )
+        else:
+            grad_enabled = self.trainer_cfg.valid_grad
 
         # 進み具合を外に知らせるため, 分かる場合は 1 エポックのバッチの数を取得
         total_batches: Optional[int] = None

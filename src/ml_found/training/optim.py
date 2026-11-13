@@ -62,6 +62,10 @@ def to_kwargs(params: DictConfig) -> dict:
     return kwargs
 
 
+# プロジェクトが register_optimizer で登録した Optimizer (名前ごとのクラス)
+REGISTERED_OPTIMIZERS: dict[str, type] = {}
+
+
 def resolve_optimizer_class(name: str) -> type:
     """
     名前から Optimizer のクラスを取得する関数
@@ -76,8 +80,10 @@ def resolve_optimizer_class(name: str) -> type:
     optimizer_cls: type
         Optimizer のクラス
     """
-    # クラスを取得し, Optimizer であることの確認
-    optimizer_cls = resolve_class(name, optim)
+    # 登録した名前を優先してクラスを取得し, Optimizer であることの確認
+    optimizer_cls = REGISTERED_OPTIMIZERS.get(name) or resolve_class(
+        name, optim
+    )
     if not (
         isinstance(optimizer_cls, type)
         and issubclass(optimizer_cls, optim.Optimizer)

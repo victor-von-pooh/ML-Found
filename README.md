@@ -90,6 +90,17 @@ experiment で書けるのは default にある項目の値だけで, 項目の�
 
 選べる Optimizer と Scheduler とその引数 (種類, 既定値, 必須か, 説明, 範囲. 範囲の端を含まない場合は `exclusive_minimum` と `exclusive_maximum` が true. 実装の都合で使う引数は `advanced` が true) と, そのまま使えるか (`supported`, 使えない理由は `note`), closure が必要か (`requires_closure`, Optimizer のみ) は `describe_optimizers()` と `describe_schedulers()` で取得できる. ダッシュボードの入力フォームなどに使う.
 
+プロジェクトで作った Optimizer は, `register_optimizer` で登録すると, config の `optimizer.name` に名前だけで書け, `describe_optimizers()` にも加わる (ダッシュボードの登録簿は, ダッシュボードのプロセスで登録しないと出ない). 範囲を渡した引数は, torch のクラスと同じく出力先を作る前に確かめる. `start_experiment` の前に登録する. torch の名前と同じ名前は使えない. `unregister_optimizer(name)` で外せる.
+
+```python
+from ml_found.training import register_optimizer
+
+register_optimizer(
+    Lion, description="符号だけを使う Optimizer",
+    param_notes={"lr": {"description": "学習率", "minimum": 0.0}}
+)
+```
+
 ```python
 from ml_found.training import describe_optimizers
 

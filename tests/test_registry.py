@@ -14,6 +14,8 @@ from ml_found.training.registry import (
     describe_schedulers,
     is_in_range,
     refine_kind,
+    register_optimizer,
+    unregister_optimizer,
 )
 from ml_found.training.trainer import Trainer
 from test_trainer import make_experiment
@@ -649,3 +651,70 @@ def test_try_build_optim(tmp_path: Path) -> None:
         "scheduler:\n  name: OneCycleLR\n  interval: step\n  params:\n"
         "    max_lr: 0.1\n"
     )
+
+
+class ProjectSGD(optim.SGD):
+    def __init__(self, params: Any, lr: float = 0.1, momentum: float = 0.0):
+        # 親クラスのコンストラクタを呼び出す
+        super(ProjectSGD, self).__init__(params, lr=lr, momentum=momentum)
+
+
+def test_register_optimizer(tmp_path: Path) -> None:
+    """
+    プロジェクトの Optimizer を登録すると, 名前だけで使え, 登録簿と範囲の
+    確認に加わることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 説明と範囲付きで登録
+    register_optimizer(
+        ProjectSGD, description="プロジェクトの SGD",
+        param_notes={"lr": {"description": "学習率", "minimum": 0.0}}
+    )
+    try:
+        # 名前だけで config に書いて学習を始められる
+        make_experiment(
+            tmp_path / "ok",
+            "optimizer:\n  name: ProjectSGD\n  params:\n    lr: 0.05\n"
+        )
+
+        # 渡した範囲は出力先を作る前に確かめる (渡さない引数は確かめない)
+        with pytest.raises(ValueError, match="lr は 0.0 以上"):
+            make_experiment(
+                tmp_path / "negative",
+                "optimizer:\n  name: ProjectSGD\n  params:\n    lr: -1.0\n"
+            )
+        make_experiment(
+            tmp_path / "momentum",
+            "optimizer:\n  name: ProjectSGD\n  params:\n    momentum: 1.5\n"
+        )
+
+        # 登録簿に説明と引数の仕様が加わる
+        specs = {spec["name"]: spec for spec in describe_optimizers()}
+        assert specs["ProjectSGD"]["description"] == "プロジェクトの SGD"
+        params = {
+            param["name"]: param for param in specs["ProjectSGD"]["params"]
+        }
+        assert params["lr"]["minimum"] == 0.0
+        assert params["momentum"]["description"] == ""
+    finally:
+        unregister_optimizer("ProjectSGD")
+
+    # 登録を外すと名前だけでは使えない, torch の名前と無い引数はエラー
+    with pytest.raises(ValueError):
+        make_experiment(
+            tmp_path / "removed", "optimizer:\n  name: ProjectSGD\n"
+        )
+    with pytest.raises(ValueError, match="torch.optim"):
+        register_optimizer(ProjectSGD, name="SGD")
+    with pytest.raises(ValueError, match="引数"):
+        register_optimizer(ProjectSGD, param_notes={"beta": {}})
+    with pytest.raises(TypeError):
+        register_optimizer(int)

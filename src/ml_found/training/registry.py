@@ -9,8 +9,8 @@ from omegaconf import DictConfig, ListConfig
 from torch import optim
 
 from ml_found.training.optim import (
-    CLOSURE_OPTIMIZERS, auto_total_params, resolve_optimizer_class,
-    resolve_scheduler_class
+    CLOSURE_OPTIMIZERS, REGISTERED_OPTIMIZERS, auto_total_params,
+    resolve_optimizer_class, resolve_scheduler_class
 )
 
 # 学習の結果ではなく実装の都合で使う引数 (画面では詳細設定として扱う)
@@ -345,8 +345,13 @@ def describe_params(cls: type) -> list[ParamSpec]:
         )
         if not required:
             kind = refine_kind(kind, param.annotation)
-        notes = CLASS_PARAM_NOTES.get(
-            (cls.__name__, param.name), PARAM_NOTES.get(param.name, {})
+        # 登録した Optimizer は, 登録のときに渡した説明と範囲だけを使用
+        custom = registered_notes(cls)
+        notes = (
+            custom.get(param.name, {}) if custom is not None
+            else CLASS_PARAM_NOTES.get(
+                (cls.__name__, param.name), PARAM_NOTES.get(param.name, {})
+            )
         )
         description = notes.get("description", "")
         if param.name in auto_total_params(cls):
@@ -393,6 +398,98 @@ def list_classes(module: Any, base: type) -> list[str]:
     return names
 
 
+# 登録した Optimizer の説明と, 引数ごとの説明と範囲 (名前ごと)
+REGISTERED_NOTES: dict[str, tuple[str, dict[str, dict[str, Any]]]] = {}
+
+
+def register_optimizer(
+    cls: type, name: Optional[str] = None, description: str = "",
+    param_notes: Optional[dict[str, dict[str, Any]]] = None
+) -> None:
+    """
+    プロジェクト側で作った Optimizer を, config の名前と登録簿に加える関数
+
+    start_experiment の前に呼ぶ. 登録すると config の optimizer.name に
+    名前だけで書け, describe_optimizers() にも説明と引数の仕様が加わる.
+    param_notes に書いた範囲は, torch のクラスと同じく出力先を作る前に
+    確かめる (書かない引数の範囲は確かめない)
+
+    Parameters
+    ----------
+    cls: type
+        Optimizer のクラス (torch.optim.Optimizer を継承したもの)
+    name: Optional[str] = None
+        config に書く名前, None の場合はクラス名
+    description: str = ""
+        登録簿に出す説明
+    param_notes: Optional[dict[str, dict[str, Any]]] = None
+        引数の名前ごとの説明と範囲 (description, minimum, maximum,
+        exclusive_minimum, exclusive_maximum)
+
+    Returns
+    ----------
+    None
+    """
+    # Optimizer であること, torch の名前と重ならないことを確認
+    if not (isinstance(cls, type) and issubclass(cls, optim.Optimizer)):
+        raise TypeError(f"Optimizer のクラスを渡してください: {cls!r}")
+    name = name or cls.__name__
+    if hasattr(optim, name):
+        raise ValueError(
+            f"{name} は torch.optim の名前と重なるので, 別の名前にしてください"
+        )
+
+    # 引数の名前の誤りを確認してから登録
+    notes = param_notes or {}
+    known = {spec.name for spec in describe_params(cls)}
+    unknown = sorted(set(notes) - known)
+    if unknown:
+        raise ValueError(f"{cls.__name__} に引数 {unknown} がありません")
+    REGISTERED_OPTIMIZERS[name] = cls
+    REGISTERED_NOTES[name] = (description, notes)
+
+
+def unregister_optimizer(name: str) -> None:
+    """
+    register_optimizer で加えた Optimizer を外す関数
+
+    Parameters
+    ----------
+    name: str
+        外す名前
+
+    Returns
+    ----------
+    None
+    """
+    # 登録されていない名前は無視して削除
+    REGISTERED_OPTIMIZERS.pop(name, None)
+    REGISTERED_NOTES.pop(name, None)
+
+
+def registered_notes(cls: type) -> Optional[dict[str, dict[str, Any]]]:
+    """
+    登録した Optimizer の引数の説明と範囲を返す関数
+
+    Parameters
+    ----------
+    cls: type
+        Optimizer のクラス
+
+    Returns
+    ----------
+    notes: Optional[dict[str, dict[str, Any]]]
+        引数ごとの説明と範囲, 登録していないクラスは None
+    """
+    # 同じクラスを登録した名前を探索
+    notes = None
+    for name, registered in REGISTERED_OPTIMIZERS.items():
+        if registered is cls:
+            notes = REGISTERED_NOTES[name][1]
+
+    return notes
+
+
 def describe_optimizers() -> list[dict[str, Any]]:
     """
     選べる Optimizer と引数の仕様を返す関数
@@ -415,6 +512,18 @@ def describe_optimizers() -> list[dict[str, Any]]:
             note=UNSUPPORTED.get(name, ""),
             requires_closure=issubclass(
                 getattr(optim, name), CLOSURE_OPTIMIZERS
+            )
+        )
+        specs.append(asdict(spec))
+
+    # 登録した Optimizer も, 渡した説明と範囲で追加
+    for name, cls in REGISTERED_OPTIMIZERS.items():
+        spec = ClassSpec(
+            name=name, description=REGISTERED_NOTES[name][0],
+            params=describe_params(cls),
+            requires_closure=(
+                getattr(cls, "requires_closure", False) is True
+                or issubclass(cls, CLOSURE_OPTIMIZERS)
             )
         )
         specs.append(asdict(spec))
@@ -645,8 +754,12 @@ def check_param_values(cls: type, params: Any) -> None:
             )
 
     # 範囲は torch のクラスの引数の意味で決めたので, 自作のクラス (同じ名前の
-    # 引数や同じクラス名でも意味が違う可能性あり) は対象外
-    if not cls.__module__.startswith("torch.") or not is_checkable(cls):
+    # 引数や同じクラス名でも意味が違う可能性あり) は, 登録して範囲を渡した
+    # 場合だけが対象
+    torch_class = cls.__module__.startswith("torch.")
+    if (
+        not (torch_class or registered_notes(cls)) or not is_checkable(cls)
+    ):
         return
 
     # 範囲を持つ引数の値を, 補間を解決してから確認

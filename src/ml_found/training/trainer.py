@@ -31,6 +31,12 @@ if TYPE_CHECKING:
     from ml_found.experiment.setup import Experiment
 
 
+class StopWithinEpoch(Exception):
+    """
+    エポックの途中で止める要求を受けたことを伝える例外
+    """
+
+
 class Trainer:
     def __init__(
         self, model: nn.Module, experiment: "Experiment",
@@ -439,6 +445,10 @@ class Trainer:
                     phase, self.epoch, self.trainer_cfg.epochs, n_batches,
                     total_batches
                 )
+
+                # エポックの途中で止める要求 (STOP に now) の確認
+                if self.run_status.stop_now_requested():
+                    raise StopWithinEpoch()
 
         # フェーズの終わりの進み具合を間隔に関係なく書き出し
         self.run_status.progress(
@@ -1136,6 +1146,55 @@ class Trainer:
             f"{cfg.scheduler.name} の引数を学習用データから補いました: {filled}"
         )
 
+    def discard_epoch(self, epoch: int) -> None:
+        """
+        途中で止めたエポックを捨て, 最後に終えたエポックの状態に戻す関数
+
+        記録 (history) にはまだ加えていないので, 更新ごとの学習率と, 最後の
+        重みを残す設定の場合のモデルの重みを戻す. last.pt は書かないので,
+        再開は最後に保存した last.pt から
+
+        Parameters
+        ----------
+        epoch: int
+            途中で止めたエポック
+
+        Returns
+        ----------
+        None
+        """
+        self.stopped_by_request = True
+        self.current_batch = None
+        self.lr_steps.drop_from_epoch(epoch)
+        message = f"中断の要求でエポック {epoch} の途中で学習を止めました"
+
+        # ベストモデルに戻す場合は, 学習の後にベストモデルの重みを使うので不要
+        uses_best = (
+            self.trainer_cfg.restore_best
+            and self.checkpoint.best_model_state is not None
+        )
+        if not uses_best:
+            # 前のエポックの last.pt があれば, その重みに戻す
+            last_path = self.experiment.run_dir / "last.pt"
+            last = None
+            if last_path.exists():
+                last = torch.load(
+                    last_path, map_location="cpu", weights_only=True,
+                    mmap=True
+                )
+            if last is not None and last.get("epoch") == epoch - 1:
+                self.model.load_state_dict(last["model"])
+                message += f". 重みはエポック {epoch - 1} のものに戻しました"
+            else:
+                message += (
+                    ". 前のエポックの last.pt が無いので, final_model.pt は"
+                    "途中までの重みです"
+                )
+                self.logger.warning(message)
+                warnings.warn(message, stacklevel=2)
+                return
+        self.logger.info(message)
+
     def plan_total_steps(self, train_loader: Iterable) -> None:
         """
         OneCycleLR を使う場合に, 予定の総ステップ数を求めて保存する関数
@@ -1274,10 +1333,18 @@ class Trainer:
                 lr = self.optimizer.param_groups[0]["lr"]
 
                 # 学習し, 検証用のデータがある場合は検証
+                # エポックの途中で止める要求があれば, このエポックを捨てて終了
                 record = {"epoch": epoch}
-                record.update(self.run_epoch(train_loader, train=True))
-                if valid_loader is not None:
-                    record.update(self.run_valid_epoch(valid_loader))
+                try:
+                    record.update(self.run_epoch(train_loader, train=True))
+                    if valid_loader is not None:
+                        record.update(self.run_valid_epoch(valid_loader))
+                except StopWithinEpoch:
+                    self.discard_epoch(epoch)
+                    pbar.write(
+                        f"中断の要求でエポック {epoch} の途中で学習を止めました"
+                    )
+                    break
                 record["lr"] = lr
 
                 # 監視する指標があることを確かめてから記録

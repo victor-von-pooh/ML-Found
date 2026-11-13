@@ -255,6 +255,26 @@ class LrSteps:
         self.epochs.append(epoch)
         self.lrs.append(lr)
 
+    def drop_from_epoch(self, epoch: int) -> None:
+        """
+        指定したエポック以降の記録を捨てる関数
+
+        Parameters
+        ----------
+        epoch: int
+            捨て始めるエポック (途中で止めたエポック)
+
+        Returns
+        ----------
+        None
+        """
+        keep = [
+            index for index, value in enumerate(self.epochs) if value < epoch
+        ]
+        self.steps = array("q", (self.steps[index] for index in keep))
+        self.epochs = array("q", (self.epochs[index] for index in keep))
+        self.lrs = array("d", (self.lrs[index] for index in keep))
+
     def records(self) -> list[dict]:
         """
         記録を 1 回の更新ごとの辞書の一覧にする関数

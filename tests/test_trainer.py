@@ -1363,3 +1363,138 @@ def test_light_checkpoints(tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="last.pt を指定"):
             run(name, light, 4, str(first.experiment.run_dir / name))
         assert not (tmp_path / name / "outputs").exists()
+
+
+def test_stop_within_epoch(tmp_path: Path) -> None:
+    """
+    STOP に now と書くとエポックの途中で止め, 最後に終えたエポックの状態に
+    戻すことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    text = (
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "scheduler:\n  name: StepLR\n  interval: step\n"
+        "  params:\n    step_size: 2\n"
+        "trainer:\n  epochs: 5\n  restore_best: false\n"
+    )
+    experiment = make_experiment(tmp_path / "stop", text)
+    calls = {"train": 0}
+
+    def step(model: nn.Module, batch: tuple, phase: str) -> dict:
+        """
+        2 エポック目の 2 バッチ目で, エポックの途中で止める要求を出す関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            平均二乗誤差
+        """
+        if phase == "train":
+            calls["train"] += 1
+            if calls["train"] == 6:
+                (experiment.run_dir / "STOP").write_text("now\n")
+        outputs = regression_step(model, batch, phase)
+
+        return outputs
+
+    # 1 エポック 4 バッチで, 毎バッチ要求を確かめる
+    trainer = Trainer(nn.Linear(1, 1), experiment, step)
+    trainer.run_status.progress_interval = 0.0
+    history = trainer.fit(make_loader(n=64, batch_size=16))
+
+    # 2 エポック目は捨て, 1 エポック目の記録と重みが残る
+    assert history.get("epoch") == [1]
+    run_dir = experiment.run_dir
+    status = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert status["status"] == "stopped"
+    assert status["completed_epochs"] == 1
+    last = torch.load(
+        run_dir / "last.pt", map_location="cpu", weights_only=True
+    )
+    assert last["epoch"] == 1
+    final = torch.load(
+        run_dir / "final_model.pt", map_location="cpu", weights_only=True
+    )
+    assert all(torch.equal(final[key], last["model"][key]) for key in final)
+    with open(run_dir / "lr_steps.csv", encoding="utf-8") as f:
+        assert [row["epoch"] for row in csv.DictReader(f)] == ["1"] * 4
+    log = (run_dir / "train.log").read_text(encoding="utf-8")
+    assert "エポック 2 の途中で学習を止めました" in log
+
+    # 止めた last.pt から再開すると, 2 エポック目から学習
+    resumed = make_experiment(
+        tmp_path / "resumed",
+        text + f"  resume_from: {run_dir / 'last.pt'}\n"
+    )
+    history = Trainer(nn.Linear(1, 1), resumed, regression_step).fit(
+        make_loader(n=64, batch_size=16)
+    )
+    assert history.get("epoch") == [1, 2, 3, 4, 5]
+
+
+def test_stop_file_without_now(tmp_path: Path) -> None:
+    """
+    STOP の中身が now でなければ, エポックの途中では止めないことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path, "trainer:\n  epochs: 3\n")
+    calls = {"train": 0}
+
+    def step(model: nn.Module, batch: tuple, phase: str) -> dict:
+        """
+        1 エポック目の途中で, 中身の無い STOP を置く関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            平均二乗誤差
+        """
+        if phase == "train":
+            calls["train"] += 1
+            if calls["train"] == 2:
+                (experiment.run_dir / "STOP").touch()
+        outputs = regression_step(model, batch, phase)
+
+        return outputs
+
+    trainer = Trainer(nn.Linear(1, 1), experiment, step)
+    trainer.run_status.progress_interval = 0.0
+    history = trainer.fit(make_loader(n=64, batch_size=16))
+
+    # これまで通り, 1 エポック目を終えてから止める
+    assert history.get("epoch") == [1]
+    assert calls["train"] == 4

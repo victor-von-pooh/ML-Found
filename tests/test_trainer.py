@@ -2515,3 +2515,105 @@ def test_register_rng(tmp_path: Path) -> None:
         register_rng("library", seed_fn, None, set_state)
     with pytest.raises(TypeError, match="保存できない型"):
         register_rng("library", seed_fn, lambda: {"rng": object()}, set_state)
+
+
+def test_eval_train(tmp_path: Path) -> None:
+    """
+    学習用データを推論モードで評価し直す設定で, train_eval/ の指標が
+    記録され, 学習そのものは変わらないことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    phases = []
+
+    def step(model: nn.Module, batch: tuple, phase: str) -> dict:
+        """
+        呼ばれたフェーズを記録して平均二乗誤差を求める関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase: str
+            train, train_eval, valid のどれか
+
+        Returns
+        ----------
+        outputs: dict
+            平均二乗誤差と平均絶対誤差
+        """
+        # フェーズと, そのときのモデルの状態を記録して計算
+        phases.append((phase, model.training, torch.is_grad_enabled()))
+        outputs = regression_step(model, batch, phase)
+
+        return outputs
+
+    def run(name: str, eval_train: bool) -> tuple[Trainer, History]:
+        """
+        Dropout を含むモデルを, 並べ替える DataLoader で学習する関数
+
+        Parameters
+        ----------
+        name: str
+            出力先の名前
+        eval_train: bool
+            学習用データを評価し直すかどうか
+
+        Returns
+        ----------
+        trainer: Trainer
+            学習を終えた Trainer
+        history: History
+            エポックごとの記録
+        """
+        # 学習の後の重みを残す設定で, 3 エポック学習
+        experiment = make_experiment(
+            tmp_path / name,
+            "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+            "trainer:\n  epochs: 3\n  select_best: false\n"
+            f"  eval_train: {str(eval_train).lower()}\n"
+        )
+        model = nn.Sequential(
+            nn.Linear(1, 8), nn.Dropout(0.5), nn.Linear(8, 1)
+        )
+        trainer = Trainer(model, experiment, step)
+        history = trainer.fit(make_loader(shuffle=True), make_loader())
+
+        return trainer, history
+
+    # 評価し直しても学習用と検証用の記録は同じ
+    _, plain = run("plain", False)
+    phases.clear()
+    trainer, history = run("eval", True)
+    for key in ("train/loss", "valid/loss"):
+        assert history.get(key) == plain.get(key)
+    assert "train_eval/loss" not in plain.records[0]
+
+    # 学習用データの評価し直しは推論モードで勾配なし, 学習と検証の間に実行
+    order = [phase for phase, _, _ in phases]
+    assert order[:12] == ["train"] * 4 + ["train_eval"] * 4 + ["valid"] * 4
+    assert all(
+        not training and not grad
+        for phase, training, grad in phases if phase == "train_eval"
+    )
+
+    # 最後のエポックの値は, 学習後のモデルで学習用データを評価した値
+    trainer.model.eval()
+    with torch.no_grad():
+        x, y = next(iter(make_loader(batch_size=64)))
+        expected = nn.MSELoss()(trainer.model(x), y).item()
+    assert history.get("train_eval/loss")[-1] == pytest.approx(expected)
+    columns = (
+        (trainer.experiment.run_dir / "history.csv")
+        .read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert "train_eval/loss" in columns

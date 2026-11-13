@@ -146,7 +146,7 @@ python train.py --experiment configs/experiment/examples/my.yaml trainer.epochs=
 `step(model, batch, phase)` の決まりは以下の通り.
 
 - `batch` は ML-Found がデバイスに移してから渡す
-- `phase` は学習時に `"train"`, 検証時に `"valid"` になる
+- `phase` は学習時に `"train"`, 検証時に `"valid"` になる (`trainer.eval_train: true` の場合は, 学習用データの評価し直しで `"train_eval"`)
 - 戻り値は辞書で, `loss` は必須. その他の値は `train/acc` や `valid/acc` のように指標として記録され, 学習曲線も描かれる
 - 指標は 1 つの値にし, 名前には `/` を使わない (学習曲線の画像のファイル名に使うため)
 - 指標はバッチのサンプル数で重み付けして平均する. サンプル数は自動で推定するが, 戻り値に `batch_size` を入れると, そちらを使う. 推定できない場合 (テンソルを含まないバッチなど) は 1 として扱い, `train.log` に警告を 1 回出す
@@ -264,6 +264,7 @@ experiment = start_experiment(cfg, diff, str(project_dir))
 
 - PINN のように検証でも入力に対する微分を使う場合は, `trainer.valid_grad: true` にする
 - 拡散モデルのように損失に乱数を含む場合は, `trainer.valid_seed` を決めると毎エポック同じ乱数で検証し, ベストモデルの判定が乱数で揺れない. 検証の後は学習の乱数の状態に戻すので, 学習には影響しない. 固定するのは Python, NumPy, torch の全体の乱数なので, 自分の `generator` を渡した DataLoader や, ワーカーを使い回す DataLoader のワーカーの乱数には届かない. `register_rng` で登録した乱数 (下の「外部ライブラリの乱数」) は固定の対象になる
+- Dropout などで学習時と推論時の振る舞いが違うモデルでは, `train/` の指標は学習中の振る舞いの値になる. `trainer.eval_train: true` にすると, 各エポックの学習の後に学習用データを推論モード (勾配の計算なし, `valid_grad` と `valid_seed` は検証と同じに効く) で評価し直し, `train_eval/` を付けて記録する (`train_eval/loss` など). 学習用と検証用の指標を同じ条件で比べられる. 評価し直しの前後で乱数の状態を戻すので, 並べ替える DataLoader でも学習そのものは変わらない. 時間は学習用データ 1 周分の推論だけ増える. `step` と `on_epoch_start`, `on_epoch_end` には `phase` に `train_eval` が渡るので, `phase == "train"` で学習かどうかを見分ける書き方にする. 監視する指標にも使える (`trainer.monitor: train_eval/loss`)
 
 ### 外部ライブラリの乱数
 
@@ -359,6 +360,7 @@ ML-Found が使う項目と既定値.
 | `trainer.select_best` | `true` | 監視する指標でベストモデルを選ぶかどうか. GAN のように損失で良し悪しを決められない学習では `false` にし, `best.pt` を作らず `final_model.pt` に最後のエポックの重みを残す (Early Stopping と `monitor_tiebreak` とは一緒に使えない. 監視する指標は発散の確認と ReduceLROnPlateau に使う). 選ぶ設定の `last.pt` から `false` で再開すると, 再開元のベストモデルは使わない |
 | `trainer.valid_grad` | `false` | 検証時にも勾配を計算するかどうか |
 | `trainer.valid_seed` | `null` | 検証の前に乱数を固定するシード, 検証の後は学習の乱数の状態に戻す |
+| `trainer.eval_train` | `false` | 学習の後に学習用データを推論モードで評価し直し, `train_eval/` を付けて記録するかどうか |
 | `trainer.manual_optimization` | `false` | ML-Found が逆伝播と更新を行わず, `step` の中で更新するかどうか |
 | `trainer.resume_from` | `null` | 再開するチェックポイントのパス, 相対パスの場合はプロジェクトのディレクトリから辿る |
 | `trainer.progress_bar` | `true` | 進捗バーを表示するかどうか |

@@ -214,19 +214,46 @@ def requires_closure(optimizer: optim.Optimizer) -> bool:
     required: bool
         closure が必要な場合は True
     """
+    # クラスで判定 (登録簿の仕様と同じ判定)
+    required = class_requires_closure(type(optimizer))
+
+    return required
+
+
+def class_requires_closure(optimizer_cls: type) -> bool:
+    """
+    Optimizer のクラスの step が closure を必要とするかを判定する関数
+
+    requires_closure と登録簿 (describe_optimizers) の両方で使う
+
+    Parameters
+    ----------
+    optimizer_cls: type
+        判定する Optimizer のクラス
+
+    Returns
+    ----------
+    required: bool
+        closure が必要な場合は True
+    """
     # 自作のクラスがクラスの属性で宣言した場合はそれに従う
-    declared = getattr(type(optimizer), "requires_closure", None)
+    declared = getattr(optimizer_cls, "requires_closure", None)
     if isinstance(declared, bool):
         return declared
 
     # torch のクラスは仕様で判定
-    if isinstance(optimizer, CLOSURE_OPTIMIZERS):
+    if issubclass(optimizer_cls, CLOSURE_OPTIMIZERS):
         return True
-    if type(optimizer).__module__.startswith("torch."):
+    if optimizer_cls.__module__.startswith("torch."):
         return False
 
     # それ以外は step のシグネチャで closure が必須の引数かどうかを確認
-    param = inspect.signature(optimizer.step).parameters.get("closure")
+    try:
+        param = inspect.signature(optimizer_cls.step).parameters.get(
+            "closure"
+        )
+    except (TypeError, ValueError):
+        return False
     required = (
         param is not None and param.default is inspect.Parameter.empty
     )

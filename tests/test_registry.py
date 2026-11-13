@@ -659,6 +659,12 @@ class ProjectSGD(optim.SGD):
         super(ProjectSGD, self).__init__(params, lr=lr, momentum=momentum)
 
 
+class KwargsSGD(optim.SGD):
+    def __init__(self, params: Any, lr: float = 0.1, **kwargs: Any):
+        # 親クラスのコンストラクタを呼び出す
+        super(KwargsSGD, self).__init__(params, lr=lr, **kwargs)
+
+
 def test_register_optimizer(tmp_path: Path) -> None:
     """
     プロジェクトの Optimizer を登録すると, 名前だけで使え, 登録簿と範囲の
@@ -718,3 +724,26 @@ def test_register_optimizer(tmp_path: Path) -> None:
         register_optimizer(ProjectSGD, param_notes={"beta": {}})
     with pytest.raises(TypeError):
         register_optimizer(int)
+
+    # torch のクラス, 同じクラスの別の名前, 書き方の誤った説明, 確かめられない
+    # クラスへの範囲はエラー (torch のクラスの範囲を消さないため)
+    with pytest.raises(ValueError, match="torch のクラス"):
+        register_optimizer(optim.SGD, name="MySGD")
+    register_optimizer(ProjectSGD)
+    try:
+        with pytest.raises(ValueError, match="登録済み"):
+            register_optimizer(ProjectSGD, name="OtherSGD")
+    finally:
+        unregister_optimizer("ProjectSGD")
+    for notes in ({"lr": {"minimun": 0.0}}, {"lr": 0.0}):
+        with pytest.raises(ValueError, match="辞書"):
+            register_optimizer(ProjectSGD, param_notes=notes)
+    with pytest.raises(ValueError, match="範囲を確かめられません"):
+        register_optimizer(
+            KwargsSGD, param_notes={"lr": {"minimum": 0.0}}
+        )
+    specs = {spec["name"]: spec for spec in describe_optimizers()}
+    sgd_lr = next(
+        param for param in specs["SGD"]["params"] if param["name"] == "lr"
+    )
+    assert sgd_lr["minimum"] == 0.0

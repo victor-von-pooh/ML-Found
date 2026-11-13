@@ -90,7 +90,7 @@ experiment で書けるのは default にある項目の値だけで, 項目の�
 
 選べる Optimizer と Scheduler とその引数 (種類, 既定値, 必須か, 説明, 範囲. 範囲の端を含まない場合は `exclusive_minimum` と `exclusive_maximum` が true. 実装の都合で使う引数は `advanced` が true) と, そのまま使えるか (`supported`, 使えない理由は `note`), closure が必要か (`requires_closure`, Optimizer のみ) は `describe_optimizers()` と `describe_schedulers()` で取得できる. ダッシュボードの入力フォームなどに使う.
 
-プロジェクトで作った Optimizer は, `register_optimizer` で登録すると, config の `optimizer.name` に名前だけで書け, `describe_optimizers()` にも加わる (ダッシュボードの登録簿は, ダッシュボードのプロセスで登録しないと出ない). 範囲を渡した引数は, torch のクラスと同じく出力先を作る前に確かめる. `start_experiment` の前に登録する. torch の名前と同じ名前は使えない. `unregister_optimizer(name)` で外せる.
+プロジェクトで作った Optimizer は, `register_optimizer` で登録すると, config の `optimizer.name` に名前だけで書け, `describe_optimizers()` にも加わる (ダッシュボードの登録簿は, ダッシュボードのプロセスで登録しないと出ない). 範囲を渡した引数は, torch のクラスと同じく出力先を作る前に確かめる. `start_experiment` の前に登録する (再開するスクリプトでも登録する). 登録できるのはプロジェクトのクラスだけで, torch のクラスや torch の名前と同じ名前, 同じクラスの別の名前は使えない. `param_notes` は引数ごとに `description`, `minimum`, `maximum`, `exclusive_minimum`, `exclusive_maximum` を項目に持つ辞書で, 任意の名前の引数 (`**kwargs`) を受け取るクラスには範囲を渡せない. `unregister_optimizer(name)` で外せる. ダッシュボードから起動する場合は, ダッシュボードのプロセスでは登録されないので, config の名前は `custom_optim.Lion` のようにモジュールのパスで書く.
 
 ```python
 from ml_found.training import register_optimizer

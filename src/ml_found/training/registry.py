@@ -9,7 +9,7 @@ from omegaconf import DictConfig, ListConfig
 from torch import optim
 
 from ml_found.training.optim import (
-    CLOSURE_OPTIMIZERS, REGISTERED_OPTIMIZERS, auto_total_params,
+    REGISTERED_OPTIMIZERS, auto_total_params, class_requires_closure,
     resolve_optimizer_class, resolve_scheduler_class
 )
 
@@ -398,6 +398,12 @@ def list_classes(module: Any, base: type) -> list[str]:
     return names
 
 
+# param_notes の 1 つの引数に書ける項目
+NOTE_KEYS = {
+    "description", "minimum", "maximum", "exclusive_minimum",
+    "exclusive_maximum"
+}
+
 # 登録した Optimizer の説明と, 引数ごとの説明と範囲 (名前ごと)
 REGISTERED_NOTES: dict[str, tuple[str, dict[str, dict[str, Any]]]] = {}
 
@@ -430,21 +436,46 @@ def register_optimizer(
     ----------
     None
     """
-    # Optimizer であること, torch の名前と重ならないことを確認
+    # プロジェクトの Optimizer であること, torch の名前と重ならないこと,
+    # 同じクラスを別の名前で登録していないことを確認
     if not (isinstance(cls, type) and issubclass(cls, optim.Optimizer)):
         raise TypeError(f"Optimizer のクラスを渡してください: {cls!r}")
+    if cls.__module__.startswith("torch."):
+        raise ValueError(
+            f"torch のクラス {cls.__name__} は登録できません (そのまま使えます)"
+        )
     name = name or cls.__name__
     if hasattr(optim, name):
         raise ValueError(
             f"{name} は torch.optim の名前と重なるので, 別の名前にしてください"
         )
+    for other, registered in REGISTERED_OPTIMIZERS.items():
+        if registered is cls and other != name:
+            raise ValueError(
+                f"{cls.__name__} は {other} の名前で登録済みです"
+            )
 
-    # 引数の名前の誤りを確認してから登録
+    # 引数の名前と, 説明と範囲の書き方を確認してから登録
     notes = param_notes or {}
     known = {spec.name for spec in describe_params(cls)}
     unknown = sorted(set(notes) - known)
     if unknown:
         raise ValueError(f"{cls.__name__} に引数 {unknown} がありません")
+    for param, note in notes.items():
+        if not isinstance(note, dict) or set(note) - NOTE_KEYS:
+            raise ValueError(
+                f"param_notes の {param} は {sorted(NOTE_KEYS)} を項目に持つ"
+                f"辞書にしてください: {note!r}"
+            )
+    has_range = any(
+        note.get("minimum") is not None or note.get("maximum") is not None
+        for note in notes.values()
+    )
+    if has_range and not is_checkable(cls):
+        raise ValueError(
+            f"{cls.__name__} は任意の名前の引数 (**kwargs) か位置だけの引数を"
+            "受け取るので, 範囲を確かめられません"
+        )
     REGISTERED_OPTIMIZERS[name] = cls
     REGISTERED_NOTES[name] = (description, notes)
 
@@ -510,9 +541,7 @@ def describe_optimizers() -> list[dict[str, Any]]:
             params=describe_params(getattr(optim, name)),
             supported=name not in UNSUPPORTED,
             note=UNSUPPORTED.get(name, ""),
-            requires_closure=issubclass(
-                getattr(optim, name), CLOSURE_OPTIMIZERS
-            )
+            requires_closure=class_requires_closure(getattr(optim, name))
         )
         specs.append(asdict(spec))
 
@@ -521,10 +550,7 @@ def describe_optimizers() -> list[dict[str, Any]]:
         spec = ClassSpec(
             name=name, description=REGISTERED_NOTES[name][0],
             params=describe_params(cls),
-            requires_closure=(
-                getattr(cls, "requires_closure", False) is True
-                or issubclass(cls, CLOSURE_OPTIMIZERS)
-            )
+            requires_closure=class_requires_closure(cls)
         )
         specs.append(asdict(spec))
 

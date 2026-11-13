@@ -52,7 +52,8 @@ class CheckpointConfig:
     save_best: bool = True
     save_last: bool = True
 
-    # last.pt を保存するエポックの間隔, 最後のエポックと止めたエポックは必ず保存
+    # last.pt を保存するエポックの間隔, 最後のエポックとエポックの区切りで
+    # 止めたエポックは必ず保存
     every_n_epochs: int = 1
 
     # best.pt にモデルの重みだけを保存するか (軽くなるが, 再開には使えない)

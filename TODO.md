@@ -4,18 +4,17 @@
 
 ## 前提
 
-データを入れるだけで学習が回るダッシュボードアプリを, このリポジトリとは別に作る予定である.
-ML-Found はその下で動く学習ライブラリとして, ダッシュボードから使える API を提供するところまでを担当する.
+ML-Dashboard (別のリポジトリ) は, ML-Found で行った実験の結果を確かめ, 学習を起動する Web アプリである.
+ML-Found はその下で動く学習ライブラリとして, ダッシュボードから使える API (実験の状態の書き出し, 登録簿, config の確認, 中断など) を提供するところまでを担当する.
 画面, 入力フォーム, データの取り込み, タスクの雛形などはダッシュボード側で作り, ML-Found には入れない.
-
-着手する時期はダッシュボード側の進み具合に合わせて決める.
 
 ## 項目
 
 ### 1. Optimizer と Scheduler の登録簿 (一部対応)
 
 `describe_optimizers()` と `describe_schedulers()` で, `torch.optim` の Optimizer と Scheduler ごとの引数の種類, 既定値, 必須か, 説明, 範囲を返すようにした. 引数は signature から取り出し, よく使うものには説明と範囲を付けた. 範囲の端を含まない場合は `exclusive_minimum` と `exclusive_maximum` で表す. Muon と SparseAdam は, そのままでは使えないことを理由付きで返す. 他の Scheduler を組み合わせるものと関数を受け取るもの (`SequentialLR`, `ChainedScheduler`, `LambdaLR`, `MultiplicativeLR`) は返さない.
-`start_experiment` は, config の引数の名前の typo, 必須の引数の不足, 範囲の外の値を, 出力先を作る前に確かめる.
+`start_experiment` は, config の引数の名前の typo, 必須の引数の不足, 範囲の外の値を確かめ, 仮のパラメータで Optimizer と Scheduler を作ってみて (範囲を持たない引数や自作のクラスの値の誤りも), 出力先を作る前にエラーにする.
+学習全体の長さの引数 (`CosineAnnealingLR` の `T_max` など) は `auto` と書け, 登録簿の説明にもそのことを書く. Optimizer の仕様には, closure が必要か (`requires_closure`) も返す.
 
 残っていること.
 
@@ -23,12 +22,12 @@ ML-Found はその下で動く学習ライブラリとして, ダッシュボー
 
 ### 2. closure を渡す更新手順への対応 (一部対応)
 
-`update_parameters` が, `step` に closure が必要な Optimizer (LBFGS など) を自動で見分け, 同じバッチで損失と勾配を計算し直す closure を渡すようにした.
+`update_parameters` が, `step` に closure が必要な Optimizer (LBFGS など) を自動で見分け, 同じバッチで損失と勾配を計算し直す closure を渡すようにした. closure が必要かは, クラスの属性 `requires_closure` (自作の Optimizer が宣言), 登録簿の仕様 (`describe_optimizers()` の `requires_closure`), `step` のシグネチャの順に決める.
 あわせて `trainer.manual_optimization` で, ML-Found が逆伝播と更新を行わない設定も加えた.
 
 残っていること.
 
-- Nelder-Mead 法のような勾配を使わない最適化法. 勾配を使うかどうかを 1 の登録簿の仕様に持たせる
+- Nelder-Mead 法のような勾配を使わない最適化法. 勾配を使うかどうかも 1 の登録簿の仕様に持たせる (closure が必要かは対応済み)
 
 ### 3. 進捗を渡す仕組みと学習の中断 (対応済み)
 

@@ -268,6 +268,40 @@ def check_scheduler(
         check_plateau(interval, scheduler.mode, mode)
 
 
+def missing_data_size_params(cfg: DictConfig) -> list[str]:
+    """
+    データの量で決まる Scheduler の引数のうち, config に無いものを返す関数
+
+    今は OneCycleLR の epochs と steps_per_epoch (total_steps が無い場合) が
+    対象. Trainer が学習を始めるときに, 学習用データのバッチ数から補う
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        scheduler の config
+
+    Returns
+    ----------
+    missing: list[str]
+        補う必要のある引数の名前, 無ければ空
+    """
+    # OneCycleLR で, 総ステップ数を書いていない場合だけが対象
+    if cfg.name is None:
+        return []
+    scheduler_cls = resolve_scheduler_class(cfg.name)
+    if not issubclass(scheduler_cls, optim.lr_scheduler.OneCycleLR):
+        return []
+    params = cfg.params
+    if params.get("total_steps") is not None:
+        return []
+    missing = [
+        name for name in ("epochs", "steps_per_epoch")
+        if params.get(name) is None
+    ]
+
+    return missing
+
+
 def build_scheduler(
     cfg: DictConfig, optimizer: optim.Optimizer, mode: str = "min"
 ) -> Optional[optim.lr_scheduler.LRScheduler]:

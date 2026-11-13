@@ -175,7 +175,8 @@ def test_custom_classes(tmp_path: Path) -> None:
 
 def test_one_cycle_steps(tmp_path: Path) -> None:
     """
-    OneCycleLR の総ステップ数の指定が無い場合にエラーになることを確かめる関数
+    OneCycleLR の総ステップ数の指定は, 無くても学習を始められることを確かめる関数
+    (Trainer が学習用データのバッチ数から補う)
 
     Parameters
     ----------
@@ -187,8 +188,9 @@ def test_one_cycle_steps(tmp_path: Path) -> None:
     None
     """
     base = "scheduler:\n  name: OneCycleLR\n  interval: step\n  params:\n"
-    with pytest.raises(ValueError, match="total_steps"):
-        make_experiment(tmp_path / "none", base + "    max_lr: 0.1\n")
+    make_experiment(tmp_path / "none", base + "    max_lr: 0.1\n")
+    with pytest.raises(ValueError, match="必須の引数がありません: max_lr"):
+        make_experiment(tmp_path / "no_max", base + "    total_steps: 10\n")
     make_experiment(
         tmp_path / "steps", base + "    max_lr: 0.1\n    total_steps: 10\n"
     )

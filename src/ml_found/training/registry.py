@@ -96,14 +96,14 @@ CLASS_PARAM_NOTES: dict[tuple[str, str], dict[str, Any]] = {
     # 以下は PyTorch が初期化で確かめる範囲か, 外れると学習中に 0 除算になる範囲
     # 範囲は両端を含み, 端を含まない場合は exclusive_minimum などで指定
     ("OneCycleLR", "total_steps"): {
-        "description": "全ステップ数. 省略する場合は epochs と steps_per_epoch が必要",
+        "description": "全ステップ数. 省略すると epochs と steps_per_epoch から",
         "minimum": 1
     },
     ("OneCycleLR", "epochs"): {
-        "description": "エポック数 (total_steps を省略する場合)", "minimum": 1
+        "description": "エポック数. 省略すると trainer.epochs", "minimum": 1
     },
     ("OneCycleLR", "steps_per_epoch"): {
-        "description": "1 エポックのステップ数 (total_steps を省略する場合)",
+        "description": "1 エポックのステップ数. 省略すると学習用データのバッチ数",
         "minimum": 1
     },
     ("OneCycleLR", "pct_start"): {
@@ -613,16 +613,13 @@ def check_params(cls: type, names: set[str]) -> None:
             f"(使える引数: {', '.join(sorted(valid))})"
         )
 
-    # 必須の引数の確認 (OneCycleLR は総ステップ数の指定方法が 2 通り)
+    # 必須の引数の確認
+    # OneCycleLR の総ステップ数 (total_steps, または epochs と steps_per_epoch)
+    # は, 書かなければ Trainer が学習用データのバッチ数から補うので対象外
     missing = [
         spec.name for spec in specs
         if spec.required and spec.name not in names
     ]
-    if issubclass(cls, optim.lr_scheduler.OneCycleLR) and not (
-        "total_steps" in names
-        or {"epochs", "steps_per_epoch"} <= names
-    ):
-        missing.append("total_steps (または epochs と steps_per_epoch)")
     if missing:
         raise ValueError(
             f"{cls.__name__} の必須の引数がありません: {', '.join(missing)}"

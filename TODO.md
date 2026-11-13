@@ -46,7 +46,6 @@ ML-Found はその下で動く学習ライブラリとして, ダッシュボー
 
 - 複数の Optimizer を名前付きで config に書き, 損失ごとに対応させて更新, 保存, 再開する仕組み (GAN など). 今は `manual_optimization` と `extra_state_dict` で利用者が書く
 - 検証に使うモデルを差し替えるフック (EMA の重みで検証する, など)
-- データの量で決まる Scheduler の引数 (`OneCycleLR` の `steps_per_epoch` など) を, `fit` で `train_loader` の長さから補う仕組み. `len()` を持たない loader と, 再開時の復元の順番に注意が要る
 - `best.pt` の保存を軽くする. 今は改善するたびに記録の全てを含めて保存するので, 1 エポックが短い学習では `every_n_epochs` を使っても保存の時間が残る
 - `last.pt` にベストモデルの重みを入れない設定. 大きなモデルでは `best.pt` と `last.pt` がそれぞれ数 GB になる
 - モデルの構造のログを `print(model)` 以外でも残す仕組み (外部ライブラリの層は中身が残らない). 今は README で `extra_repr` を勧めている

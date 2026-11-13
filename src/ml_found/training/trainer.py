@@ -5,6 +5,7 @@ import time
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
 
+from omegaconf import OmegaConf
 import torch
 from torch import nn, optim
 from tqdm import tqdm
@@ -17,8 +18,8 @@ from ml_found.training.history import (
     History, LrSteps, MetricTracker, to_float
 )
 from ml_found.training.optim import (
-    build_optimizer, build_scheduler, check_scheduler, requires_closure,
-    step_scheduler, to_kwargs
+    build_optimizer, build_scheduler, check_scheduler,
+    missing_data_size_params, requires_closure, step_scheduler, to_kwargs
 )
 from ml_found.training.status import RunStatus
 from ml_found.utils.batch import get_batch_size, move_to_device
@@ -56,13 +57,20 @@ class Trainer:
         self.optimizer = optimizer
 
         # Scheduler が渡されていない場合は config から作成し, どちらかを保存
+        # データの量で決まる引数 (OneCycleLR の steps_per_epoch など) が
+        # 無い場合は, 学習用データが分かる fit の初めまで作成を保留
         self.scheduler_from_config = scheduler is None
-        if scheduler is None:
+        self.pending_scheduler = scheduler is None and bool(
+            missing_data_size_params(experiment.cfg.scheduler)
+        )
+        if scheduler is None and not self.pending_scheduler:
             scheduler = build_scheduler(
                 experiment.cfg.scheduler, self.optimizer,
                 experiment.cfg.trainer.mode
             )
-        elif scheduler.optimizer is not self.optimizer:
+        elif (
+            scheduler is not None and scheduler.optimizer is not self.optimizer
+        ):
             raise ValueError(
                 "scheduler は Trainer が使う optimizer で作ってください"
             )
@@ -978,6 +986,54 @@ class Trainer:
 
         return history
 
+    def build_scheduler_from_data(self, train_loader: Iterable) -> None:
+        """
+        データの量で決まる Scheduler の引数を学習用データから補って作る関数
+
+        Parameters
+        ----------
+        train_loader: Iterable
+            学習用のバッチを返すもの, len() でバッチ数を取得
+
+        Returns
+        ----------
+        None
+        """
+        # 1 エポックで Scheduler を進める回数 (step ごとならバッチ数) と,
+        # エポック数 (trainer.epochs) の取得
+        cfg = self.experiment.cfg
+        values = {}
+        for name in missing_data_size_params(cfg.scheduler):
+            if name == "epochs":
+                values[name] = self.trainer_cfg.epochs
+            elif self.scheduler_interval == "epoch":
+                values[name] = 1
+            else:
+                try:
+                    values[name] = len(train_loader)
+                except TypeError as error:
+                    raise ValueError(
+                        f"{cfg.scheduler.name} の steps_per_epoch を補えません. "
+                        "train_loader が len() を持たないので, "
+                        "scheduler.params に total_steps か steps_per_epoch "
+                        "を書いてください"
+                    ) from error
+
+        # config に書き込んで作成し, 補った値が残るように config.yaml も更新
+        for name, value in values.items():
+            cfg.scheduler.params[name] = value
+        self.scheduler = build_scheduler(
+            cfg.scheduler, self.optimizer, self.trainer_cfg.mode
+        )
+        self.pending_scheduler = False
+        OmegaConf.save(
+            cfg, self.experiment.run_dir / "config.yaml", resolve=True
+        )
+        filled = ", ".join(f"{name}={value}" for name, value in values.items())
+        self.logger.info(
+            f"{cfg.scheduler.name} の引数を学習用データから補いました: {filled}"
+        )
+
     def train_epochs(
         self, train_loader: Iterable, valid_loader: Optional[Iterable]
     ) -> History:
@@ -1009,6 +1065,10 @@ class Trainer:
             seed=self.experiment.cfg.experiment.seed,
             device=str(self.device)
         )
+
+        # データの量で決まる Scheduler の引数を補って作成 (再開の復元の前)
+        if self.pending_scheduler:
+            self.build_scheduler_from_data(train_loader)
 
         # 再開する場合はチェックポイントから状態の復元
         if self.trainer_cfg.resume_from is not None:

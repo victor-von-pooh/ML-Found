@@ -270,12 +270,72 @@ def check_scheduler(
         check_plateau(interval, scheduler.mode, mode)
 
 
+# 値に auto と書くと, 学習全体のステップ数 (interval が epoch ならエポック数,
+# step ならエポック数 × バッチ数) で補う Scheduler の引数
+AUTO_TOTAL_PARAMS = {
+    optim.lr_scheduler.CosineAnnealingLR: ("T_max",),
+    optim.lr_scheduler.LinearLR: ("total_iters",),
+    optim.lr_scheduler.ConstantLR: ("total_iters",),
+    optim.lr_scheduler.PolynomialLR: ("total_iters",),
+}
+
+
+def auto_total_params(scheduler_cls: type) -> tuple[str, ...]:
+    """
+    auto と書ける Scheduler の引数の名前を返す関数
+
+    Parameters
+    ----------
+    scheduler_cls: type
+        Scheduler のクラス
+
+    Returns
+    ----------
+    names: tuple[str, ...]
+        auto と書ける引数の名前, 無ければ空
+    """
+    # torch のクラスとそれを継承したクラスが対象 (OneCycleLR の補いと同じ)
+    names: tuple[str, ...] = ()
+    for base, params in AUTO_TOTAL_PARAMS.items():
+        if isinstance(scheduler_cls, type) and issubclass(scheduler_cls, base):
+            names = params
+
+    return names
+
+
+def auto_params(cfg: DictConfig) -> list[str]:
+    """
+    Scheduler の引数のうち, 値に auto と書いたものを返す関数
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        scheduler の config
+
+    Returns
+    ----------
+    names: list[str]
+        auto と書いた引数の名前, 無ければ空
+    """
+    # 名前が無い場合と, auto と書けない Scheduler は対象外
+    if cfg.name is None:
+        return []
+    scheduler_cls = resolve_scheduler_class(cfg.name)
+    names = [
+        name for name in auto_total_params(scheduler_cls)
+        if cfg.params.get(name) == "auto"
+    ]
+
+    return names
+
+
 def missing_data_size_params(cfg: DictConfig) -> list[str]:
     """
     データの量で決まる Scheduler の引数のうち, config に無いものを返す関数
 
-    今は OneCycleLR の epochs と steps_per_epoch (total_steps が無い場合) が
-    対象. Trainer が学習を始めるときに, 学習用データのバッチ数から補う
+    OneCycleLR の epochs と steps_per_epoch (total_steps が無い場合) と,
+    auto と書いた引数 (CosineAnnealingLR の T_max など) が対象. Trainer が
+    学習を始めるときに, 学習用データのバッチ数から補う
 
     Parameters
     ----------
@@ -287,12 +347,12 @@ def missing_data_size_params(cfg: DictConfig) -> list[str]:
     missing: list[str]
         補う必要のある引数の名前, 無ければ空
     """
-    # OneCycleLR で, 総ステップ数を書いていない場合だけが対象
+    # auto と書いた引数と, OneCycleLR で総ステップ数を書いていない場合が対象
     if cfg.name is None:
         return []
     scheduler_cls = resolve_scheduler_class(cfg.name)
     if not issubclass(scheduler_cls, optim.lr_scheduler.OneCycleLR):
-        return []
+        return auto_params(cfg)
     params = cfg.params
     if params.get("total_steps") is not None:
         return []
@@ -428,7 +488,7 @@ def try_build_optim(cfg: DictConfig, device: torch.device) -> None:
         )
         for name in missing_data_size_params(scheduler_cfg):
             scheduler_cfg.params[name] = (
-                int(cfg.trainer.epochs) if name == "epochs" else 1
+                1 if name == "steps_per_epoch" else int(cfg.trainer.epochs)
             )
         try:
             build_scheduler(scheduler_cfg, optimizer, cfg.trainer.mode)

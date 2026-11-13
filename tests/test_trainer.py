@@ -1178,3 +1178,113 @@ def test_one_cycle_steps_resume(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="train の loader が空です"):
         Trainer(nn.Linear(1, 1), empty, regression_step).fit([])
+
+
+def test_light_checkpoints(tmp_path: Path) -> None:
+    """
+    best.pt を重みだけにする設定と, last.pt にベストモデルの重みを入れない設定を
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 損失が 2 エポック目で最小になり, その後は悪化する学習
+    losses = [3.0, 1.0, 2.0, 4.0]
+
+    def run(name: str, text: str, epochs: int, resume: str = "") -> Trainer:
+        """
+        決まった損失の推移で学習する関数
+
+        Parameters
+        ----------
+        name: str
+            出力先の名前
+        text: str
+            trainer に加える YAML の内容 (2 文字の字下げ)
+        epochs: int
+            エポック数
+        resume: str = ""
+            再開元のチェックポイントのパス
+
+        Returns
+        ----------
+        trainer: Trainer
+            学習を終えた Trainer
+        """
+        resume_text = f"  resume_from: {resume}\n" if resume else ""
+        experiment = make_experiment(
+            tmp_path / name,
+            f"trainer:\n  epochs: {epochs}\n" + resume_text + text
+        )
+        trainer = Trainer(nn.Linear(1, 1), experiment, scripted_step(losses))
+        trainer.fit(make_loader(n=8, batch_size=8))
+
+        return trainer
+
+    def load(path: Path) -> dict:
+        """
+        チェックポイントを cpu に読み込む関数
+
+        Parameters
+        ----------
+        path: Path
+            チェックポイントのパス
+
+        Returns
+        ----------
+        state: dict
+            チェックポイントの内容
+        """
+        state = torch.load(path, map_location="cpu", weights_only=True)
+
+        return state
+
+    # 既定でも best.pt はベストモデルの重みを 2 つ持たない
+    plain = run("plain", "", 3)
+    best = load(plain.experiment.run_dir / "best.pt")
+    assert best["epoch"] == 2
+    assert best["checkpoint"]["best_model"] is None
+    assert load(plain.experiment.run_dir / "last.pt")["checkpoint"][
+        "best_model"
+    ] is not None
+
+    # best.pt を重みだけに, last.pt からベストモデルの重みを外す
+    light = (
+        "  checkpoint:\n    best_weights_only: true\n"
+        "    last_with_best: false\n"
+    )
+    first = run("first", light, 3)
+    best = load(first.experiment.run_dir / "best.pt")
+    assert set(best) == {
+        "weights_only", "epoch", "monitor", "best_value", "model"
+    }
+    assert load(first.experiment.run_dir / "last.pt")["checkpoint"][
+        "best_model"
+    ] is None
+
+    # 再開すると, ベストモデルの重みを再開元の best.pt から戻す
+    resumed = run(
+        "resumed", light, 4, str(first.experiment.run_dir / "last.pt")
+    )
+    expected = best["model"]
+    actual = resumed.checkpoint.best_model_state
+    assert actual is not None
+    assert all(torch.equal(actual[key], expected[key]) for key in expected)
+
+    # best.pt が無いと警告し, 重みだけの best.pt からは再開できない
+    (first.experiment.run_dir / "best.pt").rename(
+        first.experiment.run_dir / "best_moved.pt"
+    )
+    with pytest.warns(UserWarning, match="重みが再開元に無い"):
+        run("missing", light, 4, str(first.experiment.run_dir / "last.pt"))
+    with pytest.raises(ValueError, match="再開には使えません"):
+        run(
+            "weights", light, 4,
+            str(first.experiment.run_dir / "best_moved.pt")
+        )

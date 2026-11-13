@@ -12,7 +12,8 @@ from tqdm import tqdm
 
 from ml_found.experiment.seed import get_rng_state, set_rng_state, set_seed
 from ml_found.training.callbacks import (
-    Checkpoint, EarlyStopping, load_checkpoint, save_checkpoint
+    Checkpoint, EarlyStopping, copy_state_dict, load_checkpoint,
+    save_checkpoint
 )
 from ml_found.training.history import (
     History, LrSteps, MetricTracker, to_float
@@ -100,7 +101,9 @@ class Trainer:
             experiment.run_dir, mode=self.trainer_cfg.mode,
             save_best=self.trainer_cfg.checkpoint.save_best,
             save_last=self.trainer_cfg.checkpoint.save_last,
-            tiebreak_mode=self.trainer_cfg.monitor_tiebreak_mode
+            tiebreak_mode=self.trainer_cfg.monitor_tiebreak_mode,
+            best_weights_only=self.trainer_cfg.checkpoint.best_weights_only,
+            last_with_best=self.trainer_cfg.checkpoint.last_with_best
         )
 
         # エポックごとの記録と, 最初のエポックを保存
@@ -679,6 +682,11 @@ class Trainer:
 
         # チェックポイントの読み込み
         state = load_checkpoint(path, self.device)
+        if state.get("weights_only"):
+            raise ValueError(
+                f"{path} は重みだけのチェックポイント (best_weights_only) なので"
+                "再開には使えません. last.pt を指定してください"
+            )
 
         # 監視する指標や向きが変わると最良値を比べられないので同じものに制限
         if (state["monitor"], state["mode"]) != (
@@ -730,7 +738,10 @@ class Trainer:
             self.early_stopping.load_state_dict(state["early_stopping"])
 
         # チェックポイントに含まれるベストモデルの重みと最良値の復元
+        # 重みを省いた場合は, 今のモデルか再開元の best.pt から戻す
         self.checkpoint.load_state_dict(state["checkpoint"])
+        if self.checkpoint.best_model_state is None:
+            self.restore_best_weights(state, checkpoint_path)
 
         # 継承したクラスが加えた状態の復元
         self.load_extra_state_dict(state.get("extra", {}))
@@ -751,6 +762,50 @@ class Trainer:
         self.epoch = state["epoch"]
         self.global_step = state["global_step"]
         self.logger.info(f"再開元: {path} (エポック {state['epoch']})")
+
+    def restore_best_weights(self, state: dict, checkpoint_path: Path) -> None:
+        """
+        チェックポイントに無いベストモデルの重みを, 今のモデルか best.pt から
+        戻す関数
+
+        Parameters
+        ----------
+        state: dict
+            再開元のチェックポイントの内容
+        checkpoint_path: Path
+            再開元のチェックポイントのパス
+
+        Returns
+        ----------
+        None
+        """
+        best_epoch = self.checkpoint.best_epoch
+        if best_epoch == 0:
+            return
+
+        # 再開元のエポックがベストモデルなら, そのモデルの重みを使用
+        if state["epoch"] == best_epoch:
+            self.checkpoint.best_model_state = copy_state_dict(state["model"])
+            return
+
+        # 同じディレクトリの best.pt が同じエポックのものなら, その重みを使用
+        best_path = checkpoint_path.with_name("best.pt")
+        if best_path.exists():
+            best = load_checkpoint(str(best_path), self.device)
+            if best["epoch"] == best_epoch:
+                self.checkpoint.best_model_state = copy_state_dict(
+                    best["model"]
+                )
+                return
+
+        # 見つからない場合は, 学習の後にベストモデルへ戻せないことを通知
+        message = (
+            f"ベストモデル (エポック {best_epoch}) の重みが再開元に無いので, "
+            "再開後に改善しなければ最後のエポックの重みが残ります "
+            "(last_with_best: false の場合は再開元の best.pt が必要)"
+        )
+        self.logger.warning(message)
+        warnings.warn(message, stacklevel=2)
 
     def copy_best(self, source: Path, target: Path) -> None:
         """

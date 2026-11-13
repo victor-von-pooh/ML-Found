@@ -142,7 +142,7 @@ def test_model_summary(tmp_path: Path) -> None:
     assert by_name["0.weight"] == {
         "name": "0.weight", "kind": "parameter", "module": "Linear",
         "shape": "4x3", "dtype": "float32", "numel": 12,
-        "requires_grad": True
+        "requires_grad": True, "same_as": ""
     }
     assert by_name["0.bias"]["requires_grad"] is False
     assert by_name["1.running_mean"]["kind"] == "buffer"
@@ -155,5 +155,18 @@ def test_model_summary(tmp_path: Path) -> None:
     path = tmp_path / "model_summary.csv"
     save_model_summary(rows, str(path))
     lines = path.read_text(encoding="utf-8").splitlines()
-    assert lines[0] == "name,kind,module,shape,dtype,numel,requires_grad"
+    assert lines[0] == (
+        "name,kind,module,shape,dtype,numel,requires_grad,same_as"
+    )
     assert len(lines) == len(rows) + 1
+
+    # 同じ層を 2 回使うモデルは, 2 つ目の名前を最初の名前付きで出し,
+    # 要素数は 1 回だけ数える
+    layer = nn.Linear(2, 2)
+    shared = nn.Sequential(layer, nn.ReLU(), layer)
+    rows = summarize_model(shared)
+    assert [row["name"] for row in rows] == [
+        "0.weight", "0.bias", "2.weight", "2.bias"
+    ]
+    assert rows[2]["same_as"] == "0.weight"
+    assert count_parameters(rows)["trainable"] == 6

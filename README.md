@@ -387,7 +387,7 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 
 `last.pt` と `best.pt` には, モデル, Optimizer, Scheduler, 記録の全て, 乱数の状態が入り, `last.pt` にはベストモデルの重みも入る (`best.pt` では今のモデルがベストモデルなので, 同じ重みを 2 つは持たない. `eval_model` を上書きした場合は別の重みなので持つ). 1 エポックが短い学習 (フルバッチなど) では保存が学習時間の大部分を占めることがあるので, `trainer.checkpoint.every_n_epochs` で `last.pt` の間隔を空けるか, 再開しない場合は `save_best` と `save_last` を `false` にする. `best.pt` は改善するたびに保存するので `every_n_epochs` では減らない (ベストモデルの重みは `last.pt` にも入るので, 再開だけなら `save_best: false` でもよい. ただし `last_with_best: false` と合わせると再開後にベストモデルに戻せないので, `start_experiment` で警告が出る). 大きなモデルでは 1 ファイルが数 GB になるので, 再開に使わない `best.pt` は `best_weights_only: true` で重みだけにし, `last_with_best: false` で `last.pt` からベストモデルの重みを外すと軽くなる (100 万個の引数のモデルと Adam で, 既定の `best.pt` 12 MB と `last.pt` 16 MB が, それぞれ 4 MB と 12 MB). 重みだけの `best.pt` は `weights_only` (true), `epoch`, `monitor`, `best_value`, `model` (重み) の辞書なので, `torch.load(...)["model"]` で読む (`eval_model` を上書きした場合はそのモデルの重み). 継承して加えた状態 (`extra_state_dict`) は入らない
 
-`train.log` のモデルの構造は `print(model)` の内容なので, 中身を `nn.Module` の子として持たない層 (外部ライブラリの層など) は構造が残らない. そのため, 学習を始めるときにパラメータとバッファの一覧を `model_summary.csv` (名前, `parameter` か `buffer`, 持っている層のクラス名, 形, 型, 要素数, 学習するか) に保存し, 学習するパラメータ, 学習しないパラメータ, バッファの要素数を `train.log` に書く. `nn.Module` のパラメータやバッファとして持たない値 (外部ライブラリの回路の設定など) は残らないので, 再現に必要な情報は, モデルに `extra_repr` を書いて出すと良い.
+`train.log` のモデルの構造は `print(model)` の内容なので, 中身を `nn.Module` の子として持たない層 (外部ライブラリの層など) は構造が残らない. そのため, 学習を始めるときにパラメータとバッファの一覧を `model_summary.csv` (名前, `parameter` か `buffer`, 持っている層のクラス名, 形, 型, 要素数, 学習するか, 重みを共有している場合は最初の名前) に保存し, 学習するパラメータ, 学習しないパラメータ, バッファの要素数を `train.log` に書く. `nn.Module` のパラメータやバッファとして持たない値 (外部ライブラリの回路の設定など) は残らないので, 再現に必要な情報は, モデルに `extra_repr` を書いて出すと良い.
 
 `experiment.device: auto` は小さなモデルでも GPU を選ぶ. パラメータが少ないモデルや, 中で cpu を使うモデル (外部ライブラリの計算など) は `cpu` を明示した方が速いことがある.
 
@@ -400,7 +400,7 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | `config.yaml` | 学習に使った config 全体, default として読み込めば同じ条件で学習できる. 再開した実験の場合は `trainer.resume_from` も残っているので, 最初から学習し直す場合は消す |
 | `diff.yaml` | default から変えた項目 |
 | `train.log` | 差分, 環境の情報, モデルの構造, エポックごとの指標, 結果 |
-| `model_summary.csv` | モデルのパラメータとバッファの一覧 (名前, 種類, 持っている層のクラス名, 形, 型, 要素数, 学習するか) |
+| `model_summary.csv` | モデルのパラメータとバッファの一覧 (名前, 種類, 持っている層のクラス名, 形, 型, 要素数, 学習するか, 共有している場合は最初の名前 `same_as`. 要素数の合計では共有したものを 1 回だけ数える) |
 | `git_diff.patch` | 未コミットの変更がある場合のみ, commit id からの差分. 未追跡のファイルも含むが, `.gitignore` で除外したファイルと submodule の中の変更は含まない. バイナリファイルは変更されたことだけが記録される |
 | `history.csv` | エポックごとの指標と, エポックを始めた時点の学習率 (`lr`. エポックの中の変化は `lr_steps.csv`), `step` の `extra` で返した値 |
 | `lr_steps.csv` | Scheduler を使い `scheduler.interval: step` の場合だけ (エポックごとに変える設定で再開した場合は保存しない). 更新ごとの通しの番号 (`step`), エポック (`epoch`), その更新に使った学習率 (`lr`, `history.csv` と同じく最初のパラメータのグループの値). 学習を終えたときに保存し, 再開しても続きから記録する |

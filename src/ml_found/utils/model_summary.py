@@ -5,7 +5,8 @@ from torch import nn
 
 # model_summary.csv の列
 SUMMARY_COLUMNS = [
-    "name", "kind", "module", "shape", "dtype", "numel", "requires_grad"
+    "name", "kind", "module", "shape", "dtype", "numel", "requires_grad",
+    "same_as"
 ]
 
 
@@ -25,7 +26,7 @@ def summarize_model(model: nn.Module) -> list[dict]:
     ----------
     rows: list[dict]
         名前, 種類 (parameter か buffer), 持っている層のクラス名, 形,
-        型, 要素数, 学習するかどうか
+        型, 要素数, 学習するかどうか, 共有している場合は最初の名前
     """
     # 名前から, それを持つ層のクラス名を引けるように用意
     modules = dict(model.named_modules())
@@ -51,21 +52,26 @@ def summarize_model(model: nn.Module) -> list[dict]:
         return module
 
     # パラメータ, バッファの順に 1 行ずつ作成
+    # 重みの共有 (同じ層を 2 回使う, 入力と出力の埋め込みを共有するなど) も
+    # 分かるように, 同じテンソルの 2 つ目以降の名前も最初の名前付きで出力
     rows = []
-    for name, parameter in model.named_parameters():
+    first_names: dict[int, str] = {}
+    entries = [
+        ("parameter", name, tensor)
+        for name, tensor in model.named_parameters(remove_duplicate=False)
+    ] + [
+        ("buffer", name, tensor)
+        for name, tensor in model.named_buffers(remove_duplicate=False)
+    ]
+    for kind, name, tensor in entries:
+        same_as = first_names.setdefault(id(tensor), name)
         rows.append({
-            "name": name, "kind": "parameter", "module": owner(name),
-            "shape": "x".join(str(size) for size in parameter.shape),
-            "dtype": str(parameter.dtype).removeprefix("torch."),
-            "numel": parameter.numel(),
-            "requires_grad": parameter.requires_grad
-        })
-    for name, buffer in model.named_buffers():
-        rows.append({
-            "name": name, "kind": "buffer", "module": owner(name),
-            "shape": "x".join(str(size) for size in buffer.shape),
-            "dtype": str(buffer.dtype).removeprefix("torch."),
-            "numel": buffer.numel(), "requires_grad": False
+            "name": name, "kind": kind, "module": owner(name),
+            "shape": "x".join(str(size) for size in tensor.shape),
+            "dtype": str(tensor.dtype).removeprefix("torch."),
+            "numel": tensor.numel(),
+            "requires_grad": kind == "parameter" and tensor.requires_grad,
+            "same_as": "" if same_as == name else same_as
         })
 
     return rows
@@ -85,9 +91,11 @@ def count_parameters(rows: list[dict]) -> dict[str, int]:
     counts: dict[str, int]
         学習するパラメータ, 学習しないパラメータ, バッファの要素数
     """
-    # 種類と学習するかどうかで振り分けて合計
+    # 共有した 2 つ目以降の名前は数えず, 種類と学習するかどうかで合計
     counts = {"trainable": 0, "frozen": 0, "buffer": 0}
     for row in rows:
+        if row["same_as"]:
+            continue
         if row["kind"] == "buffer":
             counts["buffer"] += row["numel"]
         elif row["requires_grad"]:

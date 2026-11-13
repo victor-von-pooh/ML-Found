@@ -39,9 +39,9 @@ def get_metric_names(records: list[dict]) -> list[str]:
     Returns
     ----------
     names: list[str]
-        train/ と valid/ を除いた指標の名前
+        train/, train_eval/, valid/ を除いた指標の名前
     """
-    # train/loss と valid/loss は同じ loss として 1 つの図に集約
+    # train/loss, train_eval/loss, valid/loss は同じ loss として 1 つの図に集約
     names = []
     for key in get_keys(records):
         if key == "epoch":
@@ -77,9 +77,10 @@ def plot_metric(records: list[dict], name: str, output_path: str) -> None:
     ax.set_xlabel("Epoch")
     ax.set_ylabel(name)
 
-    # train と valid, または接頭辞の無い指標を, 記録があるエポックだけ描画
+    # train, train_eval, valid, または接頭辞の無い指標を, 記録があるエポック
+    # だけ描画
     keys = get_keys(records)
-    for key in (f"train/{name}", f"valid/{name}", name):
+    for key in (f"train/{name}", f"train_eval/{name}", f"valid/{name}", name):
         if key not in keys:
             continue
         points = [

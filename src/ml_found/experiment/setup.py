@@ -92,6 +92,16 @@ def check_trainer_config(cfg: DictConfig) -> None:
         )
         warnings.warn(message, stacklevel=2)
 
+    # 学習用データを評価し直さない設定では train_eval/ の指標は記録されない
+    for name in (trainer_cfg.monitor, trainer_cfg.monitor_tiebreak):
+        if (
+            isinstance(name, str) and name.startswith("train_eval/")
+            and not trainer_cfg.eval_train
+        ):
+            raise ValueError(
+                f"{name} は trainer.eval_train: true の場合だけ記録されます"
+            )
+
     # 同じ値の場合に比べる指標の向きは min か max に制限
     if trainer_cfg.monitor_tiebreak_mode not in ("min", "max"):
         raise ValueError(

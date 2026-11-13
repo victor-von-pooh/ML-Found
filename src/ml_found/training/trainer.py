@@ -33,6 +33,35 @@ if TYPE_CHECKING:
     from ml_found.experiment.setup import Experiment
 
 
+def loader_generators(loader: Iterable) -> list[torch.Generator]:
+    """
+    DataLoader とその sampler が持つ乱数生成器を取り出す関数
+
+    Parameters
+    ----------
+    loader: Iterable
+        DataLoader など
+
+    Returns
+    ----------
+    generators: list[torch.Generator]
+        重複を除いた乱数生成器, 持たない場合は空
+    """
+    # DataLoader の generator と, sampler に渡した generator を重複なく収集
+    generators: list[torch.Generator] = []
+    candidates = [
+        getattr(loader, "generator", None),
+        getattr(getattr(loader, "sampler", None), "generator", None)
+    ]
+    for generator in candidates:
+        if isinstance(generator, torch.Generator) and all(
+            generator is not other for other in generators
+        ):
+            generators.append(generator)
+
+    return generators
+
+
 class StopWithinEpoch(Exception):
     # エポックの途中で止める要求を受けたことを伝える例外
     pass
@@ -302,14 +331,16 @@ class Trainer:
         batch: Any
             デバイスに移したバッチ
         phase: str
-            学習時は train, 検証時は valid
+            学習時は train, 検証時は valid, 学習用データの評価し直し
+            (trainer.eval_train) では train_eval
 
         Returns
         ----------
         outputs: dict
             loss は必須, その他の指標と batch_size は任意. 平均せずに
             記録だけする値は extra に辞書で入れる (検証でも返した場合は
-            検証の値, エポックの最後の値を記録)
+            検証の値, エポックの最後の値を記録. 学習用データの評価し直しで
+            返した値は記録しない)
         """
         # 関数が渡されていない場合は継承して上書きが必要
         if self.step_fn is None:
@@ -329,7 +360,8 @@ class Trainer:
 
         EMA の重みで検証する場合などに継承して上書きする. 返すモデルは
         self.model と同じ名前の重み (state_dict のキー) を持つ必要がある.
-        step を上書きする場合は, 検証 (phase が valid) でこのモデルを使う
+        step を上書きする場合は, 学習以外 (phase が valid か train_eval) で
+        このモデルを使う
 
         Parameters
         ----------
@@ -395,7 +427,8 @@ class Trainer:
         Parameters
         ----------
         phase: str
-            学習時は train, 検証時は valid
+            学習時は train, 検証時は valid, 学習用データの評価し直しでは
+            train_eval
 
         Returns
         ----------
@@ -411,7 +444,8 @@ class Trainer:
         Parameters
         ----------
         phase: str
-            学習時は train, 検証時は valid
+            学習時は train, 検証時は valid, 学習用データの評価し直しでは
+            train_eval
 
         Returns
         ----------
@@ -628,7 +662,9 @@ class Trainer:
                 )
             step_scheduler(self.scheduler)
 
-    def run_epoch(self, loader: Iterable, train: bool) -> dict[str, float]:
+    def run_epoch(
+        self, loader: Iterable, train: bool, phase: Optional[str] = None
+    ) -> dict[str, float]:
         """
         1 エポック分の学習または検証を行う関数
 
@@ -638,18 +674,22 @@ class Trainer:
             バッチを順に返すもの, DataLoader や [data] のようなリスト
         train: bool
             学習する場合は True, 検証する場合は False
+        phase: Optional[str] = None
+            フェーズの名前, None の場合は train か valid. 学習用データの
+            評価し直しでは train_eval
 
         Returns
         ----------
         metrics: dict[str, float]
-            train/ または valid/ を付けた指標ごとの平均
+            フェーズの名前 (train/ など) を付けた指標ごとの平均
         """
         # 学習モードと推論モードの切り替えと, 指標の集計の準備
         # 検証では評価に使うモデルも推論モード
         self.model.train(train)
         if not train:
             self.eval_model().eval()
-        phase = "train" if train else "valid"
+        if phase is None:
+            phase = "train" if train else "valid"
         tracker = MetricTracker()
         self.on_epoch_start(phase)
 
@@ -692,10 +732,13 @@ class Trainer:
 
                 # サンプル数で重み付けして指標の加算
                 metrics = dict(outputs)
+                # 学習用データの評価し直しで返した値は, 学習中の値を残すため
+                # 記録しない
                 extra = metrics.pop("extra", None) or {}
-                self.epoch_extra.update(
-                    {key: to_float(value) for key, value in extra.items()}
-                )
+                if phase != "train_eval":
+                    self.epoch_extra.update(
+                        {key: to_float(value) for key, value in extra.items()}
+                    )
                 n = metrics.pop("batch_size", None)
                 if n is None:
                     n = self.estimate_batch_size(batch)
@@ -771,7 +814,9 @@ class Trainer:
         if self.last_grad_norm is not None:
             metrics["grad_norm"] = self.last_grad_norm
 
-    def run_valid_epoch(self, loader: Iterable) -> dict[str, float]:
+    def run_valid_epoch(
+        self, loader: Iterable, phase: str = "valid"
+    ) -> dict[str, float]:
         """
         設定に応じて乱数を固定して検証を 1 エポック行う関数
 
@@ -779,25 +824,41 @@ class Trainer:
         ----------
         loader: Iterable
             検証用のバッチを返すもの
+        phase: str = "valid"
+            フェーズの名前, 学習用データの評価し直しでは train_eval
 
         Returns
         ----------
         metrics: dict[str, float]
-            valid/ を付けた指標ごとの平均
+            フェーズの名前 (valid/ など) を付けた指標ごとの平均
         """
-        # 乱数を固定しない場合はそのまま検証
+        # 乱数を固定せず, 学習の乱数にも影響しない場合はそのまま検証
+        # 学習用データの評価し直しは, 並べ替える DataLoader などが学習の
+        # 乱数を使うので, 固定しない場合も前後で状態を復帰
         seed = self.trainer_cfg.valid_seed
-        if seed is None:
-            metrics = self.run_epoch(loader, train=False)
+        if seed is None and phase == "valid":
+            metrics = self.run_epoch(loader, train=False, phase=phase)
             return metrics
 
         # 学習の乱数の状態を保存してから固定し, 検証の後に元の状態へ復帰
+        # 学習用データの評価し直しでは, DataLoader 自身の乱数生成器も復帰
         state = get_rng_state()
-        set_seed(seed)
+        generators = (
+            loader_generators(loader) if phase == "train_eval" else []
+        )
+        generator_states = [
+            generator.get_state() for generator in generators
+        ]
+        if seed is not None:
+            set_seed(seed)
         try:
-            metrics = self.run_epoch(loader, train=False)
+            metrics = self.run_epoch(loader, train=False, phase=phase)
         finally:
             set_rng_state(state)
+            for generator, generator_state in zip(
+                generators, generator_states
+            ):
+                generator.set_state(generator_state)
 
         return metrics
 
@@ -1653,6 +1714,21 @@ class Trainer:
             select_best=self.trainer_cfg.select_best
         )
 
+        # 学習用データの評価し直しは, ワーカーを使い回す DataLoader では
+        # ワーカーの中の乱数を進めるので, 学習が変わることを通知
+        persistent = getattr(train_loader, "persistent_workers", False)
+        if (
+            self.trainer_cfg.eval_train and persistent
+            and getattr(train_loader, "num_workers", 0) > 0
+        ):
+            message = (
+                "eval_train を persistent_workers=True の DataLoader と使うと, "
+                "ワーカーの中の乱数が進むので, 学習の結果が eval_train: false "
+                "の場合と一致しません"
+            )
+            warnings.warn(message, stacklevel=3)
+            self.logger.warning(message)
+
         # 評価に使うモデルの確認 (失敗も run.json に残るように書き出しの後)
         self.check_eval_model()
         self.checkpoint.separate_best_model = (
@@ -1722,6 +1798,10 @@ class Trainer:
                 self.epoch_extra = {}
                 try:
                     record.update(self.run_epoch(train_loader, train=True))
+                    if self.trainer_cfg.eval_train:
+                        record.update(
+                            self.run_valid_epoch(train_loader, "train_eval")
+                        )
                     if valid_loader is not None:
                         record.update(self.run_valid_epoch(valid_loader))
                 except StopWithinEpoch:
@@ -1735,7 +1815,10 @@ class Trainer:
                 # step の extra で返した値は, 平均せずにエポックの最後の値を記録
                 # 指標と同じ名前は学習曲線とダッシュボードで混ざるので禁止
                 for name in self.epoch_extra:
-                    if f"train/{name}" in record or f"valid/{name}" in record:
+                    if any(
+                        f"{phase}/{name}" in record
+                        for phase in ("train", "train_eval", "valid")
+                    ):
                         raise ValueError(
                             f"extra の {name} は指標と同じ名前です. "
                             "学習曲線で混ざるので, 別の名前にしてください"

@@ -2515,3 +2515,177 @@ def test_register_rng(tmp_path: Path) -> None:
         register_rng("library", seed_fn, None, set_state)
     with pytest.raises(TypeError, match="保存できない型"):
         register_rng("library", seed_fn, lambda: {"rng": object()}, set_state)
+
+
+def test_eval_train(tmp_path: Path) -> None:
+    """
+    学習用データを推論モードで評価し直す設定で, train_eval/ の指標が
+    記録され, 学習そのものは変わらないことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    phases = []
+
+    def step(model: nn.Module, batch: tuple, phase: str) -> dict:
+        """
+        呼ばれたフェーズを記録して平均二乗誤差を求める関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase: str
+            train, train_eval, valid のどれか
+
+        Returns
+        ----------
+        outputs: dict
+            平均二乗誤差と平均絶対誤差
+        """
+        # フェーズと, そのときのモデルの状態を記録して計算
+        # extra は学習と評価し直しで違う値を返し, 検証では返さない
+        phases.append((phase, model.training, torch.is_grad_enabled()))
+        outputs = regression_step(model, batch, phase)
+        if phase != "valid":
+            outputs["extra"] = {"marker": 1.0 if phase == "train" else 2.0}
+
+        return outputs
+
+    def run(
+        name: str, eval_train: bool, generator: bool = False
+    ) -> tuple[Trainer, History]:
+        """
+        Dropout を含むモデルを, 並べ替える DataLoader で学習する関数
+
+        Parameters
+        ----------
+        name: str
+            出力先の名前
+        eval_train: bool
+            学習用データを評価し直すかどうか
+        generator: bool = False
+            DataLoader に専用の乱数生成器を渡すかどうか
+
+        Returns
+        ----------
+        trainer: Trainer
+            学習を終えた Trainer
+        history: History
+            エポックごとの記録
+        """
+        # 学習の後の重みを残す設定で, 3 エポック学習
+        experiment = make_experiment(
+            tmp_path / name,
+            "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+            "trainer:\n  epochs: 3\n  select_best: false\n"
+            f"  eval_train: {str(eval_train).lower()}\n"
+        )
+        model = nn.Sequential(
+            nn.Linear(1, 8), nn.Dropout(0.5), nn.Linear(8, 1)
+        )
+        trainer = Trainer(model, experiment, step)
+        loader = make_loader(shuffle=True)
+        if generator:
+            loader = DataLoader(
+                loader.dataset, batch_size=16, shuffle=True,
+                generator=torch.Generator().manual_seed(0)
+            )
+        history = trainer.fit(loader, make_loader())
+
+        return trainer, history
+
+    # 評価し直しても学習用と検証用の記録は同じ
+    _, plain = run("plain", False)
+    phases.clear()
+    trainer, history = run("eval", True)
+    for key in ("train/loss", "valid/loss"):
+        assert history.get(key) == plain.get(key)
+    assert "train_eval/loss" not in plain.records[0]
+
+    # extra は学習用データの評価し直しの値で上書きしない
+    assert history.get("marker") == [1.0, 1.0, 1.0]
+    _, own_plain = run("own_plain", False, generator=True)
+    _, own = run("own", True, generator=True)
+    assert own.get("train/loss") == own_plain.get("train/loss")
+
+    # 学習用データの評価し直しは推論モードで勾配なし, 学習と検証の間に実行
+    order = [phase for phase, _, _ in phases]
+    assert order[:12] == ["train"] * 4 + ["train_eval"] * 4 + ["valid"] * 4
+    assert all(
+        not training and not grad
+        for phase, training, grad in phases if phase == "train_eval"
+    )
+
+    # 最後のエポックの値は, 学習後のモデルで学習用データを評価した値
+    trainer.model.eval()
+    with torch.no_grad():
+        x, y = next(iter(make_loader(batch_size=64)))
+        expected = nn.MSELoss()(trainer.model(x), y).item()
+    assert history.get("train_eval/loss")[-1] == pytest.approx(expected)
+    columns = (
+        (trainer.experiment.run_dir / "history.csv")
+        .read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert "train_eval/loss" in columns
+
+
+def test_eval_train_persistent_workers(tmp_path: Path) -> None:
+    """
+    ワーカーを使い回す DataLoader で学習用データを評価し直す場合に
+    警告することを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    class Loader(list):
+        # ワーカーを使い回す DataLoader の代わり (ワーカーは作らない)
+        persistent_workers = True
+        num_workers = 2
+
+    # 1 エポックだけ学習
+    experiment = make_experiment(
+        tmp_path, "trainer:\n  epochs: 1\n  eval_train: true\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    loader = Loader(make_loader())
+    with pytest.warns(UserWarning, match="persistent_workers"):
+        trainer.fit(loader)
+    assert "train_eval/loss" in trainer.history.records[0]
+
+
+def test_eval_train_monitor(tmp_path: Path) -> None:
+    """
+    学習用データを評価し直さない設定で train_eval/ の指標を監視すると,
+    出力先を作る前にエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 監視する指標と, 同じ値の場合に比べる指標の両方を確認
+    for key in ("monitor", "monitor_tiebreak"):
+        with pytest.raises(ValueError, match="eval_train"):
+            make_experiment(
+                tmp_path / key, f"trainer:\n  {key}: train_eval/loss\n"
+            )
+        assert not (tmp_path / key / "outputs").exists()

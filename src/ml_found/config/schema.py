@@ -98,6 +98,10 @@ class TrainerConfig:
     # 検証の後は学習の乱数の状態に復帰
     valid_seed: Optional[int] = None
 
+    # 学習の後に学習用データを推論モードで評価し直し, train_eval/ で記録するか
+    # (Dropout などが効いた状態の train/ の指標を補う. 検証と同じ設定で評価)
+    eval_train: bool = False
+
     # true の場合は逆伝播とパラメータの更新を ML-Found ではなく step の中で実行
     manual_optimization: bool = False
 

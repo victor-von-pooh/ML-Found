@@ -600,3 +600,44 @@ def test_array_values_and_init_errors(tmp_path: Path) -> None:
     assert "移せません" in status["error"]
     log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
     assert "Trainer の作成でエラーが起きました" in log
+
+
+def test_try_build_optim(tmp_path: Path) -> None:
+    """
+    範囲を持たない引数の誤りも, 仮のパラメータで作ってみて出力先を作る前に
+    エラーにすることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 範囲を持たない引数の組み合わせの誤り (SGD の nesterov には momentum)
+    cases = {
+        "sgd": (
+            "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+            "    nesterov: true\n",
+            "SGD を作れません"
+        ),
+        "cyclic": (
+            "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+            "scheduler:\n  name: CyclicLR\n  interval: step\n  params:\n"
+            "    base_lr: 0.01\n    max_lr: 0.1\n    mode: wrong\n",
+            "CyclicLR を作れません"
+        ),
+    }
+    for name, (text, message) in cases.items():
+        with pytest.raises(ValueError, match=message):
+            make_experiment(tmp_path / name, text)
+        assert not (tmp_path / name / "outputs").exists()
+
+    # データの量で決まる引数を書かない OneCycleLR は, 仮の値で補って確認
+    make_experiment(
+        tmp_path / "one_cycle",
+        "scheduler:\n  name: OneCycleLR\n  interval: step\n  params:\n"
+        "    max_lr: 0.1\n"
+    )

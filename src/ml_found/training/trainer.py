@@ -73,6 +73,10 @@ PROGRESS_KEYS = {
     "cooldown_counter"
 }
 
+# Scheduler の状態のうち, 内部の名前でも引数から決まる値
+# (OneCycleLR の pct_start, three_phase, anneal_strategy)
+ARGUMENT_PRIVATE_KEYS = {"_schedule_phases", "_anneal_func_type"}
+
 # Scheduler が Optimizer のパラメータグループに書き込む引数の値
 SCHEDULER_GROUP_KEYS = ("max_lr", "min_lr", "base_momentum", "max_momentum")
 
@@ -1399,13 +1403,27 @@ class Trainer:
             return diffs
 
         # 学習の進み具合で変わる値と内部の値を除き, Scheduler の状態を比較
-        diffs = [
-            f"{key} (再開元 {loaded_state[key]}, config {fresh_state[key]})"
-            for key in fresh_state
-            if key in loaded_state and not key.startswith("_")
-            and key not in PROGRESS_KEYS
-            and fresh_state[key] != loaded_state[key]
-        ]
+        # CyclicLR の base_lrs は Optimizer の学習率ではなく引数の base_lr
+        compared = {
+            key for key in fresh_state
+            if (not key.startswith("_") and key not in PROGRESS_KEYS)
+            or key in ARGUMENT_PRIVATE_KEYS
+        }
+        if isinstance(self.scheduler, optim.lr_scheduler.CyclicLR):
+            compared.add("base_lrs")
+        # 内部の値は, 元の引数の名前で表示 (中身は長いので省略)
+        diffs = []
+        for key in sorted(compared):
+            loaded = loaded_state.get(key)
+            if key not in loaded_state or fresh_state[key] == loaded:
+                continue
+            if key in ARGUMENT_PRIVATE_KEYS:
+                diffs.append("pct_start, three_phase, anneal_strategy のどれか")
+            else:
+                diffs.append(
+                    f"{key} (再開元 {loaded_state[key]}, config "
+                    f"{fresh_state[key]})"
+                )
 
         # Optimizer に書き込む値の比較
         loaded_groups = scheduler_group_values(self.optimizer)

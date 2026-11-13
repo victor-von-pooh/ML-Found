@@ -104,7 +104,7 @@ from pathlib import Path
 
 from torch import nn
 
-from ml_found import Trainer, load_config, start_experiment
+from ml_found import Trainer, load_project_config, start_experiment
 
 
 def step(model: nn.Module, batch: tuple, phase: str) -> dict:
@@ -124,18 +124,23 @@ def step(model: nn.Module, batch: tuple, phase: str) -> dict:
     return outputs
 
 
-# config を読み込んで実験を開始する
+# コマンドライン引数から config を読み込んで実験を開始する
 project_dir = Path(__file__).resolve().parent
-cfg, diff = load_config(
-    str(project_dir / "configs/default/train.yaml"),
-    str(project_dir / "configs/experiment/train.yaml")
-)
+cfg, diff = load_project_config(str(project_dir))
 experiment = start_experiment(cfg, diff, str(project_dir))
 
 # model, train_loader, valid_loader はプロジェクト側で用意して学習する
 trainer = Trainer(model, experiment, step)
 history = trainer.fit(train_loader, valid_loader)
 ```
+
+`load_project_config(project_dir)` はコマンドライン引数を読み, `--experiment` で experiment の config を, その後ろの「項目=値」で値の上書きを受け取る. 相対パスはプロジェクトのディレクトリから辿り, 無い場合は実行した場所から辿る. `--experiment` を省くと `configs/experiment/train.yaml` を使う.
+
+```bash
+python train.py --experiment configs/experiment/examples/sgd.yaml trainer.epochs=10 optimizer.params.lr=0.05
+```
+
+上書きは experiment の後に重なり, experiment と同じく default にある項目だけを書けて, `diff.yaml` にも残る (クラス名の上書きで default の引数が捨てられるのも同じ). 値は YAML として読むので, `scheduler.name=null` で使わない設定にできる. パスや引数を自分で決める場合は `load_config(default_path, experiment_path, overrides)` を使う.
 
 `step(model, batch, phase)` の決まりは以下の通り.
 

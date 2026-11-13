@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from ml_found.config.loader import (
-    ABSENT, format_diff, load_config, save_config
+    ABSENT, format_diff, load_config, load_project_config, save_config
 )
 
 
@@ -335,3 +335,96 @@ def test_save_config(default_path: str, tmp_path: Path) -> None:
 
     assert (run_dir / "diff.yaml").exists()
     assert reloaded == cfg
+
+
+def test_overrides(default_path: str, tmp_path: Path) -> None:
+    """
+    「項目=値」の上書きが experiment の後に重なり, 差分に残ることを確かめる関数
+
+    Parameters
+    ----------
+    default_path: str
+        default の config のパス
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = write_yaml(
+        tmp_path / "experiment.yaml", "trainer:\n  epochs: 20\n"
+    )
+    cfg, diff = load_config(
+        default_path, experiment,
+        ["trainer.epochs=10", "model.encoder.act=gelu", "scheduler.name=null"]
+    )
+    assert cfg.trainer.epochs == 10
+    assert cfg.model.encoder.act == "gelu"
+    assert cfg.scheduler.name is None
+    assert diff["trainer.epochs"]["experiment"] == 10
+
+    # default に無い項目と, = の無いものはエラー
+    with pytest.raises(ValueError, match="model.dropout"):
+        load_config(default_path, experiment, ["model.dropout=0.1"])
+    with pytest.raises(ValueError, match="項目=値"):
+        load_config(default_path, experiment, ["trainer.epochs"])
+
+    # クラスを変える上書きは, experiment と同じく default の引数を捨てる
+    cfg, _ = load_config(
+        default_path, experiment,
+        ["scheduler.name=ExponentialLR", "scheduler.params.gamma=0.9"]
+    )
+    assert dict(cfg.scheduler.params) == {"gamma": 0.9}
+
+
+def test_load_project_config(
+    default_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    コマンドライン引数から, プロジェクトの config を作ることを確かめる関数
+
+    Parameters
+    ----------
+    default_path: str
+        default の config のパス (tmp_path/default.yaml)
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        実行した場所を変える道具
+
+    Returns
+    ----------
+    None
+    """
+    # プロジェクトの構成を用意
+    project = tmp_path / "project"
+    (project / "configs/default").mkdir(parents=True)
+    (project / "configs/experiment/examples").mkdir(parents=True)
+    Path(default_path).rename(project / "configs/default/train.yaml")
+    write_yaml(project / "configs/experiment/train.yaml", "")
+    write_yaml(
+        project / "configs/experiment/examples/short.yaml",
+        "trainer:\n  epochs: 5\n"
+    )
+
+    # 既定の experiment
+    cfg, diff = load_project_config(str(project), [])
+    assert cfg.trainer.epochs == 50
+    assert diff == {}
+
+    # 相対パスはプロジェクトのディレクトリから, 上書きは最後に重ねる
+    monkeypatch.chdir(tmp_path)
+    cfg, diff = load_project_config(
+        str(project),
+        ["--experiment", "configs/experiment/examples/short.yaml",
+         "model.hidden_dim=128"]
+    )
+    assert cfg.trainer.epochs == 5
+    assert cfg.model.hidden_dim == 128
+    assert set(diff) == {"trainer.epochs", "model.hidden_dim"}
+
+    # プロジェクトに無い相対パスは, 実行した場所から辿る
+    write_yaml(tmp_path / "here.yaml", "trainer:\n  epochs: 7\n")
+    cfg, _ = load_project_config(str(project), ["--experiment", "here.yaml"])
+    assert cfg.trainer.epochs == 7

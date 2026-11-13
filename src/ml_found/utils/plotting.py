@@ -122,3 +122,35 @@ def plot_history(records: list[dict], output_dir: str) -> list[Path]:
         paths.append(path)
 
     return paths
+
+
+def plot_lr_steps(records: list[dict], output_path: str) -> None:
+    """
+    更新ごとの学習率の推移を描いて保存する関数
+
+    Parameters
+    ----------
+    records: list[dict]
+        更新ごとの step (通しの更新回数), epoch, lr
+    output_path: str
+        画像の保存先のパス
+
+    Returns
+    ----------
+    None
+    """
+    # 出力画像の設定
+    fig, ax = plt.subplots(figsize=(18, 12), tight_layout=True)
+    ax.set_title("lr over Steps", size=15, color="red")
+    ax.grid()
+    ax.set_xlabel("Step")
+    ax.set_ylabel("lr")
+
+    # 更新ごとの学習率を描画して保存
+    ax.plot(
+        [record["step"] for record in records],
+        [record["lr"] for record in records], label="lr"
+    )
+    ax.legend(bbox_to_anchor=(1.01, 1), loc="upper left", borderaxespad=0)
+    fig.savefig(output_path)
+    plt.close(fig)

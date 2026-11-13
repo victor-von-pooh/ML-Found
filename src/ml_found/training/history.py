@@ -1,4 +1,5 @@
 import csv
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -206,3 +207,25 @@ class History:
         """
         # 記録の置き換え
         self.records = [dict(record) for record in state["records"]]
+
+
+def save_lr_steps(records: list[dict], path: Path) -> None:
+    """
+    更新ごとの学習率の記録を CSV ファイルに保存する関数
+
+    Parameters
+    ----------
+    records: list[dict]
+        更新ごとの step (通しの更新回数), epoch, lr
+    path: Path
+        保存先のパス
+
+    Returns
+    ----------
+    None
+    """
+    # 1 回の更新を 1 行にして書き出し
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["step", "epoch", "lr"])
+        writer.writeheader()
+        writer.writerows(records)

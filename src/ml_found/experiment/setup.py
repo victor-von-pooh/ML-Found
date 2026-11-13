@@ -14,7 +14,7 @@ from ml_found.experiment.env_info import (
 )
 from ml_found.experiment.logger import get_logger
 from ml_found.experiment.seed import EXTRA_RNGS, fix_seed
-from ml_found.training.optim import check_optim_config
+from ml_found.training.optim import check_optim_config, try_build_optim
 from ml_found.training.registry import check_optim_params
 from ml_found.utils.device import get_device
 
@@ -71,8 +71,18 @@ def check_trainer_config(cfg: DictConfig) -> None:
     ----------
     None
     """
-    # last.pt を保存する間隔は 1 以上に制限
+    # エポック数は 1 以上, 監視する指標の向きは min か max に制限
     trainer_cfg = cfg.trainer
+    if not isinstance(trainer_cfg.epochs, int) or trainer_cfg.epochs < 1:
+        raise ValueError(
+            f"trainer.epochs は 1 以上の整数にしてください: {trainer_cfg.epochs}"
+        )
+    if trainer_cfg.mode not in ("min", "max"):
+        raise ValueError(
+            f"trainer.mode は min か max にしてください: {trainer_cfg.mode}"
+        )
+
+    # last.pt を保存する間隔は 1 以上に制限
     if trainer_cfg.resume_scheduler not in ("checkpoint", "config"):
         raise ValueError(
             "trainer.resume_scheduler は checkpoint か config にしてください: "
@@ -259,11 +269,13 @@ def start_experiment(
         project_root = Path(project_dir).resolve()
 
     # 空の出力先が残らないように, ディレクトリを作る前にデバイス,
-    # Optimizer と Scheduler (クラスと引数) と学習の設定, 再開元の確認
+    # Optimizer と Scheduler (クラス, 引数, 仮のパラメータで作れるか) と
+    # 学習の設定, 再開元の確認
     device = get_device(cfg.experiment.device)
     check_optim_config(cfg)
     check_optim_params(cfg)
     check_trainer_config(cfg)
+    try_build_optim(cfg, device)
     check_resume_path(cfg, project_root)
 
     # 出力先を作ると未コミットの変更として数えられるので, 先に環境の情報の収集

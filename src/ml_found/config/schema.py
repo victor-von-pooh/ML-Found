@@ -35,6 +35,13 @@ class SchedulerConfig:
     # 学習率を更新する間隔, epoch か step
     interval: str = "epoch"
 
+    # 学習の始めに学習率を線形に上げる回数 (interval の単位), null の場合は無し
+    # warmup_ratio は学習全体のステップ数に対する割合で, 学習を始めるときに
+    # warmup_steps に直す. 学習率は最初の値の warmup_start_factor 倍から上げる
+    warmup_steps: Optional[int] = None
+    warmup_ratio: Optional[float] = None
+    warmup_start_factor: float = 0.01
+
 
 @dataclass
 class EarlyStoppingConfig:

@@ -3176,3 +3176,149 @@ def test_stop_within_epoch_restores_state(tmp_path: Path) -> None:
         assert torch.equal(state[key]["exp_avg"], value["exp_avg"])
         assert state[key]["step"] == value["step"]
     assert torch.equal(torch.get_rng_state(), last["rng"]["torch"])
+
+
+def test_warmup(tmp_path: Path) -> None:
+    """
+    warmup の回数と割合で, 学習率を線形に上げてから後ろの Scheduler に
+    続けることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 3 エポック × 4 バッチ = 12 回のうち, 2 回で上げてから残りで下げる
+    base = (
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "scheduler:\n  name: CosineAnnealingLR\n  interval: step\n"
+        "  params:\n    T_max: auto\n"
+    )
+    experiment = make_experiment(
+        tmp_path / "steps",
+        base + "  warmup_steps: 2\ntrainer:\n  epochs: 3\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    trainer.fit(make_loader())
+    lrs = [record["lr"] for record in trainer.lr_steps.records()]
+    assert lrs[0] == pytest.approx(0.001)
+    assert lrs[2] == pytest.approx(0.1)
+    assert all(lrs[i] >= lrs[i + 1] for i in range(2, len(lrs) - 1))
+    assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(0.0)
+    assert experiment.cfg.scheduler.params.T_max == 10
+
+    # 割合は学習全体のステップ数から回数に直して config.yaml に残す
+    experiment = make_experiment(
+        tmp_path / "ratio",
+        base + "  warmup_ratio: 0.25\ntrainer:\n  epochs: 3\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    trainer.fit(make_loader())
+    saved = OmegaConf.load(experiment.run_dir / "config.yaml")
+    assert saved.scheduler.warmup_steps == 3
+    assert saved.scheduler.warmup_ratio is None
+    assert saved.scheduler.params.T_max == 9
+
+    # Scheduler の名前が無い場合は warmup だけ (その後は一定)
+    experiment = make_experiment(
+        tmp_path / "only",
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "scheduler:\n  interval: step\n  warmup_steps: 4\n"
+        "trainer:\n  epochs: 2\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    trainer.fit(make_loader())
+    assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(0.1)
+
+    # エポック数を増やした再開は, config の値で作り直す設定なら続けられる
+    first = make_experiment(
+        tmp_path / "first",
+        base + "  warmup_steps: 2\ntrainer:\n  epochs: 2\n"
+    )
+    Trainer(nn.Linear(1, 1), first, regression_step).fit(make_loader())
+    resume = f"  resume_from: {first.run_dir / 'last.pt'}\n"
+    kept = make_experiment(
+        tmp_path / "kept",
+        base + "  warmup_steps: 2\ntrainer:\n  epochs: 3\n" + resume
+    )
+    with pytest.raises(ValueError, match="resume_scheduler: config"):
+        Trainer(nn.Linear(1, 1), kept, regression_step).fit(make_loader())
+    replayed = make_experiment(
+        tmp_path / "replayed",
+        base + "  warmup_steps: 2\ntrainer:\n  epochs: 3\n" + resume
+        + "  resume_scheduler: config\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), replayed, regression_step)
+    trainer.fit(make_loader())
+    assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(0.0)
+
+    # warmup の有無を変えた再開は, 既定ではエラー, config なら作り直す
+    for name, text in (("add", "  warmup_steps: 2\n"), ("remove", "")):
+        source = make_experiment(
+            tmp_path / f"{name}_first",
+            base + ("" if name == "add" else "  warmup_steps: 2\n")
+            + "trainer:\n  epochs: 2\n"
+        )
+        Trainer(nn.Linear(1, 1), source, regression_step).fit(make_loader())
+        resume = f"  resume_from: {source.run_dir / 'last.pt'}\n"
+        changed = base + text + "trainer:\n  epochs: 2\n" + resume
+        experiment = make_experiment(tmp_path / f"{name}_kept", changed)
+        with pytest.raises(ValueError, match="組み立て"):
+            Trainer(nn.Linear(1, 1), experiment, regression_step).fit(
+                make_loader()
+            )
+        experiment = make_experiment(
+            tmp_path / f"{name}_replayed",
+            changed + "  resume_scheduler: config\n"
+        )
+        trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+        trainer.fit(make_loader())
+        assert trainer.optimizer.param_groups[0]["lr"] <= 0.1
+
+    # 割合から補った回数が再開元と違う場合も, 既定ではエラー
+    ratio = base.replace("T_max: auto", "T_max: 4") + "  warmup_ratio: 0.25\n"
+    source = make_experiment(
+        tmp_path / "ratio_first", ratio + "trainer:\n  epochs: 2\n"
+    )
+    Trainer(nn.Linear(1, 1), source, regression_step).fit(make_loader())
+    experiment = make_experiment(
+        tmp_path / "ratio_kept",
+        ratio + "trainer:\n  epochs: 4\n"
+        f"  resume_from: {source.run_dir / 'last.pt'}\n"
+    )
+    with pytest.raises(ValueError, match="warmup_steps"):
+        Trainer(nn.Linear(1, 1), experiment, regression_step).fit(
+            make_loader()
+        )
+
+    # 学習全体以上の warmup は警告し, ログには中の Scheduler の状態も残る
+    experiment = make_experiment(
+        tmp_path / "long",
+        base.replace("T_max: auto", "T_max: 4")
+        + "  warmup_steps: 100\ntrainer:\n  epochs: 1\n"
+    )
+    with pytest.warns(UserWarning, match="切り替わりません"):
+        Trainer(nn.Linear(1, 1), experiment, regression_step).fit(
+            make_loader()
+        )
+    log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
+    assert "Scheduler の状態 (CosineAnnealingLR)" in log
+
+    # 設定の誤りは出力先を作る前にエラー
+    for name, text in (
+        ("both", "  warmup_steps: 2\n  warmup_ratio: 0.1\n"),
+        ("negative", "  warmup_steps: -1\n"),
+        ("ratio", "  warmup_ratio: 1.5\n"),
+        ("factor", "  warmup_start_factor: 0.0\n  warmup_steps: 1\n"),
+    ):
+        with pytest.raises(ValueError, match="warmup"):
+            make_experiment(tmp_path / name, base + text)
+    with pytest.raises(ValueError, match="warmup"):
+        make_experiment(
+            tmp_path / "plateau",
+            "scheduler:\n  name: ReduceLROnPlateau\n  warmup_steps: 2\n"
+        )

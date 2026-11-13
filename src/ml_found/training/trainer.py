@@ -23,7 +23,8 @@ from ml_found.training.history import (
 )
 from ml_found.training.optim import (
     auto_params, build_optimizer, build_scheduler, check_scheduler,
-    missing_data_size_params, requires_closure, step_scheduler, to_kwargs
+    missing_data_size_params, needs_data, requires_closure, step_scheduler,
+    to_kwargs
 )
 from ml_found.training.status import RunStatus
 from ml_found.utils.batch import find_batch_size, move_to_device
@@ -111,6 +112,111 @@ ARGUMENT_PRIVATE_KEYS = {"_schedule_phases", "_anneal_func_type"}
 
 # Scheduler が Optimizer のパラメータグループに書き込む引数の値
 SCHEDULER_GROUP_KEYS = ("max_lr", "min_lr", "base_momentum", "max_momentum")
+
+
+def scheduler_classes(
+    scheduler: Optional[optim.lr_scheduler.LRScheduler]
+) -> list[str]:
+    """
+    Scheduler の組み立て (クラス名, warmup を付けた場合は中のクラス名) を返す
+    関数
+
+    Parameters
+    ----------
+    scheduler: Optional[optim.lr_scheduler.LRScheduler]
+        Scheduler, 使わない場合は None
+
+    Returns
+    ----------
+    names: list[str]
+        クラス名の並び (例: SequentialLR, LinearLR, CosineAnnealingLR)
+    """
+    # 使わない場合は空, SequentialLR は中のクラスも並べる
+    if scheduler is None:
+        return []
+    names = [type(scheduler).__name__]
+    if isinstance(scheduler, optim.lr_scheduler.SequentialLR):
+        names += [type(inner).__name__ for inner in scheduler._schedulers]
+
+    return names
+
+
+def saved_scheduler_classes(state: dict) -> Optional[list[str]]:
+    """
+    チェックポイントに残る Scheduler の組み立てを返す関数
+
+    Parameters
+    ----------
+    state: dict
+        チェックポイントの内容
+
+    Returns
+    ----------
+    names: Optional[list[str]]
+        クラス名の並び. 組み立てを記録する前のチェックポイントでは,
+        SequentialLR なら ["SequentialLR"], そうでなければ None (不明)
+    """
+    # 記録がある場合はそのまま, 無い場合は状態の形から推定
+    names = state.get("scheduler_classes")
+    if names is None and "_schedulers" in (state.get("scheduler") or {}):
+        names = ["SequentialLR"]
+
+    return names
+
+
+def same_classes(old: Optional[list[str]], new: list[str]) -> bool:
+    """
+    再開元と今の Scheduler の組み立てが同じかを確かめる関数
+
+    Parameters
+    ----------
+    old: Optional[list[str]]
+        再開元の組み立て (saved_scheduler_classes の戻り値)
+    new: list[str]
+        今の組み立て
+
+    Returns
+    ----------
+    same: bool
+        同じと見なせる場合は True
+    """
+    # 記録の無い古いチェックポイントは, SequentialLR かどうかだけを比較
+    if old is None:
+        same = not (new and new[0] == "SequentialLR")
+    elif old == ["SequentialLR"]:
+        same = bool(new) and new[0] == "SequentialLR"
+    else:
+        same = old == new
+
+    return same
+
+
+def sequential_arguments(state: dict) -> dict:
+    """
+    SequentialLR (warmup を付けた Scheduler) の状態を, 比べられる形に並べる
+    関数
+
+    Parameters
+    ----------
+    state: dict
+        SequentialLR の状態
+
+    Returns
+    ----------
+    arguments: dict
+        区切りの回数 (milestones) と, 中の Scheduler ごとの引数の値
+        (名前は scheduler<番号>.<引数>)
+    """
+    # 区切りと, 中の Scheduler の進み具合と内部の値以外を収集
+    arguments = {"milestones": state.get("_milestones")}
+    for i, inner in enumerate(state.get("_schedulers", [])):
+        for key, value in inner.items():
+            if (
+                not key.startswith("_") and key not in PROGRESS_KEYS
+            ) or key in ARGUMENT_PRIVATE_KEYS:
+                arguments[f"scheduler{i}.{key}"] = value
+
+    return arguments
 
 
 def scheduler_group_values(optimizer: optim.Optimizer) -> list[dict]:
@@ -308,8 +414,9 @@ class Trainer:
         # 無い場合は, 学習用データが分かる fit の初めまで作成を保留
         self.scheduler_from_config = scheduler is None
         self.auto_values: dict[str, int] = {}
-        self.pending_scheduler = scheduler is None and bool(
-            missing_data_size_params(experiment.cfg.scheduler)
+        self.warmup_from_ratio = False
+        self.pending_scheduler = scheduler is None and needs_data(
+            experiment.cfg.scheduler
         )
         # 予定の総ステップ数 (OneCycleLR の総ステップ数との食い違いの確認に使用)
         self.planned_total_steps: Optional[int] = None
@@ -1087,6 +1194,7 @@ class Trainer:
                 None if self.scheduler is None
                 else self.scheduler.state_dict()
             ),
+            "scheduler_classes": scheduler_classes(self.scheduler),
             "history": self.history.state_dict(),
             "lr_steps": self.lr_steps.state_dict(),
             "early_stopping": (
@@ -1200,16 +1308,33 @@ class Trainer:
         fresh_groups = scheduler_group_values(self.optimizer)
         self.optimizer.load_state_dict(state["optimizer"])
         if self.scheduler is not None and state["scheduler"] is not None:
+            # Scheduler の組み立て (warmup の有無など) が再開元と違う場合は,
+            # 状態を読み込めないので, config の値で作り直すかエラー
             fresh_state = self.scheduler.state_dict()
-            self.scheduler.load_state_dict(state["scheduler"])
-            diffs = self.scheduler_param_diffs(
-                fresh_state, state["scheduler"], fresh_groups
+            old, new = saved_scheduler_classes(state), scheduler_classes(
+                self.scheduler
             )
-            if diffs and self.trainer_cfg.resume_scheduler == "config":
-                self.replay_scheduler(state["scheduler"], diffs)
+            if not same_classes(old, new):
+                old_text = " + ".join(old) if old else "warmup なし"
+                change = f"{old_text} から {' + '.join(new)}"
+                if self.trainer_cfg.resume_scheduler != "config":
+                    raise ValueError(
+                        f"Scheduler の組み立てが再開元と違う ({change}) ので, "
+                        "再開元の状態を読み込めません (warmup の有無を変えた"
+                        "場合など). config の値で作り直す場合は "
+                        "trainer.resume_scheduler: config にしてください"
+                    )
+                self.replay_scheduler(state["scheduler"], [change])
             else:
-                self.check_auto_params()
-                self.warn_scheduler_params(diffs)
+                self.scheduler.load_state_dict(state["scheduler"])
+                diffs = self.scheduler_param_diffs(
+                    fresh_state, state["scheduler"], fresh_groups
+                )
+                if diffs and self.trainer_cfg.resume_scheduler == "config":
+                    self.replay_scheduler(state["scheduler"], diffs)
+                else:
+                    self.check_auto_params()
+                    self.warn_scheduler_params(diffs)
 
             # 再開元の総ステップ数の確認 (ファイルを写す前)
             self.check_total_steps()
@@ -1456,12 +1581,23 @@ class Trainer:
         )
         self.logger.info(f"Scheduler: {scheduler_name}")
         if self.scheduler is not None:
-            raw_state = self.scheduler.state_dict()
-            scheduler_state = {
-                key: value for key, value in raw_state.items()
-                if not key.startswith("_")
-            }
-            self.logger.info(f"Scheduler の状態: {scheduler_state}")
+            # warmup を付けた場合は中の Scheduler ごとの状態も記録
+            inners = [self.scheduler]
+            if isinstance(self.scheduler, optim.lr_scheduler.SequentialLR):
+                inners += list(self.scheduler._schedulers)
+                self.logger.info(
+                    "Scheduler の区切り: "
+                    f"{self.scheduler.state_dict()['_milestones']}"
+                )
+            for inner in inners:
+                scheduler_state = {
+                    key: value for key, value in inner.state_dict().items()
+                    if not key.startswith("_")
+                }
+                self.logger.info(
+                    f"Scheduler の状態 ({type(inner).__name__}): "
+                    f"{scheduler_state}"
+                )
         self.logger.info(f"監視する指標: {monitor} ({self.trainer_cfg.mode})")
         if self.trainer_cfg.monitor_tiebreak is not None:
             self.logger.info(
@@ -1516,6 +1652,10 @@ class Trainer:
 
         # 学習の進み具合で変わる値と内部の値を除き, Scheduler の状態を比較
         # CyclicLR の base_lrs は Optimizer の学習率ではなく引数の base_lr
+        # warmup を付けた場合 (SequentialLR) は, 中の Scheduler ごとに比較
+        if isinstance(self.scheduler, optim.lr_scheduler.SequentialLR):
+            fresh_state = sequential_arguments(fresh_state)
+            loaded_state = sequential_arguments(loaded_state)
         compared = {
             key for key in fresh_state
             if (not key.startswith("_") and key not in PROGRESS_KEYS)
@@ -1565,12 +1705,23 @@ class Trainer:
         None
         """
         # 補った値と, 再開元から戻した Scheduler の値を比較
+        # warmup を付けた場合は後ろの Scheduler の値と, 割合から補った回数
+        scheduler = self.scheduler
+        if isinstance(scheduler, optim.lr_scheduler.SequentialLR):
+            scheduler = scheduler._schedulers[-1]
         diffs = [
-            f"{name} (再開元 {getattr(self.scheduler, name)}, 補った値 "
-            f"{value})"
+            f"{name} (再開元 {getattr(scheduler, name)}, 補った値 {value})"
             for name, value in self.auto_values.items()
-            if getattr(self.scheduler, name, value) != value
+            if getattr(scheduler, name, value) != value
         ]
+        warmup = self.experiment.cfg.scheduler.get("warmup_steps")
+        if self.warmup_from_ratio and isinstance(
+            self.scheduler, optim.lr_scheduler.SequentialLR
+        ) and self.scheduler._milestones[0] != warmup:
+            diffs.append(
+                f"warmup_steps (再開元 {self.scheduler._milestones[0]}, "
+                f"補った値 {warmup})"
+            )
         if diffs:
             raise ValueError(
                 "auto で補った Scheduler の引数が再開元と違います: "
@@ -1818,40 +1969,61 @@ class Trainer:
         ----------
         None
         """
-        # 1 エポックで Scheduler を進める回数 (step ごとならバッチ数) と,
-        # エポック数 (trainer.epochs) の取得
-        # auto と書いた引数は学習全体のステップ数 (エポック数 × 1 エポックの回数)
+        # 1 エポックで Scheduler を進める回数 (step ごとならバッチ数)
         cfg = self.experiment.cfg
         auto = set(auto_params(cfg.scheduler))
-        values = {}
-        for name in missing_data_size_params(cfg.scheduler):
+        missing = missing_data_size_params(cfg.scheduler)
+        per_epoch = 1
+        if self.scheduler_interval == "step":
+            try:
+                per_epoch = len(train_loader)
+                if per_epoch == 0:
+                    raise ValueError("train の loader が空です")
+            except TypeError as error:
+                # バッチ数が要る引数を名前に出して, 書き方を案内
+                needed = [name for name in missing if name != "epochs"]
+                name = needed[0] if needed else "warmup_ratio"
+                hint = (
+                    " total_steps か steps_per_epoch を"
+                    if name == "steps_per_epoch" else "値を"
+                )
+                raise ValueError(
+                    f"{cfg.scheduler.name or 'warmup'} の {name} を補えません. "
+                    "train_loader が len() を持たないので, "
+                    f"scheduler の設定に{hint}書いてください"
+                ) from error
+
+        # 学習全体のステップ数と, 割合で書いた warmup の回数
+        total = self.trainer_cfg.epochs * per_epoch
+        values: dict[str, int] = {}
+        filled = []
+        if cfg.scheduler.get("warmup_ratio") is not None:
+            warmup = int(round(cfg.scheduler.warmup_ratio * total))
+            cfg.scheduler.warmup_steps = warmup
+            cfg.scheduler.warmup_ratio = None
+            filled.append(f"warmup_steps={warmup}")
+            self.warmup_from_ratio = True
+        warmup = int(cfg.scheduler.get("warmup_steps") or 0)
+
+        # OneCycleLR の引数と, auto と書いた引数 (warmup の後の残りの回数)
+        for name in missing:
             if name == "epochs":
                 values[name] = self.trainer_cfg.epochs
-            elif self.scheduler_interval == "epoch":
-                values[name] = 1
+            elif name in auto:
+                values[name] = total - warmup
             else:
-                try:
-                    values[name] = len(train_loader)
-                    if values[name] == 0:
-                        raise ValueError("train の loader が空です")
-                except TypeError as error:
-                    hint = (
-                        "値" if name in auto
-                        else "total_steps か steps_per_epoch"
-                    )
-                    raise ValueError(
-                        f"{cfg.scheduler.name} の {name} を補えません. "
-                        "train_loader が len() を持たないので, "
-                        f"scheduler.params に{hint}を書いてください"
-                    ) from error
-
-        for name in auto:
-            values[name] = self.trainer_cfg.epochs * values[name]
+                values[name] = per_epoch
+        if any(value < 1 for value in values.values()):
+            raise ValueError(
+                f"warmup ({warmup}) が学習全体のステップ数 ({total}) 以上なので, "
+                f"{cfg.scheduler.name} の auto を補えません"
+            )
         self.auto_values = {name: values[name] for name in auto}
 
         # config に書き込んで作成し, 補った値が残るように config.yaml も更新
         for name, value in values.items():
             cfg.scheduler.params[name] = value
+            filled.append(f"{name}={value}")
         self.scheduler = build_scheduler(
             cfg.scheduler, self.optimizer, self.trainer_cfg.mode
         )
@@ -1862,9 +2034,9 @@ class Trainer:
         temp = path.with_name("config.yaml.tmp")
         OmegaConf.save(cfg, temp, resolve=True)
         temp.replace(path)
-        filled = ", ".join(f"{name}={value}" for name, value in values.items())
         self.logger.info(
-            f"{cfg.scheduler.name} の引数を学習用データから補いました: {filled}"
+            f"{cfg.scheduler.name or 'warmup'} の引数を学習用データから補いました: "
+            f"{', '.join(filled)}"
         )
 
     def training_state(self) -> dict:
@@ -2020,8 +2192,6 @@ class Trainer:
         None
         """
         self.planned_total_steps = None
-        if not isinstance(self.scheduler, optim.lr_scheduler.OneCycleLR):
-            return
         if self.scheduler_interval == "epoch":
             per_epoch = 1
         else:
@@ -2029,7 +2199,25 @@ class Trainer:
                 per_epoch = len(train_loader)
             except TypeError:
                 return
-        self.planned_total_steps = self.trainer_cfg.epochs * per_epoch
+        total = self.trainer_cfg.epochs * per_epoch
+
+        # warmup が学習全体以上か, 割合が小さく 0 回になった場合は通知
+        warmup = self.experiment.cfg.scheduler.get("warmup_steps")
+        message = None
+        if warmup and warmup >= total:
+            message = (
+                f"warmup ({warmup} 回) が学習全体のステップ数 ({total}) 以上なので,"
+                " 後ろの Scheduler に切り替わりません"
+            )
+        elif warmup == 0 and self.warmup_from_ratio:
+            message = "scheduler.warmup_ratio が小さく, warmup は 0 回になりました"
+        if message is not None:
+            self.logger.warning(message)
+            warnings.warn(message, stacklevel=2)
+
+        # OneCycleLR の総ステップ数の確認に使う予定の値
+        if isinstance(self.scheduler, optim.lr_scheduler.OneCycleLR):
+            self.planned_total_steps = total
 
     def check_total_steps(self) -> None:
         """

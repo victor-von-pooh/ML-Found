@@ -2,6 +2,7 @@ import csv
 from pathlib import Path
 from typing import Callable
 
+from omegaconf import OmegaConf
 import pytest
 import torch
 from torch import nn
@@ -1044,3 +1045,136 @@ def test_errors(tmp_path: Path) -> None:
     experiment = make_experiment(tmp_path, "trainer:\n  epochs: 1\n")
     with pytest.raises(ValueError, match="空"):
         Trainer(nn.Linear(1, 1), experiment, regression_step).fit([])
+
+
+def test_one_cycle_steps_from_loader(tmp_path: Path) -> None:
+    """
+    OneCycleLR の総ステップ数を, 学習用データのバッチ数から補うことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    base = "trainer:\n  epochs: 3\nscheduler:\n  name: OneCycleLR\n"
+
+    # step ごとなら, エポック数とバッチ数 (64 / 16 = 4) を補い全ステップを使用
+    experiment = make_experiment(
+        tmp_path / "step",
+        base + "  interval: step\n  params:\n    max_lr: 0.1\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    assert trainer.scheduler is None
+    trainer.fit(make_loader(n=64, batch_size=16))
+    assert trainer.scheduler.total_steps == 12
+    saved = OmegaConf.load(experiment.run_dir / "config.yaml")
+    assert saved.scheduler.params.steps_per_epoch == 4
+    assert saved.scheduler.params.epochs == 3
+    log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
+    assert "steps_per_epoch=4" in log
+    with open(experiment.run_dir / "lr_steps.csv", encoding="utf-8") as f:
+        assert len(list(csv.DictReader(f))) == 12
+
+    # 書いたエポック数は残し, エポックごとなら 1 エポックに 1 回
+    experiment = make_experiment(
+        tmp_path / "epoch",
+        base + "  interval: epoch\n  params:\n    max_lr: 0.1\n"
+        "    epochs: 4\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    trainer.fit(make_loader(n=64, batch_size=16))
+    assert trainer.scheduler.total_steps == 4
+
+    # len() を持たない loader では, 書くように通知
+    experiment = make_experiment(
+        tmp_path / "iterable",
+        base + "  interval: step\n  params:\n    max_lr: 0.1\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    batches = list(make_loader(n=64, batch_size=16))
+    with pytest.raises(ValueError, match="steps_per_epoch を補えません"):
+        trainer.fit(batch for batch in batches)
+
+
+def test_one_cycle_steps_resume(tmp_path: Path) -> None:
+    """
+    補った OneCycleLR でも, 再開して続けて学習した場合と同じ学習率に
+    なることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    text = (
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "scheduler:\n  name: OneCycleLR\n  interval: step\n"
+        "  params:\n    max_lr: 0.1\n    epochs: 4\n"
+    )
+    full = make_experiment(tmp_path / "full", text + "trainer:\n  epochs: 4\n")
+    full_history = Trainer(nn.Linear(1, 1), full, regression_step).fit(
+        make_loader()
+    )
+    first = make_experiment(
+        tmp_path / "first", text + "trainer:\n  epochs: 2\n"
+    )
+    Trainer(nn.Linear(1, 1), first, regression_step).fit(make_loader())
+    second = make_experiment(
+        tmp_path / "second",
+        text + "trainer:\n  epochs: 4\n"
+        f"  resume_from: {first.run_dir / 'last.pt'}\n"
+    )
+    resumed = Trainer(nn.Linear(1, 1), second, regression_step).fit(
+        make_loader()
+    )
+    assert resumed.get("lr") == pytest.approx(full_history.get("lr"))
+
+    # 補う設定でエポック数を増やして再開すると, 学習を始める前にエラー
+    auto = (
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "scheduler:\n  name: OneCycleLR\n  interval: step\n"
+        "  params:\n    max_lr: 0.1\n"
+    )
+    short = make_experiment(
+        tmp_path / "short", auto + "trainer:\n  epochs: 2\n"
+    )
+    Trainer(nn.Linear(1, 1), short, regression_step).fit(make_loader())
+    longer = make_experiment(
+        tmp_path / "longer",
+        auto + "trainer:\n  epochs: 4\n"
+        f"  resume_from: {short.run_dir / 'last.pt'}\n"
+    )
+    with pytest.raises(ValueError, match="変えられません"):
+        Trainer(nn.Linear(1, 1), longer, regression_step).fit(make_loader())
+    assert not (longer.run_dir / "last.pt").exists()
+
+    # 書いた総ステップ数が予定より少ない場合も, 学習を始める前にエラー.
+    # 多い場合は警告
+    for total, error in ((2, True), (100, False)):
+        explicit = make_experiment(
+            tmp_path / f"explicit_{total}",
+            auto + f"    total_steps: {total}\ntrainer:\n  epochs: 2\n"
+        )
+        trainer = Trainer(nn.Linear(1, 1), explicit, regression_step)
+        if error:
+            with pytest.raises(ValueError, match="予定の総ステップ数"):
+                trainer.fit(make_loader())
+        else:
+            with pytest.warns(UserWarning, match="下がりきりません"):
+                trainer.fit(make_loader())
+
+    # 空の loader は分かりやすいエラー
+    empty = make_experiment(
+        tmp_path / "empty", auto + "trainer:\n  epochs: 2\n"
+    )
+    with pytest.raises(ValueError, match="train の loader が空です"):
+        Trainer(nn.Linear(1, 1), empty, regression_step).fit([])

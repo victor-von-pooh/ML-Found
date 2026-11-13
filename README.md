@@ -196,7 +196,8 @@ Optimizer や Scheduler を自分で作る場合は `Trainer(model, experiment, 
 渡した Scheduler にも, config で作った場合と同じく `scheduler.interval` と ReduceLROnPlateau の確認が行われる.
 自分で作った Scheduler は `config.yaml` に残らない (`train.log` にはクラス名と状態が残る).
 
-`OneCycleLR` のように, データの量 (バッチ数) で決まる引数が要る Scheduler を config で使う場合は, `load_config` の後, `start_experiment` の前に config に書き込むと `config.yaml` にも残る.
+`OneCycleLR` の総ステップ数 (`total_steps`, または `epochs` と `steps_per_epoch`) は, 書かなければ `fit` が学習を始めるときに補う. `steps_per_epoch` は `scheduler.interval: step` なら学習用データのバッチ数 (`len(train_loader)`), `epoch` なら 1 (1 エポックに 1 回進めるため), `epochs` は `trainer.epochs` にする. 補った値は `config.yaml` と `train.log` に残る. そのため config から作る `OneCycleLR` は `fit` を呼ぶまで作られない (`trainer.scheduler` は `None`). `len()` を持たない `train_loader` では補えないのでエラーになり, `total_steps` か `steps_per_epoch` を書く. `OneCycleLR` は, 補ったかどうかに関係なく, 総ステップ数が `trainer.epochs` とバッチ数から求めた予定より少ないと学習を始める前にエラーに, 多いと警告にする (学習率が下がりきらない). 再開した場合は再開元の総ステップ数が使われるので, `trainer.epochs` やバッチ数を変えて再開した場合や, 補った値の入った `config.yaml` を default にして条件を変えた場合も, この確認で分かる.
+自分で値を決める場合は, これまで通り `load_config` の後, `start_experiment` の前に config に書き込むと `config.yaml` にも残る.
 
 ```python
 cfg, diff = load_config(default_path, experiment_path)

@@ -2349,6 +2349,65 @@ def test_eval_model_stop_within_epoch(tmp_path: Path) -> None:
         return outputs
 
     # 中断の要求を毎回確かめるようにして学習
+    # EMA の状態は extra_state_dict で保存しているので, エポック 1 の後に戻る
+    trainer.step = step
+    trainer.run_status.progress_interval = 0.0
+    trainer.fit(make_loader(), make_loader())
+    status = json.loads(
+        (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+    )
+    assert status["final_weights"] == "last"
+    assert len(trainer.history.records) == 1
+    final = torch.load(
+        experiment.run_dir / "final_model.pt", map_location="cpu",
+        weights_only=True
+    )
+    assert same_weights(final, trainer.ema_states[1])
+
+    # EMA の状態を保存しない場合は戻せないので, 途中までの重み
+    class NoExtraTrainer(EMATrainer):
+        # EMA の状態をチェックポイントに加えない Trainer
+        def extra_state_dict(self) -> dict:
+            """
+            何も加えない関数
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            ----------
+            state: dict
+                空の辞書
+            """
+            # 加える状態なし
+            state = {}
+
+            return state
+
+        def load_extra_state_dict(self, state: dict) -> None:
+            """
+            何も戻さない関数
+
+            Parameters
+            ----------
+            state: dict
+                extra_state_dict で加えた状態
+
+            Returns
+            ----------
+            None
+            """
+            # 戻す状態なし
+            pass
+
+    experiment = make_experiment(
+        tmp_path / "no_extra",
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "trainer:\n  epochs: 3\n  select_best: false\n"
+    )
+    trainer = NoExtraTrainer(nn.Linear(1, 1), experiment)
+    stopper = stop_at(experiment, "train", 6)
     trainer.step = step
     trainer.run_status.progress_interval = 0.0
     with pytest.warns(UserWarning, match="eval_model"):
@@ -2357,7 +2416,6 @@ def test_eval_model_stop_within_epoch(tmp_path: Path) -> None:
         (experiment.run_dir / "run.json").read_text(encoding="utf-8")
     )
     assert status["final_weights"] == "partial"
-    assert len(trainer.history.records) == 1
 
 
 def test_register_rng(tmp_path: Path) -> None:
@@ -3077,3 +3135,44 @@ def test_callbacks(tmp_path: Path) -> None:
     status = run("broken", broken)
     assert status["status"] == "failed"
     assert "関数のエラー" in status["error"]
+
+
+def test_stop_within_epoch_restores_state(tmp_path: Path) -> None:
+    """
+    エポックの途中で止めると, 更新回数, Optimizer, Scheduler, 乱数の状態も
+    最後に終えたエポックのものに戻ることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # Adam と StepLR で, 2 エポック目の学習の途中で止める
+    experiment = make_experiment(
+        tmp_path,
+        "optimizer:\n  name: Adam\n  params:\n    lr: 0.05\n"
+        "scheduler:\n  name: StepLR\n  params:\n    step_size: 1\n"
+        "trainer:\n  epochs: 3\n"
+    )
+    trainer = Trainer(
+        nn.Linear(1, 1), experiment, stop_at(experiment, "train", 6)
+    )
+    trainer.run_status.progress_interval = 0.0
+    trainer.fit(make_loader(shuffle=True))
+    assert len(trainer.history.records) == 1
+
+    # last.pt (エポック 1 の後) と同じ状態に戻っている
+    last = load_checkpoint(
+        str(experiment.run_dir / "last.pt"), torch.device("cpu")
+    )
+    assert trainer.global_step == last["global_step"] == 4
+    assert trainer.scheduler.state_dict() == last["scheduler"]
+    state = trainer.optimizer.state_dict()["state"]
+    for key, value in last["optimizer"]["state"].items():
+        assert torch.equal(state[key]["exp_avg"], value["exp_avg"])
+        assert state[key]["step"] == value["step"]
+    assert torch.equal(torch.get_rng_state(), last["rng"]["torch"])

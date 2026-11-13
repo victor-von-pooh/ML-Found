@@ -44,7 +44,6 @@ ML-Found はその下で動く学習ライブラリとして, ダッシュボー
 いろいろなタスクで ML-Found を使ったテストで見つかった項目のうち, まだ対応していないもの.
 
 - 複数の Optimizer を名前付きで config に書き, 損失ごとに対応させて更新, 保存, 再開する仕組み (GAN など). 今は `manual_optimization` と `extra_state_dict` で利用者が書く
-- モデルの構造のログを `print(model)` 以外でも残す仕組み (外部ライブラリの層は中身が残らない). 今は README で `extra_repr` を勧めている
 - チェックポイントに記録の全て (`history` と, step ごとの Scheduler では更新ごとの学習率 `lr_steps`) を毎回入れず, `history.csv` と `lr_steps.csv` に追記する形にする. 1 エポックが短く毎エポック改善する学習 (フルバッチなど) では, `best.pt` を改善のたびに記録ごと保存する時間が残る (`best_weights_only: true` なら重みだけ)
 - エポックの途中で止めた場合に, 捨てたエポックの更新回数, Optimizer, Scheduler, 乱数の状態をメモリの上でも戻す (同じ `Trainer` で `fit` を呼び直す場合のため)
 - `OneCycleLR` 以外のデータの量で決まる引数 (warmup 付きの Scheduler, step ごとに使う `CosineAnnealingLR` の `T_max` など) も補う仕組み

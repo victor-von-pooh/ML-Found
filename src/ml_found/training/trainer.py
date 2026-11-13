@@ -26,6 +26,9 @@ from ml_found.training.optim import (
 )
 from ml_found.training.status import RunStatus
 from ml_found.utils.batch import find_batch_size, move_to_device
+from ml_found.utils.model_summary import (
+    count_parameters, save_model_summary, summarize_model
+)
 from ml_found.utils.plotting import plot_history, plot_lr_steps
 
 # Experiment は型ヒントだけに使用 (experiment は training を使うので循環を回避)
@@ -1332,9 +1335,21 @@ class Trainer:
         None
         """
         # モデルの構造とパラメータ数を記録
+        # print(model) で中身が分からない層もあるので, パラメータとバッファの
+        # 一覧を model_summary.csv に保存
         n_params = sum(p.numel() for p in self.model.parameters())
         self.logger.info(f"モデルの構造:\n\n{self.model}\n")
         self.logger.info(f"パラメータ数: {n_params}")
+        rows = summarize_model(self.model)
+        save_model_summary(
+            rows, str(self.experiment.run_dir / "model_summary.csv")
+        )
+        counts = count_parameters(rows)
+        self.logger.info(
+            f"学習するパラメータ数: {counts['trainable']}, 学習しない"
+            f"パラメータ数: {counts['frozen']}, バッファの要素数: "
+            f"{counts['buffer']} (一覧は model_summary.csv)"
+        )
 
         # Optimizer, Scheduler, 監視する指標を記録
         self.logger.info(f"Optimizer:\n\n{self.optimizer}\n")

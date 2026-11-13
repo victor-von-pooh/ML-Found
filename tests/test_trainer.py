@@ -186,7 +186,7 @@ def test_fit_minibatch(tmp_path: Path) -> None:
     ]
     for name in [
         "best.pt", "last.pt", "final_model.pt", "history.csv",
-        "loss_curve.png", "train.log"
+        "model_summary.csv", "loss_curve.png", "train.log"
     ]:
         assert (run_dir / name).exists()
 

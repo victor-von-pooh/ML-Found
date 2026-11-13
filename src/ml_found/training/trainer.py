@@ -33,6 +33,35 @@ if TYPE_CHECKING:
     from ml_found.experiment.setup import Experiment
 
 
+def loader_generators(loader: Iterable) -> list[torch.Generator]:
+    """
+    DataLoader とその sampler が持つ乱数生成器を取り出す関数
+
+    Parameters
+    ----------
+    loader: Iterable
+        DataLoader など
+
+    Returns
+    ----------
+    generators: list[torch.Generator]
+        重複を除いた乱数生成器, 持たない場合は空
+    """
+    # DataLoader の generator と, sampler に渡した generator を重複なく収集
+    generators: list[torch.Generator] = []
+    candidates = [
+        getattr(loader, "generator", None),
+        getattr(getattr(loader, "sampler", None), "generator", None)
+    ]
+    for generator in candidates:
+        if isinstance(generator, torch.Generator) and all(
+            generator is not other for other in generators
+        ):
+            generators.append(generator)
+
+    return generators
+
+
 class StopWithinEpoch(Exception):
     # エポックの途中で止める要求を受けたことを伝える例外
     pass
@@ -310,7 +339,8 @@ class Trainer:
         outputs: dict
             loss は必須, その他の指標と batch_size は任意. 平均せずに
             記録だけする値は extra に辞書で入れる (検証でも返した場合は
-            検証の値, エポックの最後の値を記録)
+            検証の値, エポックの最後の値を記録. 学習用データの評価し直しで
+            返した値は記録しない)
         """
         # 関数が渡されていない場合は継承して上書きが必要
         if self.step_fn is None:
@@ -702,10 +732,13 @@ class Trainer:
 
                 # サンプル数で重み付けして指標の加算
                 metrics = dict(outputs)
+                # 学習用データの評価し直しで返した値は, 学習中の値を残すため
+                # 記録しない
                 extra = metrics.pop("extra", None) or {}
-                self.epoch_extra.update(
-                    {key: to_float(value) for key, value in extra.items()}
-                )
+                if phase != "train_eval":
+                    self.epoch_extra.update(
+                        {key: to_float(value) for key, value in extra.items()}
+                    )
                 n = metrics.pop("batch_size", None)
                 if n is None:
                     n = self.estimate_batch_size(batch)
@@ -808,13 +841,24 @@ class Trainer:
             return metrics
 
         # 学習の乱数の状態を保存してから固定し, 検証の後に元の状態へ復帰
+        # 学習用データの評価し直しでは, DataLoader 自身の乱数生成器も復帰
         state = get_rng_state()
+        generators = (
+            loader_generators(loader) if phase == "train_eval" else []
+        )
+        generator_states = [
+            generator.get_state() for generator in generators
+        ]
         if seed is not None:
             set_seed(seed)
         try:
             metrics = self.run_epoch(loader, train=False, phase=phase)
         finally:
             set_rng_state(state)
+            for generator, generator_state in zip(
+                generators, generator_states
+            ):
+                generator.set_state(generator_state)
 
         return metrics
 
@@ -1669,6 +1713,21 @@ class Trainer:
             device=str(self.device),
             select_best=self.trainer_cfg.select_best
         )
+
+        # 学習用データの評価し直しは, ワーカーを使い回す DataLoader では
+        # ワーカーの中の乱数を進めるので, 学習が変わることを通知
+        persistent = getattr(train_loader, "persistent_workers", False)
+        if (
+            self.trainer_cfg.eval_train and persistent
+            and getattr(train_loader, "num_workers", 0) > 0
+        ):
+            message = (
+                "eval_train を persistent_workers=True の DataLoader と使うと, "
+                "ワーカーの中の乱数が進むので, 学習の結果が eval_train: false "
+                "の場合と一致しません"
+            )
+            warnings.warn(message, stacklevel=3)
+            self.logger.warning(message)
 
         # 評価に使うモデルの確認 (失敗も run.json に残るように書き出しの後)
         self.check_eval_model()

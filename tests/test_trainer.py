@@ -14,6 +14,7 @@ from ml_found.config.loader import load_config
 from ml_found.experiment import register_rng, unregister_rng
 from ml_found.experiment.setup import Experiment, start_experiment
 from ml_found.training.callbacks import load_checkpoint
+from ml_found.training.history import History
 from ml_found.training.trainer import Trainer
 
 
@@ -2355,7 +2356,8 @@ def test_register_rng(tmp_path: Path) -> None:
     None
     """
     # Python, NumPy, torch の全体の乱数とは別の乱数を持つ外部ライブラリの代わり
-    library = {"rng": np.random.default_rng()}
+    # MT19937 の状態は NumPy の配列を含む
+    library = {"rng": np.random.Generator(np.random.MT19937())}
 
     def seed_fn(seed: int) -> None:
         """
@@ -2371,7 +2373,7 @@ def test_register_rng(tmp_path: Path) -> None:
         None
         """
         # 新しい乱数生成器に置き換えて固定
-        library["rng"] = np.random.default_rng(seed)
+        library["rng"] = np.random.Generator(np.random.MT19937(seed))
 
     def get_state() -> dict:
         """
@@ -2386,7 +2388,7 @@ def test_register_rng(tmp_path: Path) -> None:
         state: dict
             乱数生成器の状態
         """
-        # 数値と文字列だけの辞書なので, そのまま保存可能
+        # NumPy の配列を含む辞書 (ML-Found が保存できる形に変換)
         state = library["rng"].bit_generator.state
 
         return state
@@ -2431,7 +2433,7 @@ def test_register_rng(tmp_path: Path) -> None:
 
         return outputs
 
-    def run(name: str, text: str) -> list:
+    def run(name: str, text: str) -> History:
         """
         外部ライブラリの乱数を登録して学習する関数
 
@@ -2444,50 +2446,72 @@ def test_register_rng(tmp_path: Path) -> None:
 
         Returns
         ----------
-        losses: list
-            エポックごとの学習時の損失
+        history: History
+            エポックごとの記録
         """
-        # 登録してから実験を始め, 学習の後に登録を外す
+        # 登録してから実験を始め, 学習の後に登録の解除
         register_rng("library", seed_fn, get_state, set_state)
         try:
             experiment = make_experiment(tmp_path / name, sgd + text)
             history = Trainer(nn.Linear(1, 1), experiment, step).fit(
-                make_loader()
+                make_loader(), make_loader()
             )
         finally:
             unregister_rng("library")
-        losses = history.get("train/loss")
 
-        return losses
+        return history
 
     # 同じシードなら同じ結果になり, 再開しても続けて学習した場合と一致
-    sgd = "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
-    full = run("full", "trainer:\n  epochs: 4\n")
-    assert run("again", "trainer:\n  epochs: 4\n") == full
-    run("first", "trainer:\n  epochs: 2\n")
-    last_path = tmp_path / "first"
-    last_path = next(last_path.rglob("last.pt"))
-    resumed = run(
-        "second", f"trainer:\n  epochs: 4\n  resume_from: {last_path}\n"
+    # 検証の前に固定する設定では, 検証の値は毎エポック同じ
+    sgd = (
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "trainer:\n  valid_seed: 7\n"
     )
-    assert resumed == pytest.approx(full)
+    full = run("full", "  epochs: 4\n")
+    assert run("again", "  epochs: 4\n").records == full.records
+    run("first", "  epochs: 2\n")
+    last_path = next((tmp_path / "first").rglob("last.pt"))
+    resumed = run("second", f"  epochs: 4\n  resume_from: {last_path}\n")
+    assert resumed.get("train/loss") == pytest.approx(full.get("train/loss"))
+    assert resumed.get("valid/loss") == pytest.approx(full.get("valid/loss"))
+    assert load_checkpoint(str(last_path), torch.device("cpu"))
     log = next((tmp_path / "full").rglob("train.log")).read_text(
         encoding="utf-8"
     )
     assert "['library']" in log
 
-    # 登録が片方にしか無い場合は警告
+    # 登録が片方にしか無い場合は警告し, train.log にも記録
+    experiment = make_experiment(
+        tmp_path / "unknown",
+        sgd + f"  epochs: 4\n  resume_from: {last_path}\n"
+    )
     with pytest.warns(UserWarning, match="登録されていない"):
-        experiment = make_experiment(
-            tmp_path / "unknown",
-            sgd + f"trainer:\n  epochs: 4\n  resume_from: {last_path}\n"
-        )
         Trainer(nn.Linear(1, 1), experiment, regression_step).fit(
-            make_loader()
+            make_loader(), make_loader()
         )
+    log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
+    assert "登録されていない" in log
+    plain = make_experiment(tmp_path / "plain", sgd + "  epochs: 1\n")
+    Trainer(nn.Linear(1, 1), plain, regression_step).fit(
+        make_loader(), make_loader()
+    )
+    plain_last = plain.run_dir / "last.pt"
+    with pytest.warns(UserWarning, match="保存されていない"):
+        run("missing", f"  epochs: 2\n  resume_from: {plain_last}\n")
+
+    # start_experiment の後に登録した場合は警告
+    experiment = make_experiment(tmp_path / "late", sgd + "  epochs: 1\n")
+    register_rng("library", seed_fn, get_state, set_state)
+    try:
+        with pytest.warns(UserWarning, match="start_experiment の後"):
+            Trainer(nn.Linear(1, 1), experiment, step)
+    finally:
+        unregister_rng("library")
 
     # 名前と関数の誤りはエラー
     with pytest.raises(ValueError, match="名前"):
         register_rng("", seed_fn, get_state, set_state)
     with pytest.raises(TypeError, match="get_state"):
         register_rng("library", seed_fn, None, set_state)
+    with pytest.raises(TypeError, match="保存できない型"):
+        register_rng("library", seed_fn, lambda: {"rng": object()}, set_state)

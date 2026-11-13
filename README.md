@@ -292,10 +292,12 @@ register_rng("qiskit", seed_qiskit, get_qiskit_state, set_qiskit_state)
 experiment = start_experiment(cfg, diff, str(project_dir))
 ```
 
-- `start_experiment` で `experiment.seed` を渡して固定し, `trainer.valid_seed` でも固定する (検証の後は状態を戻す). 登録した名前は `train.log` に残る
-- チェックポイントの乱数の状態 (`rng` の `extra`) に名前ごとに入り, 再開で戻る. チェックポイントは安全な形式で読み込むので, 状態はテンソル, 数値, 文字列, `None` と, それらのリスト, タプル, 辞書だけで作る
-- 登録は Python のプロセスの中で続く. 同じプロセスで別の実験をする場合は `unregister_rng(name)` (`ml_found.experiment` から) で外す
-- 再開元と今で登録した乱数が違う場合は, 戻せない乱数を警告する
+- `start_experiment` で `experiment.seed` を渡して固定し, `trainer.valid_seed` でも固定する (検証の後は状態を戻す). 登録した名前は `train.log` に残る. `start_experiment` の後に登録すると固定されないので, `Trainer` の作成で警告が出る
+- チェックポイントの乱数の状態 (`rng` の `extra`) に名前ごとに入り, 再開で戻る. 状態はテンソル, 数値, 文字列, `None`, NumPy の配列と, それらのリスト, タプル, 辞書だけで作る (NumPy の配列は安全に読み込める形に変えて保存し, 戻すときに配列に戻す). それ以外の型は `register_rng` の時点でエラーになる
+- `get_state` は今の状態の写しを返す (検証の前に取り出して後で戻すので, 後から変わる値を返すと戻らない). `seed_fn` で乱数生成器を作り直す場合は, ライブラリが参照しているもの自体を置き換える (古い生成器を持ち続けるコードには効かない)
+- 登録は Python のプロセスの中で続く. 同じプロセスで別の実験をする場合は `unregister_rng(name)` で外す (`register_rng` と同じく `ml_found` から import できる)
+- 再開元と今で登録した乱数が違う場合は, 戻せない乱数を警告し, `train.log` にも残す. 再開元に状態が無い乱数は, `start_experiment` でシードから固定した最初の状態から使い直すので, 続けて学習した場合とは一致しない
+- 外部ライブラリの乱数から作ったテンソルは, `step` の中でバッチと同じデバイスに移す (`.to(x.device)` など)
 
 ### 学習の再開
 

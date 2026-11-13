@@ -1,5 +1,4 @@
 import random
-import warnings
 from typing import Any, Callable
 
 import numpy as np
@@ -7,6 +6,101 @@ import torch
 
 # 利用者が登録した外部ライブラリの乱数 (名前ごとに固定, 取得, 復元の関数)
 EXTRA_RNGS: dict[str, dict[str, Callable]] = {}
+
+# fix_seed (start_experiment) で固定した外部ライブラリの乱数の名前
+FIXED_RNGS: set[str] = set()
+
+# NumPy の配列をチェックポイントに安全に保存するための目印
+NDARRAY_KEY = "__ml_found_ndarray__"
+
+
+def encode_state(value: Any, path: str) -> Any:
+    """
+    乱数の状態を, チェックポイントを安全に読み込める型だけに変換する関数
+
+    NumPy の配列は目印付きの辞書に, NumPy の数値は Python の数値に変換
+
+    Parameters
+    ----------
+    value: Any
+        変換する状態
+    path: str
+        エラーの表示に使う, 状態の中の位置
+
+    Returns
+    ----------
+    encoded: Any
+        テンソル, 数値, 文字列, None と, それらのリスト, タプル, 辞書
+    """
+    # そのまま保存できる型
+    if value is None or isinstance(value, (bool, int, float, str)):
+        encoded = value
+    elif isinstance(value, torch.Tensor):
+        encoded = value.detach().cpu().clone()
+
+    # NumPy の配列と数値は保存できる形に変換
+    elif isinstance(value, np.ndarray):
+        encoded = {
+            NDARRAY_KEY: True, "dtype": str(value.dtype),
+            "shape": list(value.shape), "data": value.ravel().tolist()
+        }
+    elif isinstance(value, np.generic):
+        encoded = value.item()
+
+    # 入れ物は中身を順に変換
+    elif isinstance(value, (list, tuple)):
+        items = [
+            encode_state(item, f"{path}[{i}]") for i, item in enumerate(value)
+        ]
+        encoded = items if isinstance(value, list) else tuple(items)
+    elif isinstance(value, dict):
+        encoded = {}
+        for key, item in value.items():
+            if not isinstance(key, (str, int)):
+                raise TypeError(
+                    f"乱数の状態 {path} の辞書のキーは文字列か整数にして"
+                    f"ください: {key!r}"
+                )
+            encoded[key] = encode_state(item, f"{path}[{key!r}]")
+    else:
+        raise TypeError(
+            f"乱数の状態 {path} に保存できない型 {type(value).__name__} が"
+            "あります. テンソル, 数値, 文字列, None, NumPy の配列と, それらの"
+            "リスト, タプル, 辞書だけで作ってください"
+        )
+
+    return encoded
+
+
+def decode_state(value: Any) -> Any:
+    """
+    encode_state で変換した状態を元の型に戻す関数
+
+    Parameters
+    ----------
+    value: Any
+        変換した状態
+
+    Returns
+    ----------
+    decoded: Any
+        NumPy の配列を戻した状態
+    """
+    # 目印付きの辞書は NumPy の配列に戻し, 入れ物は中身を順に戻す
+    if isinstance(value, dict) and value.get(NDARRAY_KEY) is True:
+        decoded = np.array(value["data"], dtype=value["dtype"]).reshape(
+            value["shape"]
+        )
+    elif isinstance(value, dict):
+        decoded = {key: decode_state(item) for key, item in value.items()}
+    elif isinstance(value, list):
+        decoded = [decode_state(item) for item in value]
+    elif isinstance(value, tuple):
+        decoded = tuple(decode_state(item) for item in value)
+    else:
+        decoded = value
+
+    return decoded
 
 
 def register_rng(
@@ -17,8 +111,9 @@ def register_rng(
     外部ライブラリの乱数を, 固定とチェックポイントへの保存の対象に加える関数
 
     start_experiment (シードの固定) の前に呼ぶ. get_state が返す状態は,
-    チェックポイントを安全に読み込めるように, テンソル, 数値, 文字列, None
-    と, それらのリスト, タプル, 辞書だけで作る
+    テンソル, 数値, 文字列, None, NumPy の配列と, それらのリスト, タプル,
+    辞書だけで作る (登録の時点で一度呼んで確かめる). 状態は今の値の写しを
+    返す (検証の前後で取り出して戻すため)
 
     Parameters
     ----------
@@ -44,6 +139,9 @@ def register_rng(
     ]:
         if not callable(fn):
             raise TypeError(f"{key} には関数を渡してください: {fn!r}")
+
+    # 状態を保存できるかを, 学習を始める前に確認
+    encode_state(get_state(), name)
     EXTRA_RNGS[name] = {
         "seed": seed_fn, "get": get_state, "set": set_state
     }
@@ -62,13 +160,15 @@ def unregister_rng(name: str) -> None:
     ----------
     None
     """
-    # 登録されていない名前は何もしない
+    # 登録されていない名前は無視して削除
     EXTRA_RNGS.pop(name, None)
+    FIXED_RNGS.discard(name)
 
 
 def set_seed(seed: int) -> None:
     """
-    Python, NumPy, PyTorch の乱数のシードを設定する関数
+    Python, NumPy, PyTorch と, 登録された外部ライブラリの乱数のシードを
+    設定する関数
 
     Parameters
     ----------
@@ -109,8 +209,10 @@ def fix_seed(seed: int, deterministic: bool = True) -> None:
     ----------
     None
     """
-    # Python, NumPy, PyTorch の乱数を固定
+    # Python, NumPy, PyTorch と, 登録された外部ライブラリの乱数を固定
     set_seed(seed)
+    FIXED_RNGS.clear()
+    FIXED_RNGS.update(EXTRA_RNGS)
 
     # 速度より再現性を優先する場合は cuDNN の自動選択の停止
     torch.backends.cudnn.deterministic = deterministic
@@ -151,14 +253,15 @@ def get_rng_state() -> dict:
             if torch.backends.mps.is_available() else None
         ),
         "extra": {
-            name: rng["get"]() for name, rng in EXTRA_RNGS.items()
+            name: encode_state(rng["get"](), name)
+            for name, rng in EXTRA_RNGS.items()
         }
     }
 
     return state
 
 
-def set_rng_state(state: dict) -> None:
+def set_rng_state(state: dict) -> list[str]:
     """
     乱数の状態を戻す関数
 
@@ -169,7 +272,8 @@ def set_rng_state(state: dict) -> None:
 
     Returns
     ----------
-    None
+    messages: list[str]
+        戻せなかった外部ライブラリの乱数についての警告の文
     """
     # Python と NumPy の状態の復元
     random.setstate(state["python"])
@@ -189,20 +293,24 @@ def set_rng_state(state: dict) -> None:
         torch.mps.set_rng_state(state["mps"].cpu())
 
     # 登録された外部ライブラリの状態の復元
-    # 片方にしか無い乱数は戻せないので警告 (登録の前のチェックポイントなど)
+    # 片方にしか無い乱数は戻せないので, 呼び出し側で知らせる内容を返却
     extra = state.get("extra") or {}
     missing = sorted(set(EXTRA_RNGS) - set(extra))
     unknown = sorted(set(extra) - set(EXTRA_RNGS))
+    messages = []
     if missing:
-        warnings.warn(
+        messages.append(
             f"乱数 {missing} の状態が保存されていないので戻せません "
-            "(登録する前に保存したチェックポイントなど)", stacklevel=2
+            "(登録する前に保存したチェックポイントなど). シードで固定した"
+            "最初の状態から使い直します"
         )
     if unknown:
-        warnings.warn(
+        messages.append(
             f"保存された乱数 {unknown} は登録されていないので戻せません. "
-            "register_rng で登録してください", stacklevel=2
+            "register_rng で登録してください"
         )
     for name, rng in EXTRA_RNGS.items():
         if name in extra:
-            rng["set"](extra[name])
+            rng["set"](decode_state(extra[name]))
+
+    return messages

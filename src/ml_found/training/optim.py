@@ -186,9 +186,17 @@ def build_optimizer(
     return optimizer
 
 
+# step に closure が必要な torch の Optimizer
+CLOSURE_OPTIMIZERS = (optim.LBFGS,)
+
+
 def requires_closure(optimizer: optim.Optimizer) -> bool:
     """
     Optimizer の step が損失を計算し直す closure を必要とするかを判定する関数
+
+    次の順に決める. クラスの属性 requires_closure (自作のクラスが宣言する),
+    torch の Optimizer の仕様 (LBFGS), step のシグネチャ (closure が既定値の
+    無い引数かどうか)
 
     Parameters
     ----------
@@ -198,9 +206,20 @@ def requires_closure(optimizer: optim.Optimizer) -> bool:
     Returns
     ----------
     required: bool
-        step の closure が既定値の無い引数の場合は True (LBFGS など)
+        closure が必要な場合は True
     """
-    # step のシグネチャで closure が必須の引数かどうかを確認
+    # 自作のクラスがクラスの属性で宣言した場合はそれに従う
+    declared = getattr(type(optimizer), "requires_closure", None)
+    if isinstance(declared, bool):
+        return declared
+
+    # torch のクラスは仕様で判定
+    if isinstance(optimizer, CLOSURE_OPTIMIZERS):
+        return True
+    if type(optimizer).__module__.startswith("torch."):
+        return False
+
+    # それ以外は step のシグネチャで closure が必須の引数かどうかを確認
     param = inspect.signature(optimizer.step).parameters.get("closure")
     required = (
         param is not None and param.default is inspect.Parameter.empty

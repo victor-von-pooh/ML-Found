@@ -10,7 +10,9 @@ import torch
 from torch import nn, optim
 from tqdm import tqdm
 
-from ml_found.experiment.seed import get_rng_state, set_rng_state, set_seed
+from ml_found.experiment.seed import (
+    EXTRA_RNGS, FIXED_RNGS, get_rng_state, set_rng_state, set_seed
+)
 from ml_found.training.callbacks import (
     Checkpoint, EarlyStopping, copy_state_dict, load_checkpoint,
     save_checkpoint, without_best_model
@@ -177,6 +179,18 @@ class Trainer:
         self.trainer_cfg = experiment.cfg.trainer
         self.logger = experiment.logger
         self.device = experiment.device
+
+        # start_experiment の後に登録した外部ライブラリの乱数は固定されて
+        # いないので警告
+        late = sorted(set(EXTRA_RNGS) - FIXED_RNGS)
+        if late:
+            message = (
+                f"乱数 {late} は start_experiment の後に登録したので, シードで"
+                "固定されていません. start_experiment の前に register_rng を"
+                "呼んでください"
+            )
+            self.logger.warning(message)
+            warnings.warn(message, stacklevel=3)
 
         # モデルをデバイスに移して保存
         self.model = model.to(self.device)
@@ -1021,7 +1035,10 @@ class Trainer:
         self.load_extra_state_dict(state.get("extra", {}))
 
         # 続きの乱数を使えるように乱数の状態の復元
-        set_rng_state(state["rng"])
+        # 戻せない外部ライブラリの乱数は train.log にも記録
+        for message in set_rng_state(state["rng"]):
+            self.logger.warning(message)
+            warnings.warn(message, stacklevel=2)
 
         # 新しい保存先にも, 再開元の best.pt と読み込んだ状態を保存
         run_dir = self.experiment.run_dir

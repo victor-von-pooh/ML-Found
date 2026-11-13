@@ -53,6 +53,5 @@ ML-Found はその下で動く学習ライブラリとして, ダッシュボー
 - エポックの途中で止めた場合に, 捨てたエポックの更新回数, Optimizer, Scheduler, 乱数の状態をメモリの上でも戻す (同じ `Trainer` で `fit` を呼び直す場合のため)
 - ベストモデルの判定 (`best.pt` と監視する指標) 自体を使わない設定 (GAN のように損失で良し悪しを決められない学習のため. 今は `restore_best: false` で最後の重みを残せる)
 - `OneCycleLR` 以外のデータの量で決まる引数 (warmup 付きの Scheduler, step ごとに使う `CosineAnnealingLR` の `T_max` など) も補う仕組み
-- バッチのサンプル数を推定できずに 1 として扱った場合に, 一度だけ警告する
 - 再開時に Scheduler の引数が config と違う場合に, config の値で上書きするかを選べる設定 (今は警告だけ)
 

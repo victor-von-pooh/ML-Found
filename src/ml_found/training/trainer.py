@@ -23,7 +23,7 @@ from ml_found.training.optim import (
     missing_data_size_params, requires_closure, step_scheduler, to_kwargs
 )
 from ml_found.training.status import RunStatus
-from ml_found.utils.batch import get_batch_size, move_to_device
+from ml_found.utils.batch import find_batch_size, move_to_device
 from ml_found.utils.plotting import plot_history, plot_lr_steps
 
 # Experiment は型ヒントだけに使用 (experiment は training を使うので循環を回避)
@@ -271,6 +271,9 @@ class Trainer:
         # step の extra で返した, 平均せずに記録だけする値の入れ物を用意
         self.epoch_extra: dict[str, float] = {}
 
+        # バッチのサンプル数を推定できなかったことを 1 回だけ警告するための印
+        self.warned_batch_size = False
+
         # エポックの途中で止めたときに戻す, 学習を始めた時点の重みと,
         # 戻せずに途中までの重みが残ったかどうかの印を用意
         self.start_weights: Optional[dict] = None
@@ -339,6 +342,37 @@ class Trainer:
         metrics = {}
 
         return metrics
+
+    def estimate_batch_size(self, batch: Any) -> int:
+        """
+        指標の平均の重みに使う, バッチのサンプル数を推定する関数
+
+        Parameters
+        ----------
+        batch: Any
+            テンソル, またはテンソルを含むリスト, タプル, 辞書など
+
+        Returns
+        ----------
+        size: int
+            最初に見つかったテンソルの 0 次元目, 見つからない場合は 1
+        """
+        size = find_batch_size(batch)
+        if size is not None:
+            return size
+
+        # 1 として平均すると, 小さなバッチがサンプル数の割に重く効くので警告
+        if not self.warned_batch_size:
+            message = (
+                "バッチのサンプル数を推定できないので, 1 として指標を平均します. "
+                "step の戻り値に batch_size を入れてください"
+            )
+            self.logger.warning(message)
+            warnings.warn(message, stacklevel=2)
+            self.warned_batch_size = True
+        size = 1
+
+        return size
 
     def check_outputs(self, outputs: Any, phase: str) -> torch.Tensor:
         """
@@ -581,7 +615,7 @@ class Trainer:
                 )
                 n = metrics.pop("batch_size", None)
                 if n is None:
-                    n = get_batch_size(batch)
+                    n = self.estimate_batch_size(batch)
                 if train and self.trainer_cfg.log_grad_norm:
                     self.add_grad_norm(metrics)
                 tracker.update(metrics, int(n))

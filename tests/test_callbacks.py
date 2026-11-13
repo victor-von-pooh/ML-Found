@@ -198,3 +198,35 @@ def test_invalid_mode(tmp_path: Path) -> None:
         EarlyStopping(patience=1, mode="minimum")
     with pytest.raises(ValueError):
         Checkpoint(tmp_path, mode="minimum")
+
+
+def test_load_checkpoint_keeps_unmovable_tensors(tmp_path: Path) -> None:
+    """
+    デバイスに移せないテンソルを cpu に残して読み込むことを確かめる関数
+
+    mps は float64 を扱えないので, 更新ごとの学習率の記録などを含む
+    チェックポイントも読み込めるようにする
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    path = tmp_path / "state.pt"
+    torch.save({
+        "model": {"weight": torch.ones(2)},
+        "lr_steps": {"lr": torch.zeros(3, dtype=torch.float64)},
+        "items": [torch.ones(1), 2]
+    }, path)
+
+    # 使えるデバイスに読み込み, mps でも float64 は cpu のまま
+    available = torch.backends.mps.is_available()
+    device = torch.device("mps" if available else "cpu")
+    state = load_checkpoint(str(path), device)
+    assert state["model"]["weight"].device.type == device.type
+    assert state["lr_steps"]["lr"].dtype == torch.float64
+    assert state["items"][1] == 2

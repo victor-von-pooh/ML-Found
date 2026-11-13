@@ -1,7 +1,7 @@
 import copy
 import math
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 from torch import nn
@@ -167,6 +167,41 @@ def save_checkpoint(state: dict, path: Path) -> None:
     tmp_path.replace(path)
 
 
+def move_tensors(value: Any, device: torch.device) -> Any:
+    """
+    入れ子の辞書やリストの中のテンソルを, 移せるものだけデバイスに移す関数
+
+    Parameters
+    ----------
+    value: Any
+        テンソル, またはテンソルを含む辞書, リスト, タプル
+    device: torch.device
+        移す先のデバイス
+
+    Returns
+    ----------
+    moved: Any
+        移した結果, 移せないテンソル (mps の float64 など) は cpu のまま
+    """
+    if isinstance(value, torch.Tensor):
+        try:
+            moved = value.to(device)
+        except (TypeError, RuntimeError):
+            moved = value
+        return moved
+    if isinstance(value, dict):
+        moved = {
+            key: move_tensors(item, device) for key, item in value.items()
+        }
+        return moved
+    if isinstance(value, (list, tuple)):
+        moved = type(value)(move_tensors(item, device) for item in value)
+        return moved
+    moved = value
+
+    return moved
+
+
 def load_checkpoint(path: str, device: torch.device) -> dict:
     """
     チェックポイントを読み込む関数
@@ -181,10 +216,14 @@ def load_checkpoint(path: str, device: torch.device) -> dict:
     Returns
     ----------
     state: dict
-        保存されていた内容
+        保存されていた内容, テンソルはデバイスの上 (デバイスが扱えない型の
+        テンソルは cpu の上)
     """
-    # 任意のコードが実行されないようにテンソルと基本的な型だけの読み込み
-    state = torch.load(path, map_location=device, weights_only=True)
+    # 任意のコードが実行されないようにテンソルと基本的な型だけを cpu に読み込み
+    # mps は float64 を扱えないので, 直接デバイスに読み込むと失敗する
+    # (更新ごとの学習率の記録など), 移せるものだけを移動
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    state = move_tensors(state, device)
 
     return state
 

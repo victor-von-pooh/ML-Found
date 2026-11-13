@@ -82,12 +82,14 @@ def check_trainer_config(cfg: DictConfig) -> None:
             f"trainer.mode は min か max にしてください: {trainer_cfg.mode}"
         )
 
-    # last.pt を保存する間隔は 1 以上に制限
+    # 再開時の Scheduler の扱いは checkpoint か config に制限
     if trainer_cfg.resume_scheduler not in ("checkpoint", "config"):
         raise ValueError(
             "trainer.resume_scheduler は checkpoint か config にしてください: "
             f"{trainer_cfg.resume_scheduler}"
         )
+
+    # last.pt を保存する間隔は 1 以上に制限
     if trainer_cfg.checkpoint.every_n_epochs < 1:
         raise ValueError(
             "trainer.checkpoint.every_n_epochs は 1 以上にしてください: "

@@ -2933,3 +2933,142 @@ def test_auto_total_params(tmp_path: Path) -> None:
             tmp_path / "step",
             "scheduler:\n  name: StepLR\n  params:\n    step_size: auto\n"
         )
+
+
+def test_callbacks(tmp_path: Path) -> None:
+    """
+    エポックの終わりに登録した関数が呼ばれ, True を返すと止まることを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    received = []
+
+    def collect(info: dict) -> None:
+        """
+        受け取った結果を貯める関数
+
+        Parameters
+        ----------
+        info: dict
+            エポックの結果
+
+        Returns
+        ----------
+        None
+        """
+        # 記録を書き換えても学習の記録に影響しないことも確認
+        received.append(info)
+        info["record"]["train/loss"] = -1.0
+
+    def stop_at_three(info: dict) -> bool:
+        """
+        3 エポックで止める関数
+
+        Parameters
+        ----------
+        info: dict
+            エポックの結果
+
+        Returns
+        ----------
+        stop: bool
+            止めるかどうか
+        """
+        # エポック 3 で止める要求
+        stop = info["epoch"] == 3
+
+        return stop
+
+    # 5 エポックの予定で, 3 エポックで止まる
+    experiment = make_experiment(tmp_path, "trainer:\n  epochs: 5\n")
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    trainer.add_callback(collect)
+    trainer.add_callback(stop_at_three)
+    history = trainer.fit(make_loader(), make_loader())
+    assert [info["epoch"] for info in received] == [1, 2, 3]
+    assert received[0]["improved"] is True
+    assert received[0]["best_epoch"] == 1
+    assert set(received[0]["record"]) >= {"epoch", "valid/loss", "lr"}
+    assert history.get("train/loss")[0] > 0
+    assert len(history.records) == 3
+    status = json.loads(
+        (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+    )
+    assert status["status"] == "stopped"
+    assert (experiment.run_dir / "last.pt").exists()
+
+    assert "登録した関数の要求で学習を止めました" in (
+        experiment.run_dir / "train.log"
+    ).read_text(encoding="utf-8")
+
+    # 関数以外はエラー
+    with pytest.raises(TypeError):
+        trainer.add_callback("not callable")
+
+    def run(name: str, fn: Callable[[dict], object]) -> dict:
+        """
+        関数を 1 つ登録して 3 エポック学習し, run.json を返す関数
+
+        Parameters
+        ----------
+        name: str
+            出力先の名前
+        fn: Callable[[dict], object]
+            登録する関数
+
+        Returns
+        ----------
+        status: dict
+            run.json の内容
+        """
+        # 登録して学習し, 失敗した場合も状態を返却
+        experiment = make_experiment(
+            tmp_path / name, "trainer:\n  epochs: 3\n"
+        )
+        trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+        trainer.add_callback(fn)
+        try:
+            trainer.fit(make_loader())
+        except RuntimeError:
+            pass
+        status = json.loads(
+            (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+        )
+
+        return status
+
+    # numpy の真偽値でも止まり, 最後のエポックで止めた場合は completed,
+    # 関数の中のエラーは failed
+    status = run("numpy", lambda info: np.bool_(info["epoch"] == 1))
+    assert status["status"] == "stopped"
+    assert status["completed_epochs"] == 1
+    assert run("last", lambda info: info["epoch"] == 3)["status"] == (
+        "completed"
+    )
+
+    def broken(info: dict) -> None:
+        """
+        常にエラーにする関数
+
+        Parameters
+        ----------
+        info: dict
+            エポックの結果
+
+        Returns
+        ----------
+        None
+        """
+        raise RuntimeError("関数のエラー")
+
+    status = run("broken", broken)
+    assert status["status"] == "failed"
+    assert "関数のエラー" in status["error"]

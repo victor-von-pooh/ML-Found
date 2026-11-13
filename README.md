@@ -86,9 +86,9 @@ optimizer:
 experiment で書けるのは default にある項目の値だけで, 項目の追加や構造の変更はエラーになる.
 例外は `optimizer.params` と `scheduler.params` で, クラスを変えると必要な引数も変わるので自由に書ける.
 クラス名を変えた場合は default の引数は捨てられる.
-`start_experiment` は出力先を作る前に, `optimizer.params` と `scheduler.params` の名前がクラスの引数にあるか (typo の確認) と, 必須の引数 (`StepLR` の `step_size` など) があるかを確かめる. 任意の名前の引数 (`**kwargs`) や位置だけの引数を受け取る自作のクラスは確かめない. 自分で作った Optimizer や Scheduler を `Trainer` に渡す場合も, config の引数は確かめるので, 使わない引数は消しておく.
+`start_experiment` は出力先を作る前に, `optimizer.params` と `scheduler.params` の名前がクラスの引数にあるか (typo の確認), 必須の引数 (`StepLR` の `step_size` など) があるか, 値が登録簿の範囲 (下の `describe_optimizers()` などで返すもの. 例: `lr` は 0 以上, `ReduceLROnPlateau` の `factor` は 0 以上 1 より小さい) に入るかを確かめる. 範囲は数値で書いた値だけを確かめ, 補間で書いた値などは確かめない. 任意の名前の引数 (`**kwargs`) や位置だけの引数を受け取る自作のクラスは確かめない. 自分で作った Optimizer や Scheduler を `Trainer` に渡す場合も, config の引数は確かめるので, 使わない引数は消しておく.
 
-選べる Optimizer と Scheduler とその引数 (種類, 既定値, 必須か, 説明, 範囲) は `describe_optimizers()` と `describe_schedulers()` で取得できる. ダッシュボードの入力フォームなどに使う.
+選べる Optimizer と Scheduler とその引数 (種類, 既定値, 必須か, 説明, 範囲. 範囲の端を含まない場合は `exclusive_minimum` と `exclusive_maximum` が true) は `describe_optimizers()` と `describe_schedulers()` で取得できる. ダッシュボードの入力フォームなどに使う.
 
 ```python
 from ml_found.training import describe_optimizers

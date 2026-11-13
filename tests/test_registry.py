@@ -7,7 +7,12 @@ import torch
 from torch import Tensor, optim
 
 from ml_found.training.registry import (
-    describe_optimizers, describe_schedulers, refine_kind
+    ParamSpec,
+    describe_optimizers,
+    describe_range,
+    describe_schedulers,
+    is_in_range,
+    refine_kind,
 )
 from test_trainer import make_experiment
 
@@ -229,7 +234,8 @@ def test_refine_kind(kind: str, annotation: Any, expected: str) -> None:
     assert refine_kind(kind, annotation) == expected
 
 
-# 範囲の端を含まない (説明に記載) 引数. 端の値では PyTorch が例外を出す
+# 範囲の端を含まない引数. 端の値では PyTorch が例外を出す
+# 登録簿の exclusive_minimum と exclusive_maximum がこれと一致することも確認
 EXCLUSIVE_BOUNDS = {
     ("LinearLR", "start_factor", "minimum"),
     ("ReduceLROnPlateau", "factor", "maximum"),
@@ -276,6 +282,28 @@ def bound_cases() -> list[tuple[str, str, str, Any]]:
                     )
 
     return cases
+
+
+def test_exclusive_flags() -> None:
+    """
+    登録簿の端を含まない範囲の指定が, 想定の一覧と一致することを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    flagged = {
+        (spec["name"], param["name"], side)
+        for spec in describe_schedulers() + describe_optimizers()
+        for param in spec["params"]
+        for side in ("minimum", "maximum")
+        if param[f"exclusive_{side}"]
+    }
+    assert flagged == EXCLUSIVE_BOUNDS
 
 
 @pytest.mark.parametrize(("name", "param", "side", "value"), bound_cases())
@@ -330,3 +358,84 @@ def test_scheduler_bounds_match_torch(
             run()
     else:
         run()
+
+
+def test_param_values_out_of_range(tmp_path: Path) -> None:
+    """
+    範囲の外の値が, 出力先を作る前にエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    with pytest.raises(ValueError, match=r"lr は 0.0 以上 \(今は -0.1\)"):
+        make_experiment(
+            tmp_path / "negative",
+            "optimizer:\n  name: Adam\n  params:\n    lr: -0.1\n"
+        )
+    assert not (tmp_path / "negative" / "outputs").exists()
+
+    # 端を含まない範囲は, 端の値もエラー
+    with pytest.raises(ValueError, match="factor は 0.0 以上 1.0 より小さい"):
+        make_experiment(
+            tmp_path / "factor",
+            "scheduler:\n  name: ReduceLROnPlateau\n  params:\n"
+            "    factor: 1.0\n"
+        )
+    with pytest.raises(ValueError, match="start_factor は 0.0 より大きく"):
+        make_experiment(
+            tmp_path / "start",
+            "scheduler:\n  name: LinearLR\n  params:\n"
+            "    start_factor: 0\n"
+        )
+
+    # 複数の範囲外はまとめて表示
+    with pytest.raises(ValueError, match="momentum .*weight_decay"):
+        make_experiment(
+            tmp_path / "many",
+            "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+            "    momentum: 1.5\n    weight_decay: -1\n"
+        )
+
+    # 端を含む範囲の端の値, 範囲を持たない引数, 補間の値は通る
+    make_experiment(
+        tmp_path / "ok",
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0\n    momentum: 1.0\n"
+        "    dampening: -5\n"
+        "scheduler:\n  name: ReduceLROnPlateau\n  params:\n"
+        "    factor: 0.0\n    patience: ${trainer.epochs}\n"
+    )
+
+
+def test_is_in_range() -> None:
+    """
+    範囲の判定と説明の文を確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    spec = ParamSpec(
+        name="x", kind="float", default=0.5, required=False, advanced=False,
+        minimum=0.0, maximum=1.0, exclusive_minimum=True
+    )
+    assert not is_in_range(spec, 0.0)
+    assert is_in_range(spec, 1e-9)
+    assert is_in_range(spec, 1.0)
+    assert not is_in_range(spec, 1.0001)
+    assert not is_in_range(spec, float("nan"))
+    assert describe_range(spec) == "0.0 より大きく 1.0 以下"
+
+    unbounded = ParamSpec(
+        name="y", kind="float", default=0.0, required=False, advanced=False
+    )
+    assert is_in_range(unbounded, -1e9)

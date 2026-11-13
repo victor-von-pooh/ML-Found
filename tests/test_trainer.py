@@ -1670,3 +1670,25 @@ def test_stop_within_epoch_cases(tmp_path: Path) -> None:
     trainer, _, status = run("last", "trainer:\n  epochs: 3\n", "valid", 4)
     assert trainer.history.get("epoch") == [1]
     assert (trainer.experiment.run_dir / "last.pt").exists()
+
+
+def test_warn_without_best_weights(tmp_path: Path) -> None:
+    """
+    last.pt にも best.pt にもベストモデルの重みを残さない設定で, 出力先を作る前に
+    警告が出ることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    with pytest.warns(UserWarning, match="ベストモデルの重みに戻せません"):
+        make_experiment(
+            tmp_path,
+            "trainer:\n  checkpoint:\n    last_with_best: false\n"
+            "    save_best: false\n"
+        )

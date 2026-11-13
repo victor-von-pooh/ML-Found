@@ -303,10 +303,76 @@ class Trainer:
                 "step_fn を渡すか step を上書きしてください"
             )
 
-        # 渡された関数で計算
-        outputs = self.step_fn(self.model, batch, phase)
+        # 渡された関数で計算, 検証では評価に使うモデルを使用
+        model = self.model if phase == "train" else self.eval_model()
+        outputs = self.step_fn(model, batch, phase)
 
         return outputs
+
+    def eval_model(self) -> nn.Module:
+        """
+        検証, ベストモデルの判定, final_model.pt に使うモデルを返す関数
+
+        EMA の重みで検証する場合などに継承して上書きする. 返すモデルは
+        self.model と同じ名前の重み (state_dict のキー) を持つ必要がある.
+        step を上書きする場合は, 検証 (phase が valid) でこのモデルを使う
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        model: nn.Module
+            評価に使うモデル, 既定は学習するモデル (self.model) そのもの
+        """
+        # 既定は学習するモデルをそのまま使用
+        model = self.model
+
+        return model
+
+    def check_eval_model(self) -> None:
+        """
+        評価に使うモデルが学習するモデルと同じ名前と形の重みを持つかを
+        確かめる関数
+
+        ベストモデルの重みと学習後の重みを self.model に読み込むため, 学習を
+        始める前に確認
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        # 学習するモデルそのものなら確認不要
+        model = self.eval_model()
+        if model is self.model:
+            return
+
+        # 重みの名前か形が違う場合は, 学習の後で読み込めないのでエラー
+        expected = self.model.state_dict()
+        actual = model.state_dict()
+        if expected.keys() != actual.keys():
+            missing = sorted(expected.keys() - actual.keys())[:5]
+            unexpected = sorted(actual.keys() - expected.keys())[:5]
+            raise ValueError(
+                "eval_model が返すモデルの重みの名前が self.model と違います "
+                f"(足りない: {missing}, 余分: {unexpected})"
+            )
+        for key, value in expected.items():
+            other = actual[key]
+            if (
+                isinstance(value, torch.Tensor)
+                and isinstance(other, torch.Tensor)
+                and value.shape != other.shape
+            ):
+                raise ValueError(
+                    f"eval_model が返すモデルの重み {key} の形が self.model と"
+                    f"違います ({tuple(other.shape)} と {tuple(value.shape)})"
+                )
 
     def on_epoch_start(self, phase: str) -> None:
         """
@@ -565,7 +631,10 @@ class Trainer:
             train/ または valid/ を付けた指標ごとの平均
         """
         # 学習モードと推論モードの切り替えと, 指標の集計の準備
+        # 検証では評価に使うモデルも推論モード
         self.model.train(train)
+        if not train:
+            self.eval_model().eval()
         phase = "train" if train else "valid"
         tracker = MetricTracker()
         self.on_epoch_start(phase)
@@ -1027,7 +1096,10 @@ class Trainer:
             return
 
         # 再開元のエポックがベストモデルなら, そのモデルの重みを使用
-        if state["epoch"] == best_epoch:
+        # ベストモデルの重みを eval_model から取る場合は, 今のモデルと違うので
+        # best.pt から
+        separate = self.checkpoint.separate_best_model
+        if state["epoch"] == best_epoch and not separate:
             self.checkpoint.best_model_state = copy_state_dict(state["model"])
             return
 
@@ -1040,19 +1112,33 @@ class Trainer:
             best = torch.load(
                 best_path, map_location="cpu", weights_only=True, mmap=True
             )
+            # 重みだけの best.pt はベストモデルの重みそのもの, そうでなければ
+            # 今のモデルの重み (eval_model が別の場合は best_model に保存)
+            weights = None
             if best["epoch"] == best_epoch:
-                self.checkpoint.best_model_state = copy_state_dict(
-                    best["model"]
-                )
+                stored = (best.get("checkpoint") or {}).get("best_model")
+                if best.get("weights_only") or not separate:
+                    weights = best["model"]
+                elif stored is not None:
+                    weights = stored
+            if weights is not None:
+                self.checkpoint.best_model_state = copy_state_dict(weights)
                 self.logger.info(
                     f"ベストモデル (エポック {best_epoch}) の重みを "
                     f"{best_path} から戻しました"
                 )
                 return
-            reason = (
-                f"{best_path.name} はエポック {best['epoch']} のもので"
-                "合いません (every_n_epochs で last.pt の後に更新された場合など)"
-            )
+            elif best["epoch"] != best_epoch:
+                reason = (
+                    f"{best_path.name} はエポック {best['epoch']} のもので"
+                    "合いません (every_n_epochs で last.pt の後に更新された"
+                    "場合など)"
+                )
+            else:
+                reason = (
+                    f"{best_path.name} に eval_model のベストモデルの重みが"
+                    "ありません"
+                )
 
         # 見つからない場合は, 学習の後にベストモデルへ戻せないことを通知
         message = (
@@ -1146,6 +1232,13 @@ class Trainer:
                 "同じ値の場合に比べる指標: "
                 f"{self.trainer_cfg.monitor_tiebreak} "
                 f"({self.trainer_cfg.monitor_tiebreak_mode})"
+            )
+
+        # 評価に使うモデルが別の場合は記録
+        if self.eval_model() is not self.model:
+            self.logger.info(
+                "評価に使うモデル: eval_model が返すモデル "
+                f"({type(self.eval_model()).__name__})"
             )
 
         # 更新の手順を記録
@@ -1247,6 +1340,11 @@ class Trainer:
         ):
             self.checkpoint.restore_best(self.model)
             self.final_weights = "best"
+        else:
+            # 評価に使うモデルが別 (EMA など) の場合は, その重みを保存
+            eval_model = self.eval_model()
+            if eval_model is not self.model:
+                self.model.load_state_dict(eval_model.state_dict())
         weights = {
             "best": "ベストモデル", "last": "最後のエポック",
             "partial": "途中で止めたエポックの途中まで"
@@ -1408,6 +1506,16 @@ class Trainer:
             self.trainer_cfg.restore_best and self.trainer_cfg.select_best
             and self.checkpoint.best_model_state is not None
         )
+        # 評価に使うモデルが別の場合は, その途中の更新は戻せないので途中までの重み
+        if not uses_best and self.eval_model() is not self.model:
+            self.partial_weights = True
+            message += (
+                ". 評価に使うモデル (eval_model) の重みは戻せないので, "
+                "final_model.pt は途中までの重みです"
+            )
+            self.logger.warning(message)
+            warnings.warn(message, stacklevel=2)
+            return
         if not uses_best:
             # 学習を始めたエポックなら始めた時点の重み, そうでなければ
             # 前のエポックの last.pt の重みに戻す
@@ -1528,6 +1636,12 @@ class Trainer:
             select_best=self.trainer_cfg.select_best
         )
 
+        # 評価に使うモデルの確認 (失敗も run.json に残るように書き出しの後)
+        self.check_eval_model()
+        self.checkpoint.separate_best_model = (
+            self.eval_model() is not self.model
+        )
+
         # データの量で決まる Scheduler の引数を補って作成 (再開の復元の前)
         # 予定の総ステップ数を求め, 再開しない場合はここで確認
         if self.pending_scheduler:
@@ -1634,7 +1748,9 @@ class Trainer:
                 # ベストモデルと Early Stopping の状態を先に更新
                 # (ベストモデルを選ばない設定では, 改善を判定しない)
                 improved = self.trainer_cfg.select_best and (
-                    self.checkpoint.update(value, epoch, self.model, tiebreak)
+                    self.checkpoint.update(
+                        value, epoch, self.eval_model(), tiebreak
+                    )
                 )
                 should_stop = (
                     self.early_stopping is not None

@@ -6,7 +6,7 @@ from typing import Callable
 from omegaconf import OmegaConf
 import pytest
 import torch
-from torch import nn
+from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
 
 from ml_found.config.loader import load_config
@@ -1965,3 +1965,374 @@ def test_select_best_resume(tmp_path: Path) -> None:
             "trainer:\n  select_best: false\n"
             "  monitor_tiebreak: valid/loss\n"
         )
+
+
+class EMATrainer(Trainer):
+    def __init__(self, model: nn.Module, experiment: Experiment):
+        # 親クラスのコンストラクタを呼び出す
+        super(EMATrainer, self).__init__(model, experiment, None)
+
+        # 重みの指数移動平均を持つモデルと, 確認用の記録を保存
+        self.ema = optim.swa_utils.AveragedModel(
+            self.model,
+            multi_avg_fn=optim.swa_utils.get_ema_multi_avg_fn(0.5)
+        )
+        self.valid_models = []
+        self.ema_states = {}
+
+    def step(self, batch: tuple, phase: str) -> dict:
+        """
+        検証に渡されたモデルを記録して平均二乗誤差を求める関数
+
+        Parameters
+        ----------
+        batch: tuple
+            x と y
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            平均二乗誤差と平均絶対誤差
+        """
+        # 検証では評価に使うモデルで予測し, 使ったモデルを記録
+        model = self.model if phase == "train" else self.eval_model()
+        if phase == "valid":
+            self.valid_models.append(model)
+        outputs = regression_step(model, batch, phase)
+
+        return outputs
+
+    def update_parameters(self, loss: torch.Tensor) -> None:
+        """
+        パラメータを更新した後に EMA の重みも更新する関数
+
+        Parameters
+        ----------
+        loss: torch.Tensor
+            1 バッチ分の損失
+
+        Returns
+        ----------
+        None
+        """
+        # 元の手順で更新してから EMA を更新
+        super(EMATrainer, self).update_parameters(loss)
+        self.ema.update_parameters(self.model)
+
+    def on_epoch_end(self, phase: str) -> dict:
+        """
+        検証の後の EMA の重みを記録する関数
+
+        Parameters
+        ----------
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        metrics: dict
+            空の辞書
+        """
+        # 検証の後の EMA の重みを複製して記録
+        if phase == "valid":
+            self.ema_states[self.epoch] = {
+                key: value.detach().clone()
+                for key, value in self.ema.module.state_dict().items()
+            }
+        metrics = {}
+
+        return metrics
+
+    def extra_state_dict(self) -> dict:
+        """
+        チェックポイントに EMA の状態を加える関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        state: dict
+            EMA の重みと更新回数
+        """
+        # EMA の状態を受け渡し
+        state = {"ema": self.ema.state_dict()}
+
+        return state
+
+    def load_extra_state_dict(self, state: dict) -> None:
+        """
+        チェックポイントから EMA の状態を戻す関数
+
+        Parameters
+        ----------
+        state: dict
+            extra_state_dict で加えた状態
+
+        Returns
+        ----------
+        None
+        """
+        # EMA の状態の復元
+        self.ema.load_state_dict(state["ema"])
+
+    def eval_model(self) -> nn.Module:
+        """
+        EMA の重みを持つモデルを返す関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        model: nn.Module
+            EMA の重みを持つモデル
+        """
+        # EMA の中のモデルを使用
+        model = self.ema.module
+
+        return model
+
+
+class WrongTrainer(Trainer):
+    def __init__(self, model: nn.Module, experiment: Experiment, out: int):
+        # 親クラスのコンストラクタを呼び出す
+        super(WrongTrainer, self).__init__(model, experiment, regression_step)
+
+        # 評価に使う, 重みの名前か形が違うモデルを保存
+        self.other = nn.Linear(1, out, bias=out == 1)
+
+    def eval_model(self) -> nn.Module:
+        """
+        重みの名前か形が違うモデルを返す関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        model: nn.Module
+            self.model と重みの違うモデル
+        """
+        # 用意したモデルを使用
+        model = self.other
+
+        return model
+
+
+def same_weights(left: dict, right: dict) -> bool:
+    """
+    2 つの重みが全て等しいかを確かめる関数
+
+    Parameters
+    ----------
+    left: dict
+        比べる重み
+    right: dict
+        比べる重み
+
+    Returns
+    ----------
+    same: bool
+        名前と値が全て等しいかどうか
+    """
+    # 名前と値を全て比較
+    same = left.keys() == right.keys() and all(
+        torch.equal(left[key], right[key]) for key in left
+    )
+
+    return same
+
+
+def test_eval_model(tmp_path: Path) -> None:
+    """
+    eval_model を上書きすると, 検証, ベストモデル, best.pt, final_model.pt
+    にそのモデルが使われることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # ベストモデルに戻す場合は, ベストのエポックの EMA の重みが残る
+    text = "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+    experiment = make_experiment(
+        tmp_path / "best", text + "trainer:\n  epochs: 3\n"
+    )
+    trainer = EMATrainer(nn.Linear(1, 1), experiment)
+    trainer.fit(make_loader(), make_loader())
+    assert all(model is trainer.ema.module for model in trainer.valid_models)
+    assert trainer.ema.module.training is False
+    expected = trainer.ema_states[trainer.checkpoint.best_epoch]
+    run_dir = experiment.run_dir
+    final = torch.load(
+        run_dir / "final_model.pt", map_location="cpu", weights_only=True
+    )
+    assert same_weights(final, expected)
+    log = (run_dir / "train.log").read_text(encoding="utf-8")
+    assert "評価に使うモデル" in log
+
+    # best.pt は学習中の重みと, EMA のベストモデルの重みの両方を持つ
+    best = load_checkpoint(str(run_dir / "best.pt"), torch.device("cpu"))
+    assert same_weights(best["checkpoint"]["best_model"], expected)
+    assert not same_weights(best["model"], expected)
+
+    # 重みだけの best.pt は EMA のベストモデルの重み
+    experiment = make_experiment(
+        tmp_path / "weights",
+        text + "trainer:\n  epochs: 3\n  checkpoint:\n"
+        "    best_weights_only: true\n"
+    )
+    trainer = EMATrainer(nn.Linear(1, 1), experiment)
+    trainer.fit(make_loader(), make_loader())
+    expected = trainer.ema_states[trainer.checkpoint.best_epoch]
+    best = torch.load(
+        experiment.run_dir / "best.pt", map_location="cpu", weights_only=True
+    )
+    assert same_weights(best["model"], expected)
+
+    # ベストモデルを選ばない場合は, 最後の EMA の重みが残り self.model に入る
+    experiment = make_experiment(
+        tmp_path / "last",
+        text + "trainer:\n  epochs: 3\n  select_best: false\n"
+    )
+    trainer = EMATrainer(nn.Linear(1, 1), experiment)
+    trainer.fit(make_loader(), make_loader())
+    expected = trainer.ema_states[3]
+    final = torch.load(
+        experiment.run_dir / "final_model.pt", map_location="cpu",
+        weights_only=True
+    )
+    assert same_weights(final, expected)
+    assert same_weights(trainer.model.state_dict(), expected)
+    last = torch.load(
+        experiment.run_dir / "last.pt", map_location="cpu", weights_only=True
+    )
+    assert not same_weights(last["model"], expected)
+
+    # 重みの名前か形が違うモデルは学習を始める前にエラー
+    for out, message in [(2, "名前"), (1, "形")]:
+        experiment = make_experiment(tmp_path / f"wrong{out}", text)
+        trainer = WrongTrainer(nn.Linear(1, 1), experiment, out)
+        if out == 1:
+            trainer.other.weight = nn.Parameter(torch.zeros(2, 1))
+        with pytest.raises(ValueError, match=message):
+            trainer.fit(make_loader())
+        assert trainer.history.records == []
+        status = json.loads(
+            (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+        )
+        assert status["status"] == "failed"
+
+
+@pytest.mark.parametrize("weights_only", [False, True])
+def test_eval_model_resume(tmp_path: Path, weights_only: bool) -> None:
+    """
+    eval_model を上書きし, last.pt にベストモデルの重みを入れずに再開しても,
+    EMA のベストモデルの重みに戻ることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    weights_only: bool
+        best.pt を重みだけにするかどうか
+
+    Returns
+    ----------
+    None
+    """
+    # 2 エポック学習して, ベストのエポックの EMA の重みを記録
+    text = (
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "trainer:\n  epochs: 2\n  checkpoint:\n"
+        "    last_with_best: false\n"
+        f"    best_weights_only: {str(weights_only).lower()}\n"
+    )
+    experiment = make_experiment(tmp_path / "first", text)
+    trainer = EMATrainer(nn.Linear(1, 1), experiment)
+    trainer.fit(make_loader(), make_loader())
+    expected = trainer.ema_states[trainer.checkpoint.best_epoch]
+
+    # 同じエポック数で再開すると, 学習せずに EMA のベストモデルの重みが残る
+    last_path = experiment.run_dir / "last.pt"
+    experiment = make_experiment(
+        tmp_path / "resume", text + f"  resume_from: {last_path}\n"
+    )
+    trainer = EMATrainer(nn.Linear(1, 1), experiment)
+    trainer.fit(make_loader(), make_loader())
+    final = torch.load(
+        experiment.run_dir / "final_model.pt", map_location="cpu",
+        weights_only=True
+    )
+    assert same_weights(final, expected)
+    status = json.loads(
+        (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+    )
+    assert status["final_weights"] == "best"
+
+
+def test_eval_model_stop_within_epoch(tmp_path: Path) -> None:
+    """
+    eval_model が別のモデルの場合に, エポックの途中で止めると途中までの
+    重みになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 2 エポック目の学習の途中で止める (ベストモデルを選ばない設定)
+    experiment = make_experiment(
+        tmp_path,
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "trainer:\n  epochs: 3\n  select_best: false\n"
+    )
+    trainer = EMATrainer(nn.Linear(1, 1), experiment)
+    stopper = stop_at(experiment, "train", 6)
+
+    def step(batch: tuple, phase: str) -> dict:
+        """
+        決めた呼び出しで STOP を置いて平均二乗誤差を返す関数
+
+        Parameters
+        ----------
+        batch: tuple
+            x と y
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            平均二乗誤差
+        """
+        # 検証では評価に使うモデルで計算
+        model = trainer.model if phase == "train" else trainer.eval_model()
+        outputs = stopper(model, batch, phase)
+
+        return outputs
+
+    # 中断の要求を毎回確かめるようにして学習
+    trainer.step = step
+    trainer.run_status.progress_interval = 0.0
+    with pytest.warns(UserWarning, match="eval_model"):
+        trainer.fit(make_loader(), make_loader())
+    status = json.loads(
+        (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+    )
+    assert status["final_weights"] == "partial"
+    assert len(trainer.history.records) == 1

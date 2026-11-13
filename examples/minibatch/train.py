@@ -8,7 +8,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from ml_found import Trainer, load_config, start_experiment
+from ml_found import Trainer, load_project_config, start_experiment
 
 
 class WineClassifier(nn.Module):
@@ -126,13 +126,11 @@ def step(model: nn.Module, batch: tuple, phase: str) -> dict:
     return outputs
 
 
-# プロジェクトのディレクトリと config ファイルのパスの決定
+# プロジェクトのディレクトリの決定
 project_dir = Path(__file__).resolve().parent
-default_path = project_dir / "configs/default/train.yaml"
-experiment_path = project_dir / "configs/experiment/train.yaml"
 
-# config を読み込んで実験を開始
-cfg, diff = load_config(str(default_path), str(experiment_path))
+# コマンドライン引数 (--experiment と「項目=値」) から config を読み込んで実験を開始
+cfg, diff = load_project_config(str(project_dir))
 experiment = start_experiment(cfg, diff, str(project_dir))
 
 # データとモデルを用意

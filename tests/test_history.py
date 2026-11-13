@@ -180,8 +180,17 @@ def test_history_state_dict_columns() -> None:
     assert isinstance(restored.records[0]["epoch"], int)
 
     # 保存した後に記録が増えても, 前に取り出した状態は変わらない
-    restored.append({"epoch": 4, "train/loss": 0.2})
+    history.append({"epoch": 4, "train/loss": 0.2})
     assert len(state["values"][0]) == 3
+    assert len(history.state_dict()["values"][0]) == 4
+
+    # 整数の列は整数に戻る
+    counts = History()
+    counts.append({"epoch": 1, "n": 7, "acc": 0.5})
+    counts_restored = History()
+    counts_restored.load_state_dict(counts.state_dict())
+    assert counts_restored.records == [{"epoch": 1, "n": 7, "acc": 0.5}]
+    assert isinstance(counts_restored.records[0]["n"], int)
 
     # 以前の形 (辞書のリスト) も読める
     old = History()

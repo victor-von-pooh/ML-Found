@@ -134,6 +134,8 @@ class History:
         self.table_columns: list[str] = []
         self.table_values: list[array] = []
         self.table_mask: list[array] = []
+        # 列の値が全て整数か (読み込むときに整数に戻すため)
+        self.table_integer: list[bool] = []
 
     def append(self, record: dict) -> None:
         """
@@ -232,6 +234,7 @@ class History:
             self.table_columns = []
             self.table_values = []
             self.table_mask = []
+            self.table_integer = []
 
         # 増えた記録を 1 行ずつ足し, 新しい列は前の行を記録なしで補う
         for record in self.records[self.table_rows:]:
@@ -242,12 +245,17 @@ class History:
                         array("d", [math.nan] * self.table_rows)
                     )
                     self.table_mask.append(array("b", [0] * self.table_rows))
+                    self.table_integer.append(True)
             for j, key in enumerate(self.table_columns):
                 value = record.get(key)
                 self.table_values[j].append(
                     math.nan if value is None else float(value)
                 )
                 self.table_mask[j].append(0 if value is None else 1)
+                if value is not None and (
+                    isinstance(value, bool) or not isinstance(value, int)
+                ):
+                    self.table_integer[j] = False
             self.table_rows += 1
 
     def state_dict(self) -> dict:
@@ -261,7 +269,8 @@ class History:
         Returns
         ----------
         state: dict
-            エポックごとの記録
+            列の名前 (columns), 列ごとの値 (values, float64) と値があるか
+            (mask), 列の値が全て整数か (integer)
         """
         # 記録が長くなっても保存が軽いように, 列ごとの数の配列にして受け渡し
         # (辞書のリストのままだと, 毎回の保存で全ての記録を pickle するため)
@@ -272,7 +281,8 @@ class History:
             "values": [to_tensor(column, torch.float64)
                        for column in self.table_values],
             "mask": [to_tensor(column, torch.int8)
-                     for column in self.table_mask]
+                     for column in self.table_mask],
+            "integer": list(self.table_integer)
         }
 
         return state
@@ -295,8 +305,11 @@ class History:
             self.records = [dict(record) for record in state["records"]]
             return
 
-        # 列ごとの数の配列から, エポックごとの辞書に戻す (epoch は整数)
+        # 列ごとの数の配列から, エポックごとの辞書に戻す (整数の列は整数)
         columns = list(state["columns"])
+        integer = list(
+            state.get("integer", [key == "epoch" for key in columns])
+        )
         values = [column.tolist() for column in state["values"]]
         mask = [column.tolist() for column in state["mask"]]
         n_rows = len(values[0]) if values else 0
@@ -306,7 +319,7 @@ class History:
             for j, key in enumerate(columns):
                 if mask[j][i]:
                     value = values[j][i]
-                    record[key] = int(value) if key == "epoch" else value
+                    record[key] = int(value) if integer[j] else value
             records.append(record)
         self.records = records
 

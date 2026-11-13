@@ -73,7 +73,10 @@ PARAM_NOTES: dict[str, dict[str, Any]] = {
     "gamma": {"description": "学習率に掛ける倍率", "minimum": 0.0},
     "step_size": {"description": "学習率を下げる間隔 (エポック)", "minimum": 1},
     "milestones": {"description": "学習率を下げるエポックの一覧"},
-    "T_max": {"description": "学習率を下げきるまでのエポック数", "minimum": 1},
+    "T_max": {
+        "description": "学習率を下げきるまでの回数 (interval が step ならステップ数)",
+        "minimum": 1
+    },
     "eta_min": {"description": "学習率の下限"},
     "factor": {"description": "学習率に掛ける倍率", "minimum": 0.0},
     "patience": {"description": "改善しないのを待つエポック数", "minimum": 0},
@@ -344,8 +347,9 @@ def describe_params(cls: type) -> list[ParamSpec]:
         )
         description = notes.get("description", "")
         if param.name in auto_total_params(cls):
-            description += (
-                ". auto と書くと, 学習を始めるときに学習全体のステップ数で補う"
+            auto_note = "auto と書くと, 学習を始めるときに学習全体のステップ数で補う"
+            description = (
+                f"{description}. {auto_note}" if description else auto_note
             )
         specs.append(
             ParamSpec(

@@ -278,6 +278,7 @@ class Trainer:
         # データの量で決まる引数 (OneCycleLR の steps_per_epoch など) が
         # 無い場合は, 学習用データが分かる fit の初めまで作成を保留
         self.scheduler_from_config = scheduler is None
+        self.auto_values: dict[str, int] = {}
         self.pending_scheduler = scheduler is None and bool(
             missing_data_size_params(experiment.cfg.scheduler)
         )
@@ -1112,6 +1113,7 @@ class Trainer:
             if diffs and self.trainer_cfg.resume_scheduler == "config":
                 self.replay_scheduler(state["scheduler"], diffs)
             else:
+                self.check_auto_params()
                 self.warn_scheduler_params(diffs)
 
             # 再開元の総ステップ数の確認 (ファイルを写す前)
@@ -1452,6 +1454,35 @@ class Trainer:
 
         return diffs
 
+    def check_auto_params(self) -> None:
+        """
+        auto で補った Scheduler の引数が, 再開元の値と同じかを確かめる関数
+
+        再開元の値のまま学習すると, config.yaml と train.log に残る補った
+        値と実際の値が食い違うのでエラー
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        # 補った値と, 再開元から戻した Scheduler の値を比較
+        diffs = [
+            f"{name} (再開元 {getattr(self.scheduler, name)}, 補った値 "
+            f"{value})"
+            for name, value in self.auto_values.items()
+            if getattr(self.scheduler, name, value) != value
+        ]
+        if diffs:
+            raise ValueError(
+                "auto で補った Scheduler の引数が再開元と違います: "
+                f"{', '.join(diffs)}. エポック数などを変えて再開する場合は "
+                "trainer.resume_scheduler: config にしてください"
+            )
+
     def warn_scheduler_params(self, diffs: list[str]) -> None:
         """
         再開元の Scheduler の引数が config と違う場合に警告する関数
@@ -1721,6 +1752,7 @@ class Trainer:
 
         for name in auto:
             values[name] = self.trainer_cfg.epochs * values[name]
+        self.auto_values = {name: values[name] for name in auto}
 
         # config に書き込んで作成し, 補った値が残るように config.yaml も更新
         for name, value in values.items():

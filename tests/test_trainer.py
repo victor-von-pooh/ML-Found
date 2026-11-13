@@ -2895,6 +2895,25 @@ def test_auto_total_params(tmp_path: Path) -> None:
     trainer.fit(make_loader())
     assert trainer.scheduler.total_iters == 4
 
+    # エポック数を増やして再開すると, 再開元の値のままではエラー,
+    # config の値で作り直す設定なら補い直した値
+    first = make_experiment(
+        tmp_path / "first", text.replace("epochs: 3", "epochs: 2")
+    )
+    Trainer(nn.Linear(1, 1), first, regression_step).fit(make_loader())
+    resume = f"  resume_from: {first.run_dir / 'last.pt'}\n"
+    kept = make_experiment(tmp_path / "kept", text + resume)
+    with pytest.raises(ValueError, match="resume_scheduler: config"):
+        Trainer(nn.Linear(1, 1), kept, regression_step).fit(make_loader())
+    replayed = make_experiment(
+        tmp_path / "replayed",
+        text + resume + "  resume_scheduler: config\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), replayed, regression_step)
+    trainer.fit(make_loader())
+    assert trainer.scheduler.T_max == 12
+    assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(0.0)
+
     # 登録簿の説明にも auto と書けることを表示
     specs = {spec["name"]: spec for spec in describe_schedulers()}
     t_max = next(
@@ -2902,6 +2921,11 @@ def test_auto_total_params(tmp_path: Path) -> None:
         if param["name"] == "T_max"
     )
     assert "auto" in t_max["description"]
+    total_iters = next(
+        param for param in specs["LinearLR"]["params"]
+        if param["name"] == "total_iters"
+    )
+    assert total_iters["description"].startswith("auto と書くと")
 
     # auto と書けない引数や Scheduler ではエラー
     with pytest.raises(ValueError):

@@ -294,8 +294,11 @@ def auto_total_params(scheduler_cls: type) -> tuple[str, ...]:
     names: tuple[str, ...]
         auto と書ける引数の名前, 無ければ空
     """
-    # torch のクラスだけが対象 (自作のクラスは引数の意味が違う可能性あり)
-    names = AUTO_TOTAL_PARAMS.get(scheduler_cls, ())
+    # torch のクラスとそれを継承したクラスが対象 (OneCycleLR の補いと同じ)
+    names: tuple[str, ...] = ()
+    for base, params in AUTO_TOTAL_PARAMS.items():
+        if isinstance(scheduler_cls, type) and issubclass(scheduler_cls, base):
+            names = params
 
     return names
 

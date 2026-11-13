@@ -42,6 +42,6 @@ Python のコードからは, `Trainer.add_callback` で登録した関数がエ
 
 - 複数の Optimizer を名前付きで config に書き, 損失ごとに対応させて更新, 保存, 再開する仕組み (GAN など). 今は `manual_optimization` と `extra_state_dict` で利用者が書く
 - チェックポイントに記録の全て (`history` と, step ごとの Scheduler では更新ごとの学習率 `lr_steps`) を毎回入れず, `history.csv` と `lr_steps.csv` に追記する形にする. 1 エポックが短く毎エポック改善する学習 (フルバッチなど) では, `best.pt` を改善のたびに記録ごと保存する時間が残る (`best_weights_only: true` なら重みだけ)
-- エポックの途中で止めた場合に, 捨てたエポックの更新回数, Optimizer, Scheduler, 乱数の状態をメモリの上でも戻す (同じ `Trainer` で `fit` を呼び直す場合のため)
+- 同じ `Trainer` で `fit` を呼び直す使い方を決める (記録を続けるか, ベストモデルと Early Stopping の状態, `resume_from` の扱い). 今は記録が重なる
 - warmup のように学習の一部の長さを表す Scheduler の引数を, データの量から補う仕組み (学習全体の長さは `auto` で補える). 複数の Scheduler を組み合わせる `SequentialLR` への対応も必要
 

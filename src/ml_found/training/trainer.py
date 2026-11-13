@@ -1,3 +1,4 @@
+import copy
 import math
 from pathlib import Path
 import shutil
@@ -63,6 +64,34 @@ def loader_generators(loader: Iterable) -> list[torch.Generator]:
             generators.append(generator)
 
     return generators
+
+
+def clone_to_cpu(value: Any) -> Any:
+    """
+    テンソルを含む状態を, cpu の写しにする関数
+
+    Parameters
+    ----------
+    value: Any
+        テンソル, またはテンソルを含む辞書, リスト, タプル
+
+    Returns
+    ----------
+    cloned: Any
+        テンソルを cpu に写した同じ形のもの, それ以外の値は深い写し
+    """
+    # 入れ物は中身を順に写し, テンソルは cpu に写して他は深い写し
+    if isinstance(value, torch.Tensor):
+        cloned = value.detach().cpu().clone()
+    elif isinstance(value, dict):
+        cloned = {key: clone_to_cpu(item) for key, item in value.items()}
+    elif isinstance(value, (list, tuple)):
+        items = [clone_to_cpu(item) for item in value]
+        cloned = items if isinstance(value, list) else tuple(items)
+    else:
+        cloned = copy.deepcopy(value)
+
+    return cloned
 
 
 class StopWithinEpoch(Exception):
@@ -363,7 +392,8 @@ class Trainer:
 
         # エポックの途中で止めたときに戻す, 学習を始めた時点の重みと,
         # 戻せずに途中までの重みが残ったかどうかの印を用意
-        self.start_weights: Optional[dict] = None
+        self.start_state: Optional[dict] = None
+        self.epoch_start_step = 0
         self.partial_weights = False
 
     def step(self, batch: Any, phase: str) -> dict:
@@ -1837,13 +1867,68 @@ class Trainer:
             f"{cfg.scheduler.name} の引数を学習用データから補いました: {filled}"
         )
 
+    def training_state(self) -> dict:
+        """
+        エポックの途中で止めたときに戻すための, 学習の状態の写しを作る関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        state: dict
+            モデル, Optimizer, Scheduler, 更新回数, 乱数, 継承したクラスが
+            加えた状態 (テンソルは cpu の写し)
+        """
+        # チェックポイントと同じ名前で, 戻すのに必要なものだけを写す
+        state = clone_to_cpu({
+            "model": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "scheduler": (
+                None if self.scheduler is None
+                else self.scheduler.state_dict()
+            ),
+            "global_step": self.global_step,
+            "rng": get_rng_state(),
+            "extra": self.extra_state_dict()
+        })
+
+        return state
+
+    def load_training_state(self, state: dict) -> None:
+        """
+        training_state か last.pt の状態に, 学習の状態を戻す関数
+
+        Parameters
+        ----------
+        state: dict
+            戻す状態 (model, optimizer, scheduler, global_step, rng, extra)
+
+        Returns
+        ----------
+        None
+        """
+        # モデル, Optimizer, Scheduler, 更新回数の復元
+        self.model.load_state_dict(state["model"])
+        self.optimizer.load_state_dict(state["optimizer"])
+        if self.scheduler is not None and state.get("scheduler") is not None:
+            self.scheduler.load_state_dict(state["scheduler"])
+        self.global_step = int(state.get("global_step", self.global_step))
+
+        # 乱数と, 継承したクラスが加えた状態 (EMA など) の復元
+        for message in set_rng_state(state["rng"]):
+            self.logger.warning(message)
+        self.load_extra_state_dict(state.get("extra", {}))
+
     def discard_epoch(self, epoch: int) -> None:
         """
         途中で止めたエポックを捨て, 最後に終えたエポックの状態に戻す関数
 
-        記録 (history) にはまだ加えていないので, 更新ごとの学習率と, 最後の
-        重みを残す設定の場合のモデルの重みを戻す. last.pt は書かないので,
-        再開は最後に保存した last.pt から
+        記録 (history) にはまだ加えていないので, 更新ごとの学習率と,
+        モデル, Optimizer, Scheduler, 更新回数, 乱数, 継承したクラスが加えた
+        状態を戻す (同じ Trainer で fit を呼び直せるように). last.pt は
+        書かないので, 再開は最後に保存した last.pt から
 
         Parameters
         ----------
@@ -1859,48 +1944,67 @@ class Trainer:
         self.lr_steps.drop_from_epoch(epoch)
         message = f"中断の要求でエポック {epoch} の途中で学習を止めました"
 
-        # ベストモデルに戻す場合は, 学習の後にベストモデルの重みを使うので不要
-        uses_best = (
-            self.trainer_cfg.restore_best and self.trainer_cfg.select_best
-            and self.checkpoint.best_model_state is not None
-        )
-        # 評価に使うモデルが別の場合は, その途中の更新は戻せないので途中までの重み
-        if not uses_best and self.eval_model() is not self.model:
-            self.partial_weights = True
-            message += (
-                ". 評価に使うモデル (eval_model) の重みは戻せないので, "
-                "final_model.pt は途中までの重みです"
+        # 学習を始めたエポックなら始めた時点の状態, そうでなければ前のエポックの
+        # last.pt の状態に戻す
+        last_path = self.experiment.run_dir / "last.pt"
+        source = None
+        if epoch == self.start_epoch and self.start_state is not None:
+            source = self.start_state
+            message += ". 状態は学習を始めた時点のものに戻しました"
+        elif last_path.exists():
+            last = torch.load(
+                last_path, map_location="cpu", weights_only=True, mmap=True
             )
-            self.logger.warning(message)
-            warnings.warn(message, stacklevel=2)
-            return
-        if not uses_best:
-            # 学習を始めたエポックなら始めた時点の重み, そうでなければ
-            # 前のエポックの last.pt の重みに戻す
-            last_path = self.experiment.run_dir / "last.pt"
-            last = None
-            if epoch != self.start_epoch and last_path.exists():
-                last = torch.load(
-                    last_path, map_location="cpu", weights_only=True,
-                    mmap=True
-                )
-            if epoch == self.start_epoch and self.start_weights is not None:
-                self.model.load_state_dict(self.start_weights)
-                message += ". 重みは学習を始めた時点のものに戻しました"
-            elif last is not None and last.get("epoch") == epoch - 1:
-                self.model.load_state_dict(last["model"])
-                message += f". 重みはエポック {epoch - 1} のものに戻しました"
-            else:
+            # この fit で書いた前のエポックのものか, 更新回数でも確認
+            # (前の fit が残した同じエポックの last.pt を除外)
+            if (
+                last.get("epoch") == epoch - 1
+                and last.get("global_step") == self.epoch_start_step
+            ):
+                source = last
+                message += f". 状態はエポック {epoch - 1} のものに戻しました"
+        if source is not None:
+            # 評価に使うモデルが別の場合は, 戻したかを重みの変化で判定
+            separate = self.eval_model() is not self.model
+            before = (
+                clone_to_cpu(self.eval_model().state_dict()) if separate
+                else None
+            )
+            self.load_training_state(source)
+
+            # 評価に使うモデルの状態を extra_state_dict で保存していない場合は,
+            # そのモデルの途中の更新は戻せないので途中までの重み
+            unchanged = before is not None and all(
+                torch.equal(before[key], value.detach().cpu())
+                for key, value in self.eval_model().state_dict().items()
+                if isinstance(value, torch.Tensor)
+            )
+            if unchanged:
                 self.partial_weights = True
                 message += (
-                    f". エポック {epoch - 1} の last.pt が無い (every_n_epochs"
-                    " で保存しなかったなど) ので, final_model.pt は途中までの"
-                    "重みです"
+                    ". 評価に使うモデル (eval_model) の状態は extra_state_dict "
+                    "に無いので戻せず, final_model.pt は途中までの重みです"
                 )
                 self.logger.warning(message)
                 warnings.warn(message, stacklevel=2)
                 return
-        self.logger.info(message)
+            self.logger.info(message)
+            return
+
+        # 戻せない場合は, ベストモデルに戻す設定でなければ途中までの重み
+        uses_best = (
+            self.trainer_cfg.restore_best and self.trainer_cfg.select_best
+            and self.checkpoint.best_model_state is not None
+        )
+        message += (
+            f". エポック {epoch - 1} の last.pt が無い (every_n_epochs で保存し"
+            "なかったなど) ので, 学習の状態は途中までのものです"
+        )
+        if not uses_best:
+            self.partial_weights = True
+            message += " (final_model.pt も途中までの重み)"
+        self.logger.warning(message)
+        warnings.warn(message, stacklevel=2)
 
     def plan_total_steps(self, train_loader: Iterable) -> None:
         """
@@ -2050,15 +2154,11 @@ class Trainer:
         # 学習の設定を記録
         self.log_settings(monitor)
 
-        # エポックの途中で止めたときに戻せるように, 始めた時点の重みを cpu に退避
+        # エポックの途中で止めたときに戻せるように, 始めた時点の状態を cpu に
+        # 退避 (以降のエポックでは last.pt から戻す)
         self.partial_weights = False
-        self.start_weights = {
-            key: (
-                value.detach().cpu().clone()
-                if isinstance(value, torch.Tensor) else value
-            )
-            for key, value in self.model.state_dict().items()
-        }
+        self.start_state = self.training_state()
+        self.epoch_start_step = self.global_step
 
         # エポックごとに学習
         # 止めたエポックも数えられるように, 進捗バーは手動で更新
@@ -2077,6 +2177,7 @@ class Trainer:
                 # エポックの途中で止める要求があれば, このエポックを捨てて終了
                 record = {"epoch": epoch}
                 self.epoch_extra = {}
+                self.epoch_start_step = self.global_step
                 try:
                     record.update(self.run_epoch(train_loader, train=True))
                     if self.trainer_cfg.eval_train:

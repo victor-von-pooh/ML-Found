@@ -9,7 +9,8 @@ from omegaconf import DictConfig, ListConfig
 from torch import optim
 
 from ml_found.training.optim import (
-    auto_total_params, resolve_optimizer_class, resolve_scheduler_class
+    CLOSURE_OPTIMIZERS, auto_total_params, resolve_optimizer_class,
+    resolve_scheduler_class
 )
 
 # 学習の結果ではなく実装の都合で使う引数 (画面では詳細設定として扱う)
@@ -177,6 +178,8 @@ class ClassSpec:
     params: list[ParamSpec] = field(default_factory=list)
     supported: bool = True
     note: str = ""
+    # step に損失を計算し直す closure が必要か (LBFGS など, ML-Found が渡す)
+    requires_closure: bool = False
 
 
 def to_plain(value: Any) -> tuple[str, Any]:
@@ -409,7 +412,10 @@ def describe_optimizers() -> list[dict[str, Any]]:
             name=name, description=OPTIMIZER_NOTES.get(name, ""),
             params=describe_params(getattr(optim, name)),
             supported=name not in UNSUPPORTED,
-            note=UNSUPPORTED.get(name, "")
+            note=UNSUPPORTED.get(name, ""),
+            requires_closure=issubclass(
+                getattr(optim, name), CLOSURE_OPTIMIZERS
+            )
         )
         specs.append(asdict(spec))
 

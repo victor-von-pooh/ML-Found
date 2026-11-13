@@ -12,6 +12,7 @@ from ml_found.training.callbacks import (
     is_improved_with_tiebreak, load_checkpoint
 )
 from ml_found.training.optim import requires_closure
+from ml_found.training.registry import describe_optimizers
 from ml_found.training.trainer import Trainer
 from ml_found.utils.batch import get_batch_size
 from test_trainer import make_experiment, make_loader, regression_step
@@ -244,6 +245,19 @@ def test_lbfgs_closure(tmp_path: Path) -> None:
     assert history.get("train/loss")[-1] < 1e-6
     adam = torch.optim.Adam([nn.Parameter(torch.ones(1))])
     assert not requires_closure(adam)
+
+    # 自作のクラスは, closure に既定値があってもクラスの属性で宣言できる
+    class DeclaredOptimizer(torch.optim.SGD):
+        # closure が必要と宣言した Optimizer
+        requires_closure = True
+
+    declared = DeclaredOptimizer([nn.Parameter(torch.ones(1))], lr=0.1)
+    assert requires_closure(declared)
+
+    # 登録簿の仕様にも closure が必要かを持つ
+    specs = {spec["name"]: spec for spec in describe_optimizers()}
+    assert specs["LBFGS"]["requires_closure"] is True
+    assert specs["Adam"]["requires_closure"] is False
 
 
 class ManualTrainer(Trainer):

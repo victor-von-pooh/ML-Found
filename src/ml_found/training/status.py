@@ -14,6 +14,9 @@ FORMAT_VERSION = 1
 # 学習を止めてほしい場合に置くファイルの名前
 STOP_FILE = "STOP"
 
+# STOP のファイルにこの文字を書くと, エポックの途中でも止める
+STOP_NOW = "now"
+
 
 def now_iso() -> str:
     """
@@ -81,6 +84,9 @@ class RunStatus:
         self.data: dict[str, Any] = {}
         self.last_progress = 0.0
         self.started = time.monotonic()
+
+        # 最後にエポックの途中の中断の要求を確かめた時刻を用意
+        self.last_stop_check = 0.0
 
         # 書き込みの失敗を 1 回だけ警告するための印を用意
         self.warned = False
@@ -265,5 +271,34 @@ class RunStatus:
             実験のディレクトリに STOP のファイルがあるかどうか
         """
         requested = (self.run_dir / STOP_FILE).exists()
+
+        return requested
+
+    def stop_now_requested(self) -> bool:
+        """
+        エポックの途中でも止めてほしいという要求があるかを確かめる関数
+
+        バッチごとに呼ばれるので, 進み具合と同じ間隔より短い間は確かめない
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        requested: bool
+            STOP のファイルに now と書かれているかどうか
+        """
+        now = time.monotonic()
+        if now - self.last_stop_check < self.progress_interval:
+            return False
+        self.last_stop_check = now
+
+        # 書きかけや読めない場合は, 要求が無いものとして扱い
+        try:
+            text = (self.run_dir / STOP_FILE).read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            return False
+        requested = text.strip().lower() == STOP_NOW
 
         return requested

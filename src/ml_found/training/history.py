@@ -170,7 +170,8 @@ class History:
         """
         # 全項目を列にして 1 エポック 1 行で書き出し
         with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=self.keys())
+            # 記録が無い場合 (1 エポック目の途中で止めた場合) も見出しは書く
+            writer = csv.DictWriter(f, fieldnames=self.keys() or ["epoch"])
             writer.writeheader()
             writer.writerows(self.records)
 
@@ -254,6 +255,26 @@ class LrSteps:
         self.steps.append(step)
         self.epochs.append(epoch)
         self.lrs.append(lr)
+
+    def drop_from_epoch(self, epoch: int) -> None:
+        """
+        指定したエポック以降の記録を捨てる関数
+
+        Parameters
+        ----------
+        epoch: int
+            捨て始めるエポック (途中で止めたエポック)
+
+        Returns
+        ----------
+        None
+        """
+        keep = [
+            index for index, value in enumerate(self.epochs) if value < epoch
+        ]
+        self.steps = array("q", (self.steps[index] for index in keep))
+        self.epochs = array("q", (self.epochs[index] for index in keep))
+        self.lrs = array("d", (self.lrs[index] for index in keep))
 
     def records(self) -> list[dict]:
         """

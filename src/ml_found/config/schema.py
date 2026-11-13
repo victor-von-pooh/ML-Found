@@ -59,7 +59,7 @@ class CheckpointConfig:
     best_weights_only: bool = False
 
     # last.pt にベストモデルの重みも入れるか. false にすると軽くなり,
-    # 再開時のベストモデルの重みは再開元の best.pt から戻す
+    # 再開時のベストモデルの重みは再開元の best.pt からの復元
     last_with_best: bool = True
 
 

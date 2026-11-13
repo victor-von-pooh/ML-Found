@@ -418,7 +418,7 @@ class Checkpoint:
         """
         # ベストモデルが更新された場合は保存
         # 今のモデルがベストモデルなので, 同じ重みを 2 つ持たないように省略
-        # (再開時は今のモデルの重みから戻す)
+        # (再開時は今のモデルの重みからの復元)
         if improved and self.save_best:
             if self.best_weights_only:
                 best_state = {

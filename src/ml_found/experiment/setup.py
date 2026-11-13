@@ -78,6 +78,16 @@ def check_trainer_config(cfg: DictConfig) -> None:
             f"{trainer_cfg.checkpoint.every_n_epochs}"
         )
 
+    # last.pt にベストモデルの重みを入れず best.pt も残さないと, 再開した
+    # 学習でベストモデルに戻せないので警告
+    checkpoint_cfg = trainer_cfg.checkpoint
+    if not checkpoint_cfg.last_with_best and not checkpoint_cfg.save_best:
+        message = (
+            "trainer.checkpoint.last_with_best: false と save_best: false を"
+            "合わせると, 再開した学習ではベストモデルの重みに戻せません"
+        )
+        warnings.warn(message, stacklevel=2)
+
     # 同じ値の場合に比べる指標の向きは min か max に制限
     if trainer_cfg.monitor_tiebreak_mode not in ("min", "max"):
         raise ValueError(
@@ -124,6 +134,25 @@ def check_resume_path(cfg: DictConfig, project_dir: Path) -> None:
         raise FileNotFoundError(
             f"trainer.resume_from のファイルがありません: {resolved} "
             "(相対パスはプロジェクトのディレクトリから辿ります)"
+        )
+
+    # 重みだけのチェックポイント (best_weights_only の best.pt) は再開に使えない
+    # 大きなファイルでも速いように, テンソルは読み込まずに参照
+    state = torch.load(
+        resolved, map_location="cpu", weights_only=True, mmap=True
+    )
+    if isinstance(state, dict) and state.get("weights_only"):
+        raise ValueError(
+            f"{resolved} は重みだけのチェックポイント (best_weights_only) なので"
+            "再開には使えません. last.pt を指定してください"
+        )
+
+    # final_model.pt のような学習の状態を含まないファイルも再開に使えない
+    if not isinstance(state, dict) or "monitor" not in state:
+        raise ValueError(
+            f"{resolved} は学習を再開するためのチェックポイントではありません "
+            "(final_model.pt などのモデルの重みだけのファイル). "
+            "last.pt を指定してください"
         )
 
 

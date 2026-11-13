@@ -1,4 +1,5 @@
 import csv
+import json
 from pathlib import Path
 from typing import Callable
 
@@ -1180,6 +1181,48 @@ def test_one_cycle_steps_resume(tmp_path: Path) -> None:
         Trainer(nn.Linear(1, 1), empty, regression_step).fit([])
 
 
+def moving_step(losses: list) -> Callable[[nn.Module, tuple, str], dict]:
+    """
+    決めておいた損失の値を返しつつ, 重みは実際の誤差で動く step を作る関数
+
+    Parameters
+    ----------
+    losses: list
+        順に返す損失の値
+
+    Returns
+    ----------
+    step: Callable[[nn.Module, tuple, str], dict]
+        値は決めておいたもので, 勾配は二乗誤差のもの
+    """
+    values = iter(losses)
+
+    def step(model: nn.Module, batch: tuple, phase: str) -> dict:
+        """
+        決めておいた値の損失を, 二乗誤差の勾配が流れる形で返す関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            決めておいた値の損失
+        """
+        mse = ((model(batch[0]) - batch[1]) ** 2).mean()
+        outputs = {"loss": mse + (next(values) - mse.detach())}
+
+        return outputs
+
+    return step
+
+
 def test_light_checkpoints(tmp_path: Path) -> None:
     """
     best.pt を重みだけにする設定と, last.pt にベストモデルの重みを入れない設定を
@@ -1194,7 +1237,7 @@ def test_light_checkpoints(tmp_path: Path) -> None:
     ----------
     None
     """
-    # 損失が 2 エポック目で最小になり, その後は悪化する学習
+    # 損失が 2 エポック目で最小になり, その後は悪化する学習 (重みは毎回動く)
     losses = [3.0, 1.0, 2.0, 4.0]
 
     def run(name: str, text: str, epochs: int, resume: str = "") -> Trainer:
@@ -1220,9 +1263,10 @@ def test_light_checkpoints(tmp_path: Path) -> None:
         resume_text = f"  resume_from: {resume}\n" if resume else ""
         experiment = make_experiment(
             tmp_path / name,
+            "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
             f"trainer:\n  epochs: {epochs}\n" + resume_text + text
         )
-        trainer = Trainer(nn.Linear(1, 1), experiment, scripted_step(losses))
+        trainer = Trainer(nn.Linear(1, 1), experiment, moving_step(losses))
         trainer.fit(make_loader(n=8, batch_size=8))
 
         return trainer
@@ -1245,14 +1289,38 @@ def test_light_checkpoints(tmp_path: Path) -> None:
 
         return state
 
-    # 既定でも best.pt はベストモデルの重みを 2 つ持たない
+    def same(left: dict, right: dict) -> bool:
+        """
+        2 つの重みが同じかを判定する関数
+
+        Parameters
+        ----------
+        left: dict
+            重み
+        right: dict
+            重み
+
+        Returns
+        ----------
+        equal: bool
+            全てのテンソルが同じか
+        """
+        equal = all(torch.equal(left[key], right[key]) for key in right)
+
+        return equal
+
+    # 既定でも best.pt はベストモデルの重みを 2 つ持たず, そこから再開できる
     plain = run("plain", "", 3)
     best = load(plain.experiment.run_dir / "best.pt")
+    last = load(plain.experiment.run_dir / "last.pt")
     assert best["epoch"] == 2
     assert best["checkpoint"]["best_model"] is None
-    assert load(plain.experiment.run_dir / "last.pt")["checkpoint"][
-        "best_model"
-    ] is not None
+    assert last["checkpoint"]["best_model"] is not None
+    assert not same(best["model"], last["model"])
+    from_best = run(
+        "from_best", "", 2, str(plain.experiment.run_dir / "best.pt")
+    )
+    assert same(from_best.checkpoint.best_model_state, best["model"])
 
     # best.pt を重みだけに, last.pt からベストモデルの重みを外す
     light = (
@@ -1268,23 +1336,30 @@ def test_light_checkpoints(tmp_path: Path) -> None:
         "best_model"
     ] is None
 
-    # 再開すると, ベストモデルの重みを再開元の best.pt から戻す
+    # 再開すると, ベストモデルの重みを再開元の best.pt から戻し,
+    # 再開時の last.pt も設定どおりにベストモデルの重みを外す
     resumed = run(
         "resumed", light, 4, str(first.experiment.run_dir / "last.pt")
     )
-    expected = best["model"]
-    actual = resumed.checkpoint.best_model_state
-    assert actual is not None
-    assert all(torch.equal(actual[key], expected[key]) for key in expected)
+    assert same(resumed.checkpoint.best_model_state, best["model"])
+    final = load(resumed.experiment.run_dir / "final_model.pt")
+    assert same(final, best["model"])
 
-    # best.pt が無いと警告し, 重みだけの best.pt からは再開できない
+    # best.pt が無いと警告し, 最後の重みが残ることを run.json にも記録
     (first.experiment.run_dir / "best.pt").rename(
         first.experiment.run_dir / "best_moved.pt"
     )
-    with pytest.warns(UserWarning, match="重みが再開元に無い"):
-        run("missing", light, 4, str(first.experiment.run_dir / "last.pt"))
-    with pytest.raises(ValueError, match="再開には使えません"):
-        run(
-            "weights", light, 4,
-            str(first.experiment.run_dir / "best_moved.pt")
+    with pytest.warns(UserWarning, match="best.pt がありません"):
+        missing = run(
+            "missing", light, 4, str(first.experiment.run_dir / "last.pt")
         )
+    status = json.loads(
+        (missing.experiment.run_dir / "run.json").read_text(encoding="utf-8")
+    )
+    assert status["final_weights"] == "last"
+
+    # 重みだけの best.pt と final_model.pt からは, 出力先を作る前にエラー
+    for name in ("best_moved.pt", "final_model.pt"):
+        with pytest.raises(ValueError, match="last.pt を指定"):
+            run(name, light, 4, str(first.experiment.run_dir / name))
+        assert not (tmp_path / name / "outputs").exists()

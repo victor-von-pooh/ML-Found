@@ -13,7 +13,7 @@ from ml_found.experiment.env_info import (
     collect_env_info, get_git_diff, log_env_info
 )
 from ml_found.experiment.logger import get_logger
-from ml_found.experiment.seed import fix_seed
+from ml_found.experiment.seed import EXTRA_RNGS, fix_seed
 from ml_found.training.optim import check_optim_config
 from ml_found.training.registry import check_optim_params
 from ml_found.utils.device import get_device
@@ -278,6 +278,8 @@ def start_experiment(
     # 乱数シードを固定して記録
     fix_seed(cfg.experiment.seed, cfg.experiment.deterministic)
     logger.info(f"乱数シード: {cfg.experiment.seed}")
+    if EXTRA_RNGS:
+        logger.info(f"登録された外部ライブラリの乱数: {sorted(EXTRA_RNGS)}")
 
     # 実験環境の情報とデバイスを記録
     log_env_info(logger, env_info)

@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 from omegaconf import OmegaConf
 import pytest
 import torch
@@ -10,6 +11,7 @@ from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
 
 from ml_found.config.loader import load_config
+from ml_found.experiment import register_rng, unregister_rng
 from ml_found.experiment.setup import Experiment, start_experiment
 from ml_found.training.callbacks import load_checkpoint
 from ml_found.training.trainer import Trainer
@@ -2336,3 +2338,156 @@ def test_eval_model_stop_within_epoch(tmp_path: Path) -> None:
     )
     assert status["final_weights"] == "partial"
     assert len(trainer.history.records) == 1
+
+
+def test_register_rng(tmp_path: Path) -> None:
+    """
+    登録した外部ライブラリの乱数が, シードで固定され, 再開で戻ることを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # Python, NumPy, torch の全体の乱数とは別の乱数を持つ外部ライブラリの代わり
+    library = {"rng": np.random.default_rng()}
+
+    def seed_fn(seed: int) -> None:
+        """
+        外部ライブラリの乱数を固定する関数
+
+        Parameters
+        ----------
+        seed: int
+            乱数シードの値
+
+        Returns
+        ----------
+        None
+        """
+        # 新しい乱数生成器に置き換えて固定
+        library["rng"] = np.random.default_rng(seed)
+
+    def get_state() -> dict:
+        """
+        外部ライブラリの乱数の状態を返す関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        state: dict
+            乱数生成器の状態
+        """
+        # 数値と文字列だけの辞書なので, そのまま保存可能
+        state = library["rng"].bit_generator.state
+
+        return state
+
+    def set_state(state: dict) -> None:
+        """
+        外部ライブラリの乱数の状態を戻す関数
+
+        Parameters
+        ----------
+        state: dict
+            get_state が返した状態
+
+        Returns
+        ----------
+        None
+        """
+        # 乱数生成器の状態を上書き
+        library["rng"].bit_generator.state = state
+
+    def step(model: nn.Module, batch: tuple, phase: str) -> dict:
+        """
+        外部ライブラリの乱数で揺らした損失を返す関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            平均二乗誤差に外部ライブラリの乱数を足した損失
+        """
+        # 損失に乱数を足して, 乱数の違いが記録に出るように計算
+        outputs = regression_step(model, batch, phase)
+        outputs["loss"] = outputs["loss"] + float(library["rng"].random())
+
+        return outputs
+
+    def run(name: str, text: str) -> list:
+        """
+        外部ライブラリの乱数を登録して学習する関数
+
+        Parameters
+        ----------
+        name: str
+            出力先の名前
+        text: str
+            default に加える YAML の内容
+
+        Returns
+        ----------
+        losses: list
+            エポックごとの学習時の損失
+        """
+        # 登録してから実験を始め, 学習の後に登録を外す
+        register_rng("library", seed_fn, get_state, set_state)
+        try:
+            experiment = make_experiment(tmp_path / name, sgd + text)
+            history = Trainer(nn.Linear(1, 1), experiment, step).fit(
+                make_loader()
+            )
+        finally:
+            unregister_rng("library")
+        losses = history.get("train/loss")
+
+        return losses
+
+    # 同じシードなら同じ結果になり, 再開しても続けて学習した場合と一致
+    sgd = "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+    full = run("full", "trainer:\n  epochs: 4\n")
+    assert run("again", "trainer:\n  epochs: 4\n") == full
+    run("first", "trainer:\n  epochs: 2\n")
+    last_path = tmp_path / "first"
+    last_path = next(last_path.rglob("last.pt"))
+    resumed = run(
+        "second", f"trainer:\n  epochs: 4\n  resume_from: {last_path}\n"
+    )
+    assert resumed == pytest.approx(full)
+    log = next((tmp_path / "full").rglob("train.log")).read_text(
+        encoding="utf-8"
+    )
+    assert "['library']" in log
+
+    # 登録が片方にしか無い場合は警告
+    with pytest.warns(UserWarning, match="登録されていない"):
+        experiment = make_experiment(
+            tmp_path / "unknown",
+            sgd + f"trainer:\n  epochs: 4\n  resume_from: {last_path}\n"
+        )
+        Trainer(nn.Linear(1, 1), experiment, regression_step).fit(
+            make_loader()
+        )
+
+    # 名前と関数の誤りはエラー
+    with pytest.raises(ValueError, match="名前"):
+        register_rng("", seed_fn, get_state, set_state)
+    with pytest.raises(TypeError, match="get_state"):
+        register_rng("library", seed_fn, None, set_state)

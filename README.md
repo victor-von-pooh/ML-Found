@@ -412,6 +412,29 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | `run.json` | 実験の状態 (`running`, `completed`, `stopped`, `failed`), 開始, 更新, 終了の時刻 (タイムゾーン付き) と所要時間 (`duration_sec`), 予定と終えたエポック数, 再開した最初のエポック, 監視する指標とその向き (`mode`), ベストモデルを選ぶか (`select_best`. `false` の場合はベストのエポックと値が `null`), ベストのエポックと値, Early Stopping で止めたエポック, `final_model.pt` の重み (`best`, `last`, エポックの途中で止めて戻せなかった場合 (`eval_model` を上書きした場合を含む) は `partial`), 乱数シード, デバイス, プロセスの ID とホスト名, エラーの内容, 形式の版. 学習を始めたときに作り, エポックごと (1 秒以上の間隔. 間隔の中の更新は次の進み具合の書き込みと一緒に書く), 再開したときと終了時に更新. `Trainer` の作成で失敗した場合も `failed` (キーボードの割り込みは `stopped`) で書く |
 | `progress.json` | 学習中だけ置かれる, 今のフェーズ (`train`, `train_eval`, `valid`), エポックと予定のエポック数, エポックの中で終えたバッチの数と総数, 経過時間, 更新時刻 (`updated_at`). 1 秒以上の間隔で上書きする (1 エポックが短い学習の邪魔にならないように, フェーズの始めと終わりも間隔を守る). 学習を終えると消す |
 
+### エポックごとの結果を受け取る
+
+Python のコードでエポックごとの結果を受け取る場合は, `trainer.add_callback(fn)` で関数を登録する. 関数は, 各エポックの記録を保存する前に, 次の辞書を受け取る.
+
+- `epoch`: 終えたエポック
+- `record`: そのエポックの記録の写し (`history.csv` の 1 行と同じ. 書き換えても記録は変わらない)
+- `improved`: ベストモデルを更新したか
+- `best_epoch`, `best_value`: これまでのベストモデルのエポックと値 (ベストモデルを選ばない設定では `None`)
+- `early_stopping`: このエポックで Early Stopping が止めるか
+
+関数が `True` を返すと, `STOP` のファイルと同じく, そのエポックで学習を止める (`last.pt` を保存し, 状態は `stopped`. 予定の最後のエポックなら `completed`). 関数の中のエラーは学習のエラーとして扱う (状態は `failed`).
+
+```python
+def notify(info: dict) -> bool:
+    print(info["epoch"], info["record"]["valid/loss"])
+    # 検証用の損失が十分に下がったら止める
+    return info["record"]["valid/loss"] < 0.01
+
+
+trainer.add_callback(notify)
+history = trainer.fit(train_loader, valid_loader)
+```
+
 ### 学習の外からの確認と中断
 
 `run.json` と `progress.json` は, 書きかけを読まないように一時ファイルに書いてから置き換える. ディスクまで書き出す (fsync) のは `run.json` の開始と終了のときだけ. ダッシュボードや別の端末のスクリプトから, 学習中の状態と進み具合を読める. 書き込めない場合 (ディスクの不足など) は `train.log` に警告を 1 回残し, 学習は続ける. 状態は `Trainer.fit` が書くので, `fit` を使わずに `train_epochs` などを直接呼んだ場合や, `train_epochs` を上書きした場合は残らない.

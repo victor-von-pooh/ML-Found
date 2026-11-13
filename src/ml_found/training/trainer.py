@@ -327,6 +327,9 @@ class Trainer:
         self.history = History()
         self.start_epoch = 1
 
+        # エポックの終わりに呼ぶ関数 (add_callback で追加)
+        self.callbacks: list[Callable[[dict], Optional[bool]]] = []
+
         # step ごとに学習率を変える場合の, 更新ごとの学習率の記録
         self.lr_steps = LrSteps()
 
@@ -393,6 +396,70 @@ class Trainer:
         outputs = self.step_fn(model, batch, phase)
 
         return outputs
+
+    def add_callback(self, fn: Callable[[dict], Optional[bool]]) -> None:
+        """
+        エポックの終わりに呼ぶ関数を加える関数
+
+        関数はエポックごとに, epoch (エポック), record (記録の写し),
+        improved (ベストモデルを更新したか), best_epoch, best_value,
+        early_stopping (Early Stopping で止めるか) の辞書を受け取る. True を
+        返すと, そのエポックで学習を止める (状態は stopped)
+
+        Parameters
+        ----------
+        fn: Callable[[dict], Optional[bool]]
+            エポックの結果を受け取る関数
+
+        Returns
+        ----------
+        None
+        """
+        # 関数以外は, 学習の途中ではなくここでエラー
+        if not callable(fn):
+            raise TypeError(f"関数を渡してください: {fn!r}")
+        self.callbacks.append(fn)
+
+    def run_callbacks(
+        self, epoch: int, record: dict, improved: bool, should_stop: bool
+    ) -> bool:
+        """
+        登録した関数にエポックの結果を渡す関数
+
+        Parameters
+        ----------
+        epoch: int
+            終えたエポック
+        record: dict
+            そのエポックの記録
+        improved: bool
+            ベストモデルを更新したかどうか
+        should_stop: bool
+            Early Stopping で止めるかどうか
+
+        Returns
+        ----------
+        stop: bool
+            どれかの関数が True を返して止める要求をしたかどうか
+        """
+        # 関数ごとに写しを渡し, 記録を書き換えられないように用意
+        stop = False
+        for fn in self.callbacks:
+            info = {
+                "epoch": epoch, "record": dict(record),
+                "improved": bool(improved),
+                "best_epoch": self.checkpoint.best_epoch or None,
+                "best_value": self.checkpoint.best_value,
+                "early_stopping": bool(should_stop)
+            }
+            if fn(info) is True:
+                stop = True
+        if stop:
+            self.logger.info(
+                f"登録した関数の要求で学習を止めます (エポック {epoch})"
+            )
+
+        return stop
 
     def eval_model(self) -> nn.Module:
         """
@@ -2033,8 +2100,14 @@ class Trainer:
                     and self.early_stopping.step(value, tiebreak)
                 )
 
-                # 外から止める要求があるかの確認
-                stop_requested = self.run_status.stop_requested()
+                # 登録した関数にエポックの結果を渡し, 止める要求があるかの確認
+                # 外から止める要求 (STOP のファイル) と同じく, このエポックで停止
+                callback_stop = self.run_callbacks(
+                    epoch, record, improved, should_stop
+                )
+                stop_requested = (
+                    self.run_status.stop_requested() or callback_stop
+                )
 
                 # last.pt は決めた間隔と, 最後のエポックと止めるエポックに保存
                 # 保存するものがある場合だけ, 更新した状態をまとめて保存

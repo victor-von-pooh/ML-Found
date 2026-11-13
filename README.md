@@ -248,7 +248,7 @@ trainer:
 `fit` の後の `trainer.model` はベストモデルの重みになっている (`trainer.restore_best: true` の場合).
 後から使う場合は `final_model.pt` を読み込む. `final_model.pt` は cpu のテンソルで保存するので, 学習したデバイスに関わらず読み込める.
 
-GAN のように損失が良し悪しの指標にならない場合や, 学習の途中で損失の定義が変わる場合 (β-VAE など) は, `trainer.restore_best: false` にすると最後のエポックの重みが残る.
+GAN のように損失が良し悪しの指標にならない場合は, `trainer.select_best: false` にするとベストモデルを選ばず (`best.pt` も作らない), 最後のエポックの重みが残る. 学習の途中で損失の定義が変わる場合 (β-VAE など) のように, ベストモデルは記録しておきたいが最後の重みも残したい場合は `trainer.restore_best: false` にする.
 
 ```python
 import torch
@@ -281,6 +281,7 @@ ML-Found が使う項目と既定値.
 | `trainer.grad_clip_norm` | `null` | 勾配のノルムの上限, `null` の場合はクリッピングしない. Optimizer が更新するパラメータだけが対象 |
 | `trainer.log_grad_norm` | `false` | クリップ前の勾配のノルムを `train/grad_norm` として記録するかどうか |
 | `trainer.restore_best` | `true` | 学習後にベストモデルの重みに戻すかどうか, `false` の場合は最後のエポックの重み |
+| `trainer.select_best` | `true` | 監視する指標でベストモデルを選ぶかどうか. GAN のように損失で良し悪しを決められない学習では `false` にし, `best.pt` を作らず `final_model.pt` に最後のエポックの重みを残す (Early Stopping とは一緒に使えない) |
 | `trainer.valid_grad` | `false` | 検証時にも勾配を計算するかどうか |
 | `trainer.valid_seed` | `null` | 検証の前に乱数を固定するシード, 検証の後は学習の乱数の状態に戻す |
 | `trainer.manual_optimization` | `false` | ML-Found が逆伝播と更新を行わず, `step` の中で更新するかどうか |

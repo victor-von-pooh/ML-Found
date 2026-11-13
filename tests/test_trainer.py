@@ -1817,3 +1817,52 @@ def test_warn_unknown_batch_size(tmp_path: Path) -> None:
     assert sum("サンプル数" in str(item.message) for item in record) == 1
     log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
     assert log.count("サンプル数を推定できない") == 1
+
+
+def test_select_best_false(tmp_path: Path) -> None:
+    """
+    ベストモデルを選ばない設定で, best.pt を作らず最後の重みを残すことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 損失が 2 エポック目で最小になり, その後は悪化する学習 (重みは毎回動く)
+    experiment = make_experiment(
+        tmp_path / "ok",
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "trainer:\n  epochs: 4\n  select_best: false\n"
+    )
+    trainer = Trainer(
+        nn.Linear(1, 1), experiment, moving_step([3.0, 1.0, 2.0, 4.0])
+    )
+    trainer.fit(make_loader(n=8, batch_size=8))
+
+    run_dir = experiment.run_dir
+    assert not (run_dir / "best.pt").exists()
+    final = torch.load(
+        run_dir / "final_model.pt", map_location="cpu", weights_only=True
+    )
+    last = torch.load(
+        run_dir / "last.pt", map_location="cpu", weights_only=True
+    )
+    assert all(torch.equal(final[key], last["model"][key]) for key in final)
+    status = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert status["final_weights"] == "last"
+    assert status["best_epoch"] is None
+    log = (run_dir / "train.log").read_text(encoding="utf-8")
+    assert "select_best: false" in log
+
+    # Early Stopping とは一緒に使えない
+    with pytest.raises(ValueError, match="select_best"):
+        make_experiment(
+            tmp_path / "early",
+            "trainer:\n  select_best: false\n  early_stopping:\n"
+            "    use: true\n"
+        )

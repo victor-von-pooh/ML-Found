@@ -1197,7 +1197,7 @@ class Trainer:
         run_dir = self.experiment.run_dir
         self.final_weights = "partial" if self.partial_weights else "last"
         if (
-            self.trainer_cfg.restore_best
+            self.trainer_cfg.restore_best and self.trainer_cfg.select_best
             and self.checkpoint.best_model_state is not None
         ):
             self.checkpoint.restore_best(self.model)
@@ -1229,8 +1229,13 @@ class Trainer:
 
         # 結果をログに記録
         self.logger.info("学習完了")
-        self.logger.info(f"ベストモデルのエポック: {self.checkpoint.best_epoch}")
-        self.logger.info(f"ベストモデルの指標: {self.checkpoint.best_value}")
+        if self.trainer_cfg.select_best:
+            self.logger.info(
+                f"ベストモデルのエポック: {self.checkpoint.best_epoch}"
+            )
+            self.logger.info(f"ベストモデルの指標: {self.checkpoint.best_value}")
+        else:
+            self.logger.info("ベストモデルは選ばない設定 (select_best: false)")
         self.logger.info(f"final_model.pt の重み: {weights}")
         self.logger.info(f"学習時間: {elapsed_time:.2f} 秒")
 
@@ -1581,8 +1586,9 @@ class Trainer:
                     step_scheduler(self.scheduler, value)
 
                 # ベストモデルと Early Stopping の状態を先に更新
-                improved = self.checkpoint.update(
-                    value, epoch, self.model, tiebreak
+                # (ベストモデルを選ばない設定では, 改善を判定しない)
+                improved = self.trainer_cfg.select_best and (
+                    self.checkpoint.update(value, epoch, self.model, tiebreak)
                 )
                 should_stop = (
                     self.early_stopping is not None

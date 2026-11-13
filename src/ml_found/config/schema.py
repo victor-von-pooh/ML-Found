@@ -87,6 +87,10 @@ class TrainerConfig:
     # 学習後にベストモデルの重みに戻すかどうか, false の場合は最後の重みのまま
     restore_best: bool = True
 
+    # 監視する指標でベストモデルを選ぶかどうか. GAN のように損失で良し悪しを
+    # 決められない学習では false にし, best.pt を作らず最後の重みを残す
+    select_best: bool = True
+
     # 検証時にも勾配を計算するかどうか (入力に対する微分を損失に使う場合など)
     valid_grad: bool = False
 

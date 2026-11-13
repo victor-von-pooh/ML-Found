@@ -106,6 +106,13 @@ def check_trainer_config(cfg: DictConfig) -> None:
             "使えません"
         )
 
+    # ベストモデルを選ばない設定では, 指標の改善で止める Early Stopping は不可
+    if not trainer_cfg.select_best and trainer_cfg.early_stopping.use:
+        raise ValueError(
+            "trainer.select_best: false では trainer.early_stopping.use は"
+            "使えません (改善を判定しないため)"
+        )
+
 
 def check_resume_path(cfg: DictConfig, project_dir: Path) -> None:
     """

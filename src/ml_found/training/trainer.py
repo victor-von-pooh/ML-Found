@@ -36,32 +36,50 @@ class StopWithinEpoch(Exception):
     pass
 
 
-def record_init_error(experiment: "Experiment", error: Exception) -> None:
+def record_init_error(
+    experiment: "Experiment", error: BaseException
+) -> None:
     """
     Trainer の作成で起きたエラーを, train.log と run.json に記録する関数
 
-    出力先は作られた後なので, 何が起きたかを後から分かるように残す
+    出力先は作られた後なので, 何が起きたかを後から分かるように残す.
+    記録に失敗しても元のエラーを隠さないように, 記録の失敗は警告だけにする
 
     Parameters
     ----------
     experiment: Experiment
         始めた実験
-    error: Exception
-        起きたエラー
+    error: BaseException
+        起きたエラー, キーボードの割り込みは止めたものとして記録
 
     Returns
     ----------
     None
     """
-    experiment.logger.exception("Trainer の作成でエラーが起きました")
-    cfg = experiment.cfg
-    status = RunStatus(experiment.run_dir, experiment.logger)
-    status.start(
-        planned_epochs=cfg.trainer.epochs, start_epoch=1,
-        monitor=cfg.trainer.monitor, mode=cfg.trainer.mode,
-        seed=cfg.experiment.seed, device=str(experiment.device)
-    )
-    status.finish("failed", error=f"{type(error).__name__}: {error}")
+    interrupted = isinstance(error, KeyboardInterrupt)
+    try:
+        if interrupted:
+            experiment.logger.warning(
+                "キーボードの割り込みで Trainer の作成が止まりました"
+            )
+        else:
+            experiment.logger.exception("Trainer の作成でエラーが起きました")
+        cfg = experiment.cfg
+        status = RunStatus(experiment.run_dir, experiment.logger)
+        status.start(
+            planned_epochs=cfg.trainer.epochs, start_epoch=1,
+            monitor=cfg.trainer.monitor, mode=cfg.trainer.mode,
+            seed=cfg.experiment.seed, device=str(experiment.device)
+        )
+        status.finish(
+            "stopped" if interrupted else "failed",
+            error=f"{type(error).__name__}: {error}"
+        )
+    except Exception as record_error:
+        warnings.warn(
+            f"Trainer の作成のエラーを記録できませんでした: {record_error}",
+            stacklevel=2
+        )
 
 
 class Trainer:
@@ -72,13 +90,15 @@ class Trainer:
         scheduler: Optional[optim.lr_scheduler.LRScheduler] = None
     ):
         # 作成で失敗した場合も, 出力先に記録を残してから投げ直し
+        # (継承したクラスの setup などと重ならないように, 部品の用意は
+        # _build_parts で実行)
         try:
-            self.setup(model, experiment, step_fn, optimizer, scheduler)
-        except Exception as error:
+            self._build_parts(model, experiment, step_fn, optimizer, scheduler)
+        except (Exception, KeyboardInterrupt) as error:
             record_init_error(experiment, error)
             raise
 
-    def setup(
+    def _build_parts(
         self, model: nn.Module, experiment: "Experiment",
         step_fn: Optional[Callable[[nn.Module, Any, str], dict]],
         optimizer: Optional[optim.Optimizer],

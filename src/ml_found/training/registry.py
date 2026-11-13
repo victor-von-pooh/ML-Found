@@ -531,6 +531,35 @@ def is_in_range(spec: ParamSpec, value: float) -> bool:
     return inside
 
 
+def read_items(value: Any) -> list:
+    """
+    引数の値を, 確かめる要素の一覧にする関数
+
+    Parameters
+    ----------
+    value: Any
+        config の引数の値, 配列でない値は 1 つの要素として扱う
+
+    Returns
+    ----------
+    items: list
+        確かめる要素, ??? の要素と解決できない補間の要素は除外
+    """
+    if not isinstance(value, (list, tuple, ListConfig)):
+        items = [value]
+        return items
+
+    # 要素を読むときに ??? や解決できない補間は例外になるので飛ばす
+    items = []
+    for index in range(len(value)):
+        try:
+            items.append(value[index])
+        except Exception:
+            continue
+
+    return items
+
+
 def describe_value_error(spec: ParamSpec, items: list) -> Optional[str]:
     """
     引数の値 (配列なら各要素) が範囲に入るかを確かめ, 誤りを文にする関数
@@ -547,21 +576,22 @@ def describe_value_error(spec: ParamSpec, items: list) -> Optional[str]:
     problem: Optional[str]
         誤りの説明, 問題が無ければ None
     """
+    problem = None
     for item in items:
         # 引用符で囲んだ数や真偽値は, 学習を始めてからの分かりにくいエラーに
         # なるので, 数で書くように通知
         if isinstance(item, bool) or not isinstance(item, (int, float)):
             problem = f"{spec.name} は数で書いてください (今は {item!r})"
-            return problem
+            break
         try:
             number = float(item)
         except OverflowError:
             number = math.inf
         if math.isinf(number) or not is_in_range(spec, number):
             problem = f"{spec.name} は {describe_range(spec)} (今は {item})"
-            return problem
+            break
 
-    return None
+    return problem
 
 
 def check_param_values(cls: type, params: Any) -> None:
@@ -599,10 +629,7 @@ def check_param_values(cls: type, params: Any) -> None:
             continue
         if value is None:
             continue
-        items = (
-            list(value) if isinstance(value, (list, tuple, ListConfig))
-            else [value]
-        )
+        items = read_items(value)
         problem = describe_value_error(spec, items)
         if problem is not None:
             out_of_range.append(problem)

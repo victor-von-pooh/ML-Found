@@ -544,6 +544,19 @@ def test_array_values_and_init_errors(tmp_path: Path) -> None:
         )
     assert not (tmp_path / "betas" / "outputs").exists()
 
+    # 配列の中の ??? と解決できない補間は, スカラーと同じく確かめない
+    make_experiment(
+        tmp_path / "missing",
+        "optimizer:\n  name: Adam\n  params:\n    betas: ['???', 0.9]\n"
+    )
+
+    # PyTorch も betas は 0 以上 1 未満を求める
+    for name in ("Adam", "AdamW", "Adamax", "NAdam", "RAdam"):
+        cls = getattr(optim, name)
+        cls(torch.nn.Linear(1, 1).parameters(), betas=(0.0, 0.0))
+        with pytest.raises(ValueError):
+            cls(torch.nn.Linear(1, 1).parameters(), betas=(0.9, 1.0))
+
     # 範囲の確認から外れる誤り (自作の Optimizer の引数) は Trainer の作成で
     # エラーになり, train.log と run.json に残る
     experiment = make_experiment(

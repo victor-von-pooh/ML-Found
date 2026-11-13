@@ -63,7 +63,10 @@ PARAM_NOTES: dict[str, dict[str, Any]] = {
     "lr": {"description": "学習率", "minimum": 0.0},
     "weight_decay": {"description": "重み減衰の強さ", "minimum": 0.0},
     "momentum": {"description": "慣性の強さ", "minimum": 0.0, "maximum": 1.0},
-    "betas": {"description": "1 次と 2 次のモーメントの減衰率"},
+    "betas": {
+        "description": "1 次と 2 次のモーメントの減衰率", "minimum": 0.0,
+        "maximum": 1.0, "exclusive_maximum": True
+    },
     "eps": {"description": "0 除算を避ける小さな値", "minimum": 0.0},
     "nesterov": {"description": "Nesterov の加速を使うか"},
     "amsgrad": {"description": "AMSGrad の補正を使うか"},
@@ -528,6 +531,39 @@ def is_in_range(spec: ParamSpec, value: float) -> bool:
     return inside
 
 
+def describe_value_error(spec: ParamSpec, items: list) -> Optional[str]:
+    """
+    引数の値 (配列なら各要素) が範囲に入るかを確かめ, 誤りを文にする関数
+
+    Parameters
+    ----------
+    spec: ParamSpec
+        範囲を持つ引数の仕様
+    items: list
+        確かめる値, 配列でない値は 1 つの要素として渡す
+
+    Returns
+    ----------
+    problem: Optional[str]
+        誤りの説明, 問題が無ければ None
+    """
+    for item in items:
+        # 引用符で囲んだ数や真偽値は, 学習を始めてからの分かりにくいエラーに
+        # なるので, 数で書くように通知
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            problem = f"{spec.name} は数で書いてください (今は {item!r})"
+            return problem
+        try:
+            number = float(item)
+        except OverflowError:
+            number = math.inf
+        if math.isinf(number) or not is_in_range(spec, number):
+            problem = f"{spec.name} は {describe_range(spec)} (今は {item})"
+            return problem
+
+    return None
+
+
 def check_param_values(cls: type, params: Any) -> None:
     """
     config の引数の値が, 登録簿の範囲に入るかを確かめる関数
@@ -549,7 +585,8 @@ def check_param_values(cls: type, params: Any) -> None:
         return
 
     # 範囲を持つ引数の値を, 補間を解決してから確認
-    # ??? の値, 解決できない補間, 配列 (グループごとの値) と null は対象外
+    # 配列 (betas やグループごとの値) は要素ごとに確認, ??? の値, 解決できない
+    # 補間と null は対象外
     out_of_range = []
     for spec in describe_params(cls):
         if spec.minimum is None and spec.maximum is None:
@@ -560,24 +597,15 @@ def check_param_values(cls: type, params: Any) -> None:
             value = params[spec.name]
         except Exception:
             continue
-        if value is None or isinstance(value, (list, tuple, ListConfig)):
+        if value is None:
             continue
-
-        # 引用符で囲んだ数や真偽値は, 学習を始めてからの分かりにくいエラーに
-        # なるので, 数で書くように通知
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            out_of_range.append(
-                f"{spec.name} は数で書いてください (今は {value!r})"
-            )
-            continue
-        try:
-            number = float(value)
-        except OverflowError:
-            number = math.inf
-        if math.isinf(number) or not is_in_range(spec, number):
-            out_of_range.append(
-                f"{spec.name} は {describe_range(spec)} (今は {value})"
-            )
+        items = (
+            list(value) if isinstance(value, (list, tuple, ListConfig))
+            else [value]
+        )
+        problem = describe_value_error(spec, items)
+        if problem is not None:
+            out_of_range.append(problem)
     if out_of_range:
         raise ValueError(
             f"{cls.__name__} の引数の値に誤りがあります: "

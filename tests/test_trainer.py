@@ -1498,3 +1498,175 @@ def test_stop_file_without_now(tmp_path: Path) -> None:
     # これまで通り, 1 エポック目を終えてから止める
     assert history.get("epoch") == [1]
     assert calls["train"] == 4
+
+
+def stop_at(
+    experiment: Experiment, phase: str, call: int, text: str = "now\n"
+) -> Callable[[nn.Module, tuple, str], dict]:
+    """
+    指定した呼び出しでエポックの途中で止める要求を出す step を作る関数
+
+    Parameters
+    ----------
+    experiment: Experiment
+        STOP を置く実験
+    phase: str
+        数えるフェーズ (train か valid)
+    call: int
+        STOP を置く呼び出しの回数
+    text: str = "now\n"
+        STOP の中身
+
+    Returns
+    ----------
+    step: Callable[[nn.Module, tuple, str], dict]
+        平均二乗誤差を返す step
+    """
+    calls = {"count": 0}
+
+    def step(model: nn.Module, batch: tuple, phase_now: str) -> dict:
+        """
+        決めた呼び出しで STOP を置いて平均二乗誤差を返す関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase_now: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            平均二乗誤差
+        """
+        if phase_now == phase:
+            calls["count"] += 1
+            if calls["count"] == call:
+                (experiment.run_dir / "STOP").write_text(
+                    text, encoding="utf-8"
+                )
+        outputs = regression_step(model, batch, phase_now)
+
+        return outputs
+
+    return step
+
+
+def test_stop_within_epoch_cases(tmp_path: Path) -> None:
+    """
+    1 エポック目, 検証中, last.pt の無いエポックで止めた場合を確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    sgd = "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+
+    def run(
+        name: str, text: str, phase: str, call: int, stop: str = "now\n"
+    ) -> tuple[Trainer, dict, dict]:
+        """
+        途中で止める学習を行う関数
+
+        Parameters
+        ----------
+        name: str
+            出力先の名前
+        text: str
+            default に加える YAML の内容
+        phase: str
+            STOP を置くフェーズ
+        call: int
+            STOP を置く呼び出しの回数
+        stop: str = "now\n"
+            STOP の中身
+
+        Returns
+        ----------
+        trainer: Trainer
+            学習を終えた Trainer
+        start: dict
+            学習を始めた時点の重み
+        status: dict
+            run.json の内容
+        """
+        experiment = make_experiment(tmp_path / name, sgd + text)
+        model = nn.Linear(1, 1)
+        start = {
+            key: value.clone() for key, value in model.state_dict().items()
+        }
+        trainer = Trainer(
+            model, experiment, stop_at(experiment, phase, call, stop)
+        )
+        trainer.run_status.progress_interval = 0.0
+        loader = make_loader(n=64, batch_size=16)
+        trainer.fit(loader, loader)
+        status = json.loads(
+            (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+        )
+
+        return trainer, start, status
+
+    def load(trainer: Trainer) -> dict:
+        """
+        保存した final_model.pt を読み込む関数
+
+        Parameters
+        ----------
+        trainer: Trainer
+            学習を終えた Trainer
+
+        Returns
+        ----------
+        weights: dict
+            final_model.pt の重み
+        """
+        weights = torch.load(
+            trainer.experiment.run_dir / "final_model.pt",
+            map_location="cpu", weights_only=True
+        )
+
+        return weights
+
+    # 1 エポック目で止めると, 既定の設定でも始めた時点の重みに戻り,
+    # 記録は見出しだけ (BOM 付きの now も効く)
+    trainer, start, status = run(
+        "first", "trainer:\n  epochs: 3\n", "train", 2, "\ufeffnow\n"
+    )
+    assert all(torch.equal(load(trainer)[key], start[key]) for key in start)
+    assert status["best_epoch"] is None
+    assert status["final_weights"] == "last"
+    history = (trainer.experiment.run_dir / "history.csv").read_text()
+    assert history.strip() == "epoch"
+
+    # 検証中に止めても, そのエポックは記録に加えずベストモデルを残す
+    trainer, _, status = run(
+        "valid", "trainer:\n  epochs: 3\n", "valid", 6
+    )
+    assert trainer.history.get("epoch") == [1]
+    assert status["final_weights"] == "best"
+    assert status["status"] == "stopped"
+
+    # 前のエポックの last.pt が無いと, 途中までの重みが残ることを記録
+    with pytest.warns(UserWarning, match="途中までの重み"):
+        trainer, _, status = run(
+            "partial",
+            "trainer:\n  epochs: 5\n  restore_best: false\n"
+            "  checkpoint:\n    every_n_epochs: 3\n",
+            "train", 10
+        )
+    assert trainer.history.get("epoch") == [1, 2]
+    assert status["final_weights"] == "partial"
+
+    # 検証の最後のバッチで気付いた場合は, エポックを終えてから止める
+    trainer, _, status = run("last", "trainer:\n  epochs: 3\n", "valid", 4)
+    assert trainer.history.get("epoch") == [1]
+    assert (trainer.experiment.run_dir / "last.pt").exists()

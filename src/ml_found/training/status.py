@@ -296,7 +296,7 @@ class RunStatus:
 
         # 書きかけや読めない場合は, 要求が無いものとして扱い
         try:
-            text = (self.run_dir / STOP_FILE).read_text(encoding="utf-8")
+            text = (self.run_dir / STOP_FILE).read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             return False
         requested = text.strip().lower() == STOP_NOW

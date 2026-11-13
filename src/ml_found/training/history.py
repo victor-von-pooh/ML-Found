@@ -170,7 +170,8 @@ class History:
         """
         # 全項目を列にして 1 エポック 1 行で書き出し
         with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=self.keys())
+            # 記録が無い場合 (1 エポック目の途中で止めた場合) も見出しは書く
+            writer = csv.DictWriter(f, fieldnames=self.keys() or ["epoch"])
             writer.writeheader()
             writer.writerows(self.records)
 

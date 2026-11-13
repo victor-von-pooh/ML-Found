@@ -32,9 +32,8 @@ if TYPE_CHECKING:
 
 
 class StopWithinEpoch(Exception):
-    """
-    エポックの途中で止める要求を受けたことを伝える例外
-    """
+    # エポックの途中で止める要求を受けたことを伝える例外
+    pass
 
 
 class Trainer:
@@ -139,6 +138,11 @@ class Trainer:
 
         # 外からの要求で学習を止めたかどうかの印を用意
         self.stopped_by_request = False
+
+        # エポックの途中で止めたときに戻す, 学習を始めた時点の重みと,
+        # 戻せずに途中までの重みが残ったかどうかの印を用意
+        self.start_weights: Optional[dict] = None
+        self.partial_weights = False
 
     def step(self, batch: Any, phase: str) -> dict:
         """
@@ -447,7 +451,11 @@ class Trainer:
                 )
 
                 # エポックの途中で止める要求 (STOP に now) の確認
-                if self.run_status.stop_now_requested():
+                # 最後のバッチの後は, エポックの区切りで止める処理に任せる
+                is_last = total_batches is not None and (
+                    n_batches >= total_batches
+                )
+                if not is_last and self.run_status.stop_now_requested():
                     raise StopWithinEpoch()
 
         # フェーズの終わりの進み具合を間隔に関係なく書き出し
@@ -1011,16 +1019,17 @@ class Trainer:
         # 推論で使いやすいように重みだけを cpu に移して保存
         # ベストモデルの重みが無い場合 (再開元から戻せなかった場合) は最後のまま
         run_dir = self.experiment.run_dir
-        self.final_weights = "last"
+        self.final_weights = "partial" if self.partial_weights else "last"
         if (
             self.trainer_cfg.restore_best
             and self.checkpoint.best_model_state is not None
         ):
             self.checkpoint.restore_best(self.model)
             self.final_weights = "best"
-        weights = (
-            "ベストモデル" if self.final_weights == "best" else "最後のエポック"
-        )
+        weights = {
+            "best": "ベストモデル", "last": "最後のエポック",
+            "partial": "途中で止めたエポックの途中まで"
+        }[self.final_weights]
         final_state = {
             key: (
                 value.detach().cpu() if isinstance(value, torch.Tensor)
@@ -1086,7 +1095,7 @@ class Trainer:
         self.run_status.finish(
             "stopped" if self.stopped_by_request else "completed",
             completed_epochs=len(self.history.records),
-            best_epoch=self.checkpoint.best_epoch,
+            best_epoch=self.checkpoint.best_epoch or None,
             best_value=self.checkpoint.best_value,
             final_weights=self.final_weights
         )
@@ -1174,21 +1183,27 @@ class Trainer:
             and self.checkpoint.best_model_state is not None
         )
         if not uses_best:
-            # 前のエポックの last.pt があれば, その重みに戻す
+            # 学習を始めたエポックなら始めた時点の重み, そうでなければ
+            # 前のエポックの last.pt の重みに戻す
             last_path = self.experiment.run_dir / "last.pt"
             last = None
-            if last_path.exists():
+            if epoch != self.start_epoch and last_path.exists():
                 last = torch.load(
                     last_path, map_location="cpu", weights_only=True,
                     mmap=True
                 )
-            if last is not None and last.get("epoch") == epoch - 1:
+            if epoch == self.start_epoch and self.start_weights is not None:
+                self.model.load_state_dict(self.start_weights)
+                message += ". 重みは学習を始めた時点のものに戻しました"
+            elif last is not None and last.get("epoch") == epoch - 1:
                 self.model.load_state_dict(last["model"])
                 message += f". 重みはエポック {epoch - 1} のものに戻しました"
             else:
+                self.partial_weights = True
                 message += (
-                    ". 前のエポックの last.pt が無いので, final_model.pt は"
-                    "途中までの重みです"
+                    f". エポック {epoch - 1} の last.pt が無い (every_n_epochs"
+                    " で保存しなかったなど) ので, final_model.pt は途中までの"
+                    "重みです"
                 )
                 self.logger.warning(message)
                 warnings.warn(message, stacklevel=2)
@@ -1318,6 +1333,16 @@ class Trainer:
 
         # 学習の設定を記録
         self.log_settings(monitor)
+
+        # エポックの途中で止めたときに戻せるように, 始めた時点の重みを cpu に退避
+        self.partial_weights = False
+        self.start_weights = {
+            key: (
+                value.detach().cpu().clone()
+                if isinstance(value, torch.Tensor) else value
+            )
+            for key, value in self.model.state_dict().items()
+        }
 
         # エポックごとに学習
         # 止めたエポックも数えられるように, 進捗バーは手動で更新

@@ -424,7 +424,7 @@ Python のコードでエポックごとの結果を受け取る場合は, `trai
 - `best_epoch`, `best_value`: これまでのベストモデルのエポックと値 (ベストモデルを選ばない設定では `None`)
 - `early_stopping`: このエポックで Early Stopping が止めるか
 
-関数が `True` を返すと, `STOP` のファイルと同じく, そのエポックで学習を止める (`last.pt` を保存し, 状態は `stopped`. 予定の最後のエポックなら `completed`). 関数の中のエラーは学習のエラーとして扱う (状態は `failed`).
+関数が真の値 (`True`, numpy の真偽値など) を返すと, `STOP` のファイルと同じく, そのエポックで学習を止める (`last.pt` を保存し, 状態は `stopped`. 予定の最後のエポックなら `completed`). 同じエポックで Early Stopping も止める場合は, Early Stopping として記録する. 関数の中のエラーは学習のエラーとして扱う (状態は `failed`). 呼ばれるのはそのエポックのチェックポイントを保存する前なので, 関数の中から読む `last.pt` と `best.pt` は前のエポックまでのもの.
 
 ```python
 def notify(info: dict) -> bool:

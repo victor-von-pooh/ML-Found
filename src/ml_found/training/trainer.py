@@ -404,8 +404,9 @@ class Trainer:
 
         関数はエポックごとに, epoch (エポック), record (記録の写し),
         improved (ベストモデルを更新したか), best_epoch, best_value,
-        early_stopping (Early Stopping で止めるか) の辞書を受け取る. True を
-        返すと, そのエポックで学習を止める (状態は stopped)
+        early_stopping (Early Stopping で止めるか) の辞書を受け取る. 真の値
+        (True など) を返すと, そのエポックで学習を止める (状態は stopped,
+        予定の最後のエポックなら completed)
 
         Parameters
         ----------
@@ -441,7 +442,7 @@ class Trainer:
         Returns
         ----------
         stop: bool
-            どれかの関数が True を返して止める要求をしたかどうか
+            どれかの関数が真の値を返して止める要求をしたかどうか
         """
         # 関数ごとに写しを渡し, 記録を書き換えられないように用意
         stop = False
@@ -453,12 +454,9 @@ class Trainer:
                 "best_value": self.checkpoint.best_value,
                 "early_stopping": bool(should_stop)
             }
-            if fn(info) is True:
+            # numpy や torch の真偽値も, 真の値なら止める要求として扱う
+            if fn(info):
                 stop = True
-        if stop:
-            self.logger.info(
-                f"登録した関数の要求で学習を止めます (エポック {epoch})"
-            )
 
         return stop
 
@@ -2145,9 +2143,8 @@ class Trainer:
                 callback_stop = self.run_callbacks(
                     epoch, record, improved, should_stop
                 )
-                stop_requested = (
-                    self.run_status.stop_requested() or callback_stop
-                )
+                file_stop = self.run_status.stop_requested()
+                stop_requested = file_stop or callback_stop
 
                 # last.pt は決めた間隔と, 最後のエポックと止めるエポックに保存
                 # 保存するものがある場合だけ, 更新した状態をまとめて保存
@@ -2190,7 +2187,10 @@ class Trainer:
                 # 予定の最後のエポックの場合は全て学習したので完了扱い
                 if stop_requested and epoch < self.trainer_cfg.epochs:
                     self.stopped_by_request = True
-                    message = f"中断の要求で学習を止めました (エポック {epoch})"
+                    source = (
+                        "中断の要求" if file_stop else "登録した関数の要求"
+                    )
+                    message = f"{source}で学習を止めました (エポック {epoch})"
                     self.logger.info(message)
                     pbar.write(message)
                     break

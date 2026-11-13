@@ -1742,7 +1742,10 @@ def test_step_extra(tmp_path: Path) -> None:
     # 名前と値の形の誤りはエラー
     for name, extra in (
         ("slash", {"a/b": 1.0}), ("reserved", {"lr": 1.0}),
-        ("shape", {"w": torch.ones(2)}), ("type", [1.0])
+        ("shape", {"w": torch.ones(2)}), ("type", [1.0]),
+        ("comma", {"a, b": 1.0}), ("empty", {"": 1.0}), ("key", {1: 1.0}),
+        ("string", {"w": "abc"}), ("none", {"w": None}),
+        ("metric", {"loss": 1.0})
     ):
         class BadTrainer(Trainer):
             def step(self, batch: tuple, phase: str) -> dict:

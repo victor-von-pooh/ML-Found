@@ -60,15 +60,27 @@ def check_extra(extra: Any) -> None:
             "step の extra は「名前: 値」の辞書で返してください"
         )
     for key, value in extra.items():
-        if "/" in key or key in RESERVED_EXTRA:
+        # 名前は空でない文字列で, 学習曲線のファイル名と train.log の
+        # 「名前=値, 」の形を壊す文字と, 記録の他の列の名前は禁止
+        bad_name = (
+            not isinstance(key, str) or not key or key in RESERVED_EXTRA
+            or any(char in key for char in "/,=")
+        )
+        if bad_name:
             raise ValueError(
-                f"extra の名前に / と {sorted(RESERVED_EXTRA)} は使えません: "
-                f"{key}"
+                f"extra の名前は空でない文字列で, /, カンマ, = と "
+                f"{sorted(RESERVED_EXTRA)} は使えません: {key!r}"
             )
-        if isinstance(value, torch.Tensor) and value.numel() != 1:
+
+        # 値は数か 1 つの値のテンソル
+        is_number = isinstance(value, (int, float)) and not isinstance(
+            value, bool
+        )
+        is_scalar = isinstance(value, torch.Tensor) and value.numel() == 1
+        if not (is_number or is_scalar):
             raise ValueError(
-                f"extra の {key} は 1 つの値にしてください: "
-                f"形状 {tuple(value.shape)}"
+                f"extra の {key} は数か 1 つの値のテンソルにしてください: "
+                f"{value!r}"
             )
 
 
@@ -278,7 +290,9 @@ class Trainer:
         Returns
         ----------
         outputs: dict
-            loss は必須, その他の指標と batch_size は任意
+            loss は必須, その他の指標と batch_size は任意. 平均せずに
+            記録だけする値は extra に辞書で入れる (検証でも返した場合は
+            検証の値, エポックの最後の値を記録)
         """
         # 関数が渡されていない場合は継承して上書きが必要
         if self.step_fn is None:
@@ -1503,6 +1517,13 @@ class Trainer:
                 record["lr"] = lr
 
                 # step の extra で返した値は, 平均せずにエポックの最後の値を記録
+                # 指標と同じ名前は学習曲線とダッシュボードで混ざるので禁止
+                for name in self.epoch_extra:
+                    if f"train/{name}" in record or f"valid/{name}" in record:
+                        raise ValueError(
+                            f"extra の {name} は指標と同じ名前です. "
+                            "学習曲線で混ざるので, 別の名前にしてください"
+                        )
                 record.update(self.epoch_extra)
 
                 # 監視する指標があることを確かめてから記録

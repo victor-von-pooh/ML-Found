@@ -35,7 +35,7 @@ Python のコードからは, `Trainer.add_callback` で登録した関数がエ
 いろいろなタスクで ML-Found を使ったテストで見つかった項目のうち, まだ対応していないもの.
 
 - 複数の Optimizer を名前付きで config に書き, 損失ごとに対応させて更新, 保存, 再開する仕組み (GAN など). 今は `manual_optimization` と `extra_state_dict` で利用者が書く
-- チェックポイントに記録の全て (`history` と, step ごとの Scheduler では更新ごとの学習率 `lr_steps`) を毎回入れず, `history.csv` と `lr_steps.csv` に追記する形にする. 1 エポックが短く毎エポック改善する学習 (フルバッチなど) では, `best.pt` を改善のたびに記録ごと保存する時間が残る (`best_weights_only: true` なら重みだけ)
+- 1 エポックが短く毎エポック改善する学習 (フルバッチなど) の, チェックポイントの保存の時間. 記録を列ごとの数の配列で持つようにして, 5000 エポックのフルバッチ学習で 41 秒が 13 秒になった (保存しない場合は 4 秒). 残りは `best.pt` と `last.pt` を毎エポック書く分で, `every_n_epochs` と `best_weights_only: true` で減らせる. 記録をチェックポイントに入れず `history.csv` に追記する形は, 再開の扱いが変わるので見送り
 - 同じ `Trainer` で `fit` を呼び直す使い方を決める (記録を続けるか, ベストモデルと Early Stopping の状態, `resume_from` の扱い). 今は記録が重なる
 - warmup 以外で複数の Scheduler を組み合わせる設定 (`SequentialLR` を config に書く形). warmup は `scheduler.warmup_steps` と `warmup_ratio` で対応済み
 

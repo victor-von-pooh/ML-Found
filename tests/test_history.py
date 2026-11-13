@@ -142,3 +142,61 @@ def test_plot_history(tmp_path: Path) -> None:
 
     assert [path.name for path in paths] == ["loss_curve.png", "lr_curve.png"]
     assert all(path.exists() for path in paths)
+
+
+def test_history_state_dict_columns() -> None:
+    """
+    記録をチェックポイントに列ごとの数の配列で保存し, 同じ記録に戻せることを
+    確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 途中から現れる列と, 値の無い記録を含む
+    history = History()
+    history.append({"epoch": 1, "train/loss": 0.5, "lr": 0.1})
+    history.append({"epoch": 2, "train/loss": 0.4, "lr": 0.1})
+    state = history.state_dict()
+    history.append(
+        {"epoch": 3, "train/loss": 0.3, "train_eval/loss": 0.25, "lr": None}
+    )
+    state = history.state_dict()
+    assert state["columns"] == ["epoch", "train/loss", "lr", "train_eval/loss"]
+    assert all(isinstance(column, torch.Tensor) for column in state["values"])
+
+    # 読み込むと同じ記録 (epoch は整数, 無い値は無いまま)
+    restored = History()
+    restored.load_state_dict(state)
+    assert restored.records == [
+        {"epoch": 1, "train/loss": 0.5, "lr": 0.1},
+        {"epoch": 2, "train/loss": 0.4, "lr": 0.1},
+        {"epoch": 3, "train/loss": 0.3, "train_eval/loss": 0.25},
+    ]
+    assert isinstance(restored.records[0]["epoch"], int)
+
+    # 保存した後に記録が増えても, 前に取り出した状態は変わらない
+    history.append({"epoch": 4, "train/loss": 0.2})
+    assert len(state["values"][0]) == 3
+    assert len(history.state_dict()["values"][0]) == 4
+
+    # 整数の列は整数に戻る
+    counts = History()
+    counts.append({"epoch": 1, "n": 7, "acc": 0.5})
+    counts_restored = History()
+    counts_restored.load_state_dict(counts.state_dict())
+    assert counts_restored.records == [{"epoch": 1, "n": 7, "acc": 0.5}]
+    assert isinstance(counts_restored.records[0]["n"], int)
+
+    # 以前の形 (辞書のリスト) も読める
+    old = History()
+    old.load_state_dict({"records": [{"epoch": 1, "train/loss": 0.5}]})
+    assert old.records == [{"epoch": 1, "train/loss": 0.5}]
+
+    # 記録を置き換えた場合は作り直す
+    restored.records = [{"epoch": 1, "valid/loss": 0.9}]
+    assert restored.state_dict()["columns"] == ["epoch", "valid/loss"]

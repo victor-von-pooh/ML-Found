@@ -10,10 +10,7 @@ ML-Found のコードを書くときの基準をまとめる.
 2. 参考リポジトリでの多数派
 3. PEP 8
 
-参考リポジトリは次の 5 つ.
-
-- `~/myprograms/MIRAGE-GS` (`src/` と `experiment_tools/`)
-- `~/myprograms/sub` の Clairvoyant, GNN_Colmap, ImageProcessingLearning, Pooh
+参考リポジトリは, 作者がこれまでに書いた PyTorch のリポジトリの 5 つ (以下 A から E).
 
 多数派は **リポジトリ単位の多数決** で決める.
 各リポジトリを 1 票とし, リポジトリの中で多い書き方をそのリポジトリの票とする.
@@ -92,7 +89,7 @@ def get_device(device: str = "auto") -> torch.device:
 2026-11-08 に参考リポジトリを数えた結果.
 各セルはそのリポジトリでの件数で, 太字がそのリポジトリの票.
 
-| 項目 | Clairvoyant | GNN_Colmap | ImageProcessingLearning | MIRAGE-GS | Pooh | 採用 |
+| 項目 | A | B | C | D | E | 採用 |
 | --- | --- | --- | --- | --- | --- | --- |
 | コメントの文末 | **体言止め 2** | **体言止め 178**, 動詞 14 | **体言止め 257**, 動詞 29 | **動詞 644**, 体言止め 59 | **体言止め 149**, 動詞 4 | 体言止め (4 票対 1 票) |
 | `Returns` の下線 | - | **10 本 18**, 7 本 8 | **10 本 27** | **7 本 128**, 10 本 7 | **10 本 12**, 7 本 6 | 10 本 (3 票対 1 票) |

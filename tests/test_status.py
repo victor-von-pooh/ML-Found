@@ -504,8 +504,31 @@ def test_resume_status(tmp_path: Path) -> None:
         "trainer:\n  epochs: 4\n"
         f"  resume_from: {first.run_dir / 'last.pt'}\n"
     )
-    resumed = Trainer(nn.Linear(1, 1), second, regression_step)
+    # 学習の途中 (再開した最初のエポックの始め) でも, 再開の情報が書かれている
+    seen: list[dict] = []
+
+    class Watcher(Trainer):
+        def on_epoch_start(self, phase: str) -> None:
+            """
+            再開した最初のエポックの始めに run.json を読む関数
+
+            Parameters
+            ----------
+            phase: str
+                train か valid
+
+            Returns
+            ----------
+            None
+            """
+            if phase == "train" and not seen:
+                seen.append(read_json(self.experiment.run_dir / "run.json"))
+
+    resumed = Watcher(nn.Linear(1, 1), second, regression_step)
+    resumed.run_status.progress_interval = 3600.0
     resumed.fit(make_loader(), make_loader())
+    assert seen[0]["start_epoch"] == 3
+    assert seen[0]["completed_epochs"] == 2
 
     status = read_json(second.run_dir / "run.json")
     assert status["status"] == "completed"

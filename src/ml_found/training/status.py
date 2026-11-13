@@ -89,8 +89,10 @@ class RunStatus:
         self.last_progress = 0.0
         self.started = time.monotonic()
 
-        # 最後に run.json を書いた時刻 (エポックごとの更新の間隔の確保に使用)
+        # 最後に run.json を書いた時刻 (エポックごとの更新の間隔の確保に使用) と,
+        # 間隔の中で書かずに残した更新があるかの印
         self.last_update = 0.0
+        self.pending = False
 
         # 最後にエポックの途中の中断の要求を確かめた時刻を用意
         self.last_stop_check = 0.0
@@ -203,8 +205,10 @@ class RunStatus:
         self.data["updated_at"] = now_iso()
         now = time.monotonic()
         if not force and now - self.last_update < self.progress_interval:
+            self.pending = True
             return
         self.last_update = now
+        self.pending = False
         self.write("run.json", self.data)
 
     def finish(self, status: str, **fields: Any) -> None:
@@ -223,15 +227,17 @@ class RunStatus:
         None
         """
         # 終わった状態は間隔に関係なく, ディスクまで書き出し
-        if not self.data:
-            return
-        self.data.update(
-            status=status, finished_at=now_iso(),
-            duration_sec=round(time.monotonic() - self.started, 3), **fields
-        )
-        self.data["updated_at"] = now_iso()
-        self.last_update = time.monotonic()
-        self.write("run.json", self.data, sync=True)
+        # (学習を始める前に呼ばれた場合は run.json を書かない)
+        if self.data:
+            self.data.update(
+                status=status, finished_at=now_iso(),
+                duration_sec=round(time.monotonic() - self.started, 3),
+                **fields
+            )
+            self.data["updated_at"] = now_iso()
+            self.last_update = time.monotonic()
+            self.pending = False
+            self.write("run.json", self.data, sync=True)
 
         # 終わった学習の進み具合の削除
         try:
@@ -281,6 +287,12 @@ class RunStatus:
             "updated_at": now_iso()
         }
         self.write("progress.json", data)
+
+        # 間隔の中で書かずに残した run.json の更新も, 一緒に書き出し
+        if self.pending:
+            self.last_update = now
+            self.pending = False
+            self.write("run.json", self.data)
 
     def stop_requested(self) -> bool:
         """

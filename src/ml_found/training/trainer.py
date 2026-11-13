@@ -1395,6 +1395,7 @@ class Trainer:
             self.warn_persistent_workers([train_loader, valid_loader])
             self.resume(self.trainer_cfg.resume_from, monitor)
             self.run_status.update(
+                force=True,
                 start_epoch=self.start_epoch,
                 completed_epochs=len(self.history.records),
                 best_epoch=self.checkpoint.best_epoch or None,

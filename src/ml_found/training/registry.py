@@ -618,6 +618,26 @@ def check_param_values(cls: type, params: Any) -> None:
     ----------
     None
     """
+    # auto と書けない引数の auto は, 範囲を持たない引数 (eta_min など) でも
+    # 学習の途中で初めてエラーになるので, 自作のクラスを含めて先に確認
+    if isinstance(params, (dict, DictConfig)):
+        allowed = set(auto_total_params(cls))
+        wrong = []
+        for name in params.keys():
+            try:
+                value = params[name]
+            except Exception:
+                continue
+            if value == "auto" and name not in allowed:
+                wrong.append(str(name))
+        if wrong:
+            allowed_text = ", ".join(sorted(allowed)) or "なし"
+            raise ValueError(
+                f"{cls.__name__} の引数の値に誤りがあります: "
+                f"{', '.join(wrong)} には auto と書けません "
+                f"(auto と書ける引数: {allowed_text})"
+            )
+
     # 範囲は torch のクラスの引数の意味で決めたので, 自作のクラス (同じ名前の
     # 引数や同じクラス名でも意味が違う可能性あり) は対象外
     if not cls.__module__.startswith("torch.") or not is_checkable(cls):

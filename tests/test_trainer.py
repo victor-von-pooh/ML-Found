@@ -2927,12 +2927,17 @@ def test_auto_total_params(tmp_path: Path) -> None:
     )
     assert total_iters["description"].startswith("auto と書くと")
 
-    # auto と書けない引数や Scheduler ではエラー
-    with pytest.raises(ValueError):
-        make_experiment(
-            tmp_path / "step",
-            "scheduler:\n  name: StepLR\n  params:\n    step_size: auto\n"
-        )
+    # auto と書けない引数や Scheduler ではエラー (範囲を持たない引数も)
+    for name, text in (
+        ("step", "scheduler:\n  name: StepLR\n  params:\n"
+         "    step_size: auto\n"),
+        ("eta_min", "scheduler:\n  name: CosineAnnealingLR\n  params:\n"
+         "    T_max: 3\n    eta_min: auto\n"),
+        ("dampening", "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+         "    dampening: auto\n"),
+    ):
+        with pytest.raises(ValueError, match="auto と書けません"):
+            make_experiment(tmp_path / name, text)
 
 
 def test_callbacks(tmp_path: Path) -> None:

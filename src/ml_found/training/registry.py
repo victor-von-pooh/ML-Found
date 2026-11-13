@@ -9,7 +9,7 @@ from omegaconf import DictConfig, ListConfig
 from torch import optim
 
 from ml_found.training.optim import (
-    resolve_optimizer_class, resolve_scheduler_class
+    auto_total_params, resolve_optimizer_class, resolve_scheduler_class
 )
 
 # 学習の結果ではなく実装の都合で使う引数 (画面では詳細設定として扱う)
@@ -342,11 +342,16 @@ def describe_params(cls: type) -> list[ParamSpec]:
         notes = CLASS_PARAM_NOTES.get(
             (cls.__name__, param.name), PARAM_NOTES.get(param.name, {})
         )
+        description = notes.get("description", "")
+        if param.name in auto_total_params(cls):
+            description += (
+                ". auto と書くと, 学習を始めるときに学習全体のステップ数で補う"
+            )
         specs.append(
             ParamSpec(
                 name=param.name, kind=kind, default=default,
                 required=required, advanced=param.name in ADVANCED,
-                description=notes.get("description", ""),
+                description=description,
                 minimum=notes.get("minimum"), maximum=notes.get("maximum"),
                 exclusive_minimum=notes.get("exclusive_minimum", False),
                 exclusive_maximum=notes.get("exclusive_maximum", False)
@@ -628,6 +633,9 @@ def check_param_values(cls: type, params: Any) -> None:
         except Exception:
             continue
         if value is None:
+            continue
+        # 学習全体のステップ数で補う auto は, 学習を始めるときに確定
+        if value == "auto" and spec.name in auto_total_params(cls):
             continue
         items = read_items(value)
         problem = describe_value_error(spec, items)

@@ -15,6 +15,7 @@ from ml_found.experiment import register_rng, unregister_rng
 from ml_found.experiment.setup import Experiment, start_experiment
 from ml_found.training.callbacks import load_checkpoint
 from ml_found.training.history import History
+from ml_found.training.registry import describe_schedulers
 from ml_found.training.trainer import Trainer
 
 
@@ -2847,4 +2848,64 @@ def test_resume_scheduler_config(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="resume_scheduler"):
         make_experiment(
             tmp_path / "wrong", "trainer:\n  resume_scheduler: latest\n"
+        )
+
+
+def test_auto_total_params(tmp_path: Path) -> None:
+    """
+    Scheduler の引数に auto と書くと, 学習全体のステップ数で補うことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # step ごとの CosineAnnealingLR の T_max は, エポック数 × バッチ数
+    text = (
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "scheduler:\n  name: CosineAnnealingLR\n  interval: step\n"
+        "  params:\n    T_max: auto\n"
+        "trainer:\n  epochs: 3\n"
+    )
+    experiment = make_experiment(tmp_path / "cosine", text)
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    assert trainer.scheduler is None
+    trainer.fit(make_loader())
+    assert trainer.scheduler.T_max == 12
+    assert experiment.cfg.scheduler.params.T_max == 12
+    saved = OmegaConf.load(experiment.run_dir / "config.yaml")
+    assert saved.scheduler.params.T_max == 12
+
+    # 最後の更新で学習率が最小値になる (学習全体で下げきる)
+    assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(0.0)
+
+    # エポックごとの LinearLR の total_iters はエポック数
+    experiment = make_experiment(
+        tmp_path / "linear",
+        "scheduler:\n  name: LinearLR\n  params:\n"
+        "    start_factor: 0.5\n    total_iters: auto\n"
+        "trainer:\n  epochs: 4\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    trainer.fit(make_loader())
+    assert trainer.scheduler.total_iters == 4
+
+    # 登録簿の説明にも auto と書けることを表示
+    specs = {spec["name"]: spec for spec in describe_schedulers()}
+    t_max = next(
+        param for param in specs["CosineAnnealingLR"]["params"]
+        if param["name"] == "T_max"
+    )
+    assert "auto" in t_max["description"]
+
+    # auto と書けない引数や Scheduler ではエラー
+    with pytest.raises(ValueError):
+        make_experiment(
+            tmp_path / "step",
+            "scheduler:\n  name: StepLR\n  params:\n    step_size: auto\n"
         )

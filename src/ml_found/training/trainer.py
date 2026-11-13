@@ -21,7 +21,7 @@ from ml_found.training.history import (
     History, LrSteps, MetricTracker, to_float
 )
 from ml_found.training.optim import (
-    build_optimizer, build_scheduler, check_scheduler,
+    auto_params, build_optimizer, build_scheduler, check_scheduler,
     missing_data_size_params, requires_closure, step_scheduler, to_kwargs
 )
 from ml_found.training.status import RunStatus
@@ -1694,7 +1694,9 @@ class Trainer:
         """
         # 1 エポックで Scheduler を進める回数 (step ごとならバッチ数) と,
         # エポック数 (trainer.epochs) の取得
+        # auto と書いた引数は学習全体のステップ数 (エポック数 × 1 エポックの回数)
         cfg = self.experiment.cfg
+        auto = set(auto_params(cfg.scheduler))
         values = {}
         for name in missing_data_size_params(cfg.scheduler):
             if name == "epochs":
@@ -1707,12 +1709,18 @@ class Trainer:
                     if values[name] == 0:
                         raise ValueError("train の loader が空です")
                 except TypeError as error:
+                    hint = (
+                        "値" if name in auto
+                        else "total_steps か steps_per_epoch"
+                    )
                     raise ValueError(
-                        f"{cfg.scheduler.name} の steps_per_epoch を補えません. "
+                        f"{cfg.scheduler.name} の {name} を補えません. "
                         "train_loader が len() を持たないので, "
-                        "scheduler.params に total_steps か steps_per_epoch "
-                        "を書いてください"
+                        f"scheduler.params に{hint}を書いてください"
                     ) from error
+
+        for name in auto:
+            values[name] = self.trainer_cfg.epochs * values[name]
 
         # config に書き込んで作成し, 補った値が残るように config.yaml も更新
         for name, value in values.items():

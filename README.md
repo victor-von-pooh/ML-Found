@@ -247,6 +247,8 @@ Optimizer や Scheduler を自分で作る場合は `Trainer(model, experiment, 
 自分で作った Scheduler は `config.yaml` に残らない (`train.log` にはクラス名と状態が残る).
 
 `OneCycleLR` の総ステップ数 (`total_steps`, または `epochs` と `steps_per_epoch`) は, 書かなければ `fit` が学習を始めるときに補う. `steps_per_epoch` は `scheduler.interval: step` なら学習用データのバッチ数 (`len(train_loader)`), `epoch` なら 1 (1 エポックに 1 回進めるため), `epochs` は `trainer.epochs` にする. 補った値は `config.yaml` と `train.log` に残る. そのため config から作る `OneCycleLR` は `fit` を呼ぶまで作られない (`trainer.scheduler` は `None`). `scheduler.interval: step` で `len()` を持たない `train_loader` では補えないのでエラーになり, `total_steps` か `steps_per_epoch` を書く. `OneCycleLR` は, 補ったかどうかに関係なく, 総ステップ数が `trainer.epochs` とバッチ数から求めた予定より少ないと学習を始める前にエラーに, 多いと警告にする (学習率が下がりきらない). 再開した場合は再開元の総ステップ数が使われるので, `trainer.epochs` やバッチ数を変えて再開した場合や, 補った値の入った `config.yaml` を default にして条件を変えた場合も, この確認で分かる. エポック数を増やして再開する場合は, `trainer.resume_scheduler: config` にすると, 補い直した総ステップ数で作り直して続きを学習する (下の「学習の再開」を参照).
+
+学習全体で決まる他の Scheduler の引数 (`CosineAnnealingLR` の `T_max`, `LinearLR`, `ConstantLR`, `PolynomialLR` の `total_iters`) は, 値に `auto` と書くと, `fit` が学習を始めるときに学習全体のステップ数で補う. `scheduler.interval: step` ならエポック数 × 学習用データのバッチ数, `epoch` ならエポック数. 補った値は `config.yaml` と `train.log` に残る. `auto` と書けるのはこれらの torch のクラスだけで, 他の引数や自作のクラスに書くとエラーになる. warmup のように学習の一部の長さを表す値には使えない (`auto` は学習全体の長さ).
 自分で値を決める場合は, これまで通り `load_config` の後, `start_experiment` の前に config に書き込むと `config.yaml` にも残る.
 
 ```python

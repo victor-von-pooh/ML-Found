@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+import sys
 from typing import Any, Optional, Sequence
 
 from omegaconf import DictConfig, OmegaConf
@@ -182,8 +183,10 @@ def parse_overrides(overrides: Sequence[str]) -> DictConfig:
         if "=" not in item:
             raise ValueError(
                 f"上書きは「項目=値」の形で書いてください: {item} "
-                "(例: trainer.epochs=10)"
+                "(例: trainer.epochs=10. ~ や + の書き方には未対応)"
             )
+
+    # 値は YAML として読み, 読めない場合は分かりやすいエラー
     try:
         cfg = OmegaConf.from_dotlist(list(overrides))
     except OmegaConfBaseException as e:
@@ -214,9 +217,18 @@ def merge_experiment(
         学習に使う config
     """
     # experiment と上書きを重ね, default に無い項目を追加していないかの確認
+    # 上書きでクラス名を変える場合は, experiment に書いた引数も捨てる
     experiment = load_yaml(experiment_path)
     if overrides:
-        experiment = OmegaConf.merge(experiment, parse_overrides(overrides))
+        override = parse_overrides(overrides)
+        for section in PARAMS_SECTIONS:
+            name = OmegaConf.select(override, f"{section}.name", default=None)
+            old = OmegaConf.select(experiment, f"{section}.name", default=None)
+            if name is not None and name != old and OmegaConf.select(
+                experiment, f"{section}.params", default=None
+            ) is not None:
+                experiment[section].params = {}
+        experiment = OmegaConf.merge(experiment, override)
     check_structure(
         OmegaConf.to_container(experiment),
         OmegaConf.to_container(default_cfg)
@@ -389,15 +401,91 @@ def resolve_path(path: str, project_dir: Path) -> Path:
         絶対パス, 相対パスはプロジェクトのディレクトリから辿り, 無ければ
         実行した場所から辿る
     """
+    # 絶対パスの場合はそのまま使用
     given = Path(path).expanduser()
     if given.is_absolute():
         resolved = given
         return resolved
+
+    # プロジェクトのディレクトリから辿り, 無い場合は実行した場所から探索
     resolved = project_dir / given
     if not resolved.exists() and given.exists():
         resolved = given.resolve()
 
     return resolved
+
+
+def add_config_arguments(
+    parser: argparse.ArgumentParser,
+    experiment: str = "configs/experiment/train.yaml"
+) -> argparse.ArgumentParser:
+    """
+    experiment の config のパスと「項目=値」の上書きを受け取る引数を加える関数
+
+    独自の引数を持つ学習スクリプトは, 自分の parser にこの関数で加え,
+    読み込んだ引数を load_config_from_args に渡す
+
+    Parameters
+    ----------
+    parser: argparse.ArgumentParser
+        引数を加える parser
+    experiment: str = "configs/experiment/train.yaml"
+        --experiment を指定しない場合の experiment の config のパス
+
+    Returns
+    ----------
+    parser: argparse.ArgumentParser
+        --experiment と上書き (overrides) を加えた parser
+    """
+    parser.add_argument(
+        "--experiment", default=experiment,
+        help=(
+            "experiment の config のパス, 相対パスはプロジェクトのディレクトリ"
+            "から辿り, 無い場合は実行した場所から辿る (既定: %(default)s)"
+        )
+    )
+    parser.add_argument(
+        "overrides", nargs="*",
+        help="experiment の後に重ねる「項目=値」(例: trainer.epochs=10)"
+    )
+
+    return parser
+
+
+def load_config_from_args(
+    project_dir: str, args: argparse.Namespace,
+    default: str = "configs/default/train.yaml"
+) -> tuple[DictConfig, dict]:
+    """
+    add_config_arguments の引数を読んだ結果から, 学習に使う config を作る関数
+
+    Parameters
+    ----------
+    project_dir: str
+        プロジェクトのディレクトリ (相対パスの基準)
+    args: argparse.Namespace
+        experiment と overrides を持つ, 読み込んだ引数
+    default: str = "configs/default/train.yaml"
+        default の config のパス, 相対パスはプロジェクトのディレクトリから
+
+    Returns
+    ----------
+    cfg: DictConfig
+        学習に使う config
+    diff: dict
+        default から変わった項目 (上書きも含む)
+    """
+    # default はプロジェクトのもの, experiment は実行した場所からも探索
+    root = Path(project_dir).resolve()
+    default_path = Path(default).expanduser()
+    if not default_path.is_absolute():
+        default_path = root / default_path
+    cfg, diff = load_config(
+        str(default_path), str(resolve_path(args.experiment, root)),
+        args.overrides
+    )
+
+    return cfg, diff
 
 
 def load_project_config(
@@ -410,7 +498,8 @@ def load_project_config(
 
     `python train.py --experiment configs/experiment/examples/sgd.yaml
     trainer.epochs=10` のように, experiment の config のパスと「項目=値」の
-    上書きを受け取る
+    上書きを受け取る. 順番は自由. ノートブックの中では sys.argv を読まず,
+    引数が無いものとして扱う
 
     Parameters
     ----------
@@ -430,27 +519,19 @@ def load_project_config(
     diff: dict
         default から変わった項目 (上書きも含む)
     """
-    # experiment の config のパスと上書きの受け取り
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--experiment", default=experiment,
-        help=(
-            "experiment の config のパス, 相対パスはプロジェクトのディレクトリ"
-            "から辿り, 無い場合は実行した場所から辿る"
-        )
-    )
-    parser.add_argument(
-        "overrides", nargs="*",
-        help="experiment の後に重ねる「項目=値」(例: trainer.epochs=10)"
-    )
-    args = parser.parse_args(argv)
+    # ノートブックの sys.argv はカーネルの引数なので読まない
+    if argv is None and "ipykernel" in sys.modules:
+        argv = []
 
-    # パスを解決して読み込み
-    root = Path(project_dir).resolve()
-    cfg, diff = load_config(
-        str(resolve_path(default, root)),
-        str(resolve_path(args.experiment, root)), args.overrides
+    # experiment の config のパスと上書きを, 順番に関係なく受け取り
+    parser = add_config_arguments(
+        argparse.ArgumentParser(
+            description="ML-Found のプロジェクトの学習", allow_abbrev=False
+        ),
+        experiment
     )
+    args = parser.parse_intermixed_args(argv)
+    cfg, diff = load_config_from_args(project_dir, args, default)
 
     return cfg, diff
 

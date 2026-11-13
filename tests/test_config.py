@@ -1,9 +1,12 @@
+import argparse
 from pathlib import Path
+import sys
 
 import pytest
 
 from ml_found.config.loader import (
-    ABSENT, format_diff, load_config, load_project_config, save_config
+    ABSENT, add_config_arguments, format_diff, load_config,
+    load_config_from_args, load_project_config, save_config
 )
 
 
@@ -377,6 +380,15 @@ def test_overrides(default_path: str, tmp_path: Path) -> None:
     )
     assert dict(cfg.scheduler.params) == {"gamma": 0.9}
 
+    # experiment で書いたクラスの引数も, 上書きでクラスを変えると捨てる
+    experiment = write_yaml(
+        tmp_path / "sgd.yaml",
+        "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+        "    momentum: 0.9\n"
+    )
+    cfg, _ = load_config(default_path, experiment, ["optimizer.name=AdamW"])
+    assert dict(cfg.optimizer.params) == {}
+
 
 def test_load_project_config(
     default_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -428,3 +440,26 @@ def test_load_project_config(
     write_yaml(tmp_path / "here.yaml", "trainer:\n  epochs: 7\n")
     cfg, _ = load_project_config(str(project), ["--experiment", "here.yaml"])
     assert cfg.trainer.epochs == 7
+
+    # 上書きと --experiment の順番は自由
+    cfg, _ = load_project_config(
+        str(project),
+        ["trainer.epochs=3", "--experiment", "here.yaml", "model.hidden_dim=8"]
+    )
+    assert (cfg.trainer.epochs, cfg.model.hidden_dim) == (3, 8)
+
+    # ノートブックではカーネルの引数を読まない
+    monkeypatch.setattr("sys.argv", ["kernel", "-f", "kernel.json"])
+    monkeypatch.setitem(sys.modules, "ipykernel", object())
+    cfg, _ = load_project_config(str(project))
+    assert cfg.trainer.epochs == 50
+
+    # 独自の引数を持つスクリプトは, 自分の parser に加えて使う
+    parser = add_config_arguments(argparse.ArgumentParser())
+    parser.add_argument("--seed", type=int, default=0)
+    args = parser.parse_intermixed_args(
+        ["--seed", "3", "trainer.epochs=4"]
+    )
+    cfg, diff = load_config_from_args(str(project), args)
+    assert args.seed == 3
+    assert cfg.trainer.epochs == 4

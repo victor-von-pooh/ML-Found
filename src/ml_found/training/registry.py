@@ -10,6 +10,7 @@ from torch import optim
 
 from ml_found.training.optim import (
     REGISTERED_OPTIMIZERS, auto_total_params, class_requires_closure,
+    class_uses_gradients,
     resolve_optimizer_class, resolve_scheduler_class
 )
 
@@ -180,6 +181,8 @@ class ClassSpec:
     note: str = ""
     # step に損失を計算し直す closure が必要か (LBFGS など, ML-Found が渡す)
     requires_closure: bool = False
+    # 勾配を使うか (Nelder-Mead 法のような勾配を使わない Optimizer は False)
+    uses_gradients: bool = True
 
 
 def to_plain(value: Any) -> tuple[str, Any]:
@@ -550,7 +553,8 @@ def describe_optimizers() -> list[dict[str, Any]]:
         spec = ClassSpec(
             name=name, description=REGISTERED_NOTES[name][0],
             params=describe_params(cls),
-            requires_closure=class_requires_closure(cls)
+            requires_closure=class_requires_closure(cls),
+            uses_gradients=class_uses_gradients(cls)
         )
         specs.append(asdict(spec))
 

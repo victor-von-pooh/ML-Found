@@ -14,7 +14,10 @@ from ml_found.experiment.env_info import (
 )
 from ml_found.experiment.logger import get_logger
 from ml_found.experiment.seed import EXTRA_RNGS, fix_seed
-from ml_found.training.optim import check_optim_config, try_build_optim
+from ml_found.training.optim import (
+    check_optim_config, class_uses_gradients, resolve_optimizer_class,
+    try_build_optim
+)
 from ml_found.training.registry import check_optim_params
 from ml_found.utils.device import get_device
 
@@ -134,6 +137,14 @@ def check_trainer_config(cfg: DictConfig) -> None:
         raise ValueError(
             "manual_optimization では grad_clip_norm と log_grad_norm は"
             "使えません"
+        )
+
+    # 勾配を使わない Optimizer (config で指定したもの) も同じ組み合わせは不可
+    optimizer_cls = resolve_optimizer_class(cfg.optimizer.name)
+    if not class_uses_gradients(optimizer_cls) and uses_grad:
+        raise ValueError(
+            f"{cfg.optimizer.name} は勾配を使わないので, trainer.grad_clip_norm"
+            " と log_grad_norm は使えません"
         )
 
     # ベストモデルを選ばない設定では, 指標の改善で止める Early Stopping は不可

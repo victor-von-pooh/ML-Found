@@ -1772,3 +1772,48 @@ def test_step_extra(tmp_path: Path) -> None:
         bad = make_experiment(tmp_path / name, "trainer:\n  epochs: 1\n")
         with pytest.raises(ValueError, match="extra"):
             BadTrainer(nn.Linear(1, 1), bad).fit(make_loader())
+
+
+def test_warn_unknown_batch_size(tmp_path: Path) -> None:
+    """
+    バッチのサンプル数を推定できない場合に, 1 回だけ警告することを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    def step(model: nn.Module, batch: dict, phase: str) -> dict:
+        """
+        テンソルを含まないバッチから損失を求める関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: dict
+            数だけを持つバッチ
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            損失
+        """
+        x = torch.tensor([[float(batch["x"])]])
+        outputs = {"loss": (model(x) ** 2).mean()}
+
+        return outputs
+
+    experiment = make_experiment(tmp_path, "trainer:\n  epochs: 2\n")
+    batches = [{"x": 1}, {"x": 2}]
+    with pytest.warns(UserWarning, match="サンプル数を推定できない") as record:
+        Trainer(nn.Linear(1, 1), experiment, step).fit(batches)
+    assert sum("サンプル数" in str(item.message) for item in record) == 1
+    log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
+    assert log.count("サンプル数を推定できない") == 1

@@ -626,7 +626,7 @@ def test_scheduler_and_clipping(tmp_path: Path) -> None:
     assert [float(row["lr"]) for row in rows] == pytest.approx(
         [0.1] * 4 + [0.05] * 4
     )
-    assert (experiment.run_dir / "lr_steps_curve.png").exists()
+    assert (experiment.run_dir / "lr_steps.png").exists()
 
 
 def test_lr_steps_only_for_step_interval(tmp_path: Path) -> None:
@@ -676,9 +676,22 @@ def test_resume_keeps_lr_steps(tmp_path: Path) -> None:
     )
 
     def read(run_dir: Path) -> list[dict]:
-        # 保存した更新ごとの学習率の読み込み
+        """
+        保存した更新ごとの学習率を読み込む関数
+
+        Parameters
+        ----------
+        run_dir: Path
+            実験のディレクトリ
+
+        Returns
+        ----------
+        rows: list[dict]
+            lr_steps.csv の行
+        """
         with open(run_dir / "lr_steps.csv", encoding="utf-8") as f:
             rows = list(csv.DictReader(f))
+
         return rows
 
     full = make_experiment(tmp_path / "full", text + "trainer:\n  epochs: 4\n")
@@ -696,6 +709,23 @@ def test_resume_keeps_lr_steps(tmp_path: Path) -> None:
     Trainer(nn.Linear(1, 1), second, regression_step).fit(make_loader())
 
     assert read(second.run_dir) == read(full.run_dir)
+
+    # エポックごとに切り替えて再開した場合は, 前の記録を書き出さない
+    switched = make_experiment(
+        tmp_path / "switched",
+        text.replace("interval: step", "interval: epoch")
+        + "trainer:\n  epochs: 3\n"
+        f"  resume_from: {first.run_dir / 'last.pt'}\n"
+    )
+    Trainer(nn.Linear(1, 1), switched, regression_step).fit(make_loader())
+    assert not (switched.run_dir / "lr_steps.csv").exists()
+
+    # チェックポイントには数の配列で保存
+    state = torch.load(first.run_dir / "last.pt", weights_only=True)
+    assert state["lr_steps"]["lr"].dtype == torch.float64
+    assert state["lr_steps"]["step"].tolist() == list(
+        range(1, len(state["lr_steps"]["step"]) + 1)
+    )
 
 
 def test_override_step(tmp_path: Path) -> None:

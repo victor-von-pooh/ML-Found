@@ -1,5 +1,5 @@
 import csv
-from pathlib import Path
+from array import array
 from typing import Any
 
 import torch
@@ -209,23 +209,131 @@ class History:
         self.records = [dict(record) for record in state["records"]]
 
 
-def save_lr_steps(records: list[dict], path: Path) -> None:
-    """
-    更新ごとの学習率の記録を CSV ファイルに保存する関数
+class LrSteps:
+    def __init__(self):
+        # 更新ごとの通しの番号, エポック, 学習率を, 長い学習でも軽くなるように
+        # 数の配列で保存
+        self.steps = array("q")
+        self.epochs = array("q")
+        self.lrs = array("d")
 
-    Parameters
-    ----------
-    records: list[dict]
-        更新ごとの step (通しの更新回数), epoch, lr
-    path: Path
-        保存先のパス
+    def __len__(self) -> int:
+        """
+        記録した更新の数を取得する関数
 
-    Returns
-    ----------
-    None
-    """
-    # 1 回の更新を 1 行にして書き出し
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["step", "epoch", "lr"])
-        writer.writeheader()
-        writer.writerows(records)
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        count: int
+            記録した更新の数
+        """
+        count = len(self.steps)
+
+        return count
+
+    def append(self, step: int, epoch: int, lr: float) -> None:
+        """
+        1 回の更新の学習率を加える関数
+
+        Parameters
+        ----------
+        step: int
+            通しの更新の番号
+        epoch: int
+            更新したエポック
+        lr: float
+            その更新に使った学習率
+
+        Returns
+        ----------
+        None
+        """
+        self.steps.append(step)
+        self.epochs.append(epoch)
+        self.lrs.append(lr)
+
+    def records(self) -> list[dict]:
+        """
+        記録を 1 回の更新ごとの辞書の一覧にする関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        records: list[dict]
+            更新ごとの step, epoch, lr
+        """
+        records = [
+            {"step": step, "epoch": epoch, "lr": lr}
+            for step, epoch, lr in zip(
+                self.steps, self.epochs, self.lrs, strict=True
+            )
+        ]
+
+        return records
+
+    def save_csv(self, path: str) -> None:
+        """
+        記録を CSV ファイルに保存する関数
+
+        Parameters
+        ----------
+        path: str
+            保存先のパス
+
+        Returns
+        ----------
+        None
+        """
+        # 1 回の更新を 1 行にして書き出し
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["step", "epoch", "lr"])
+            writer.writerows(
+                zip(self.steps, self.epochs, self.lrs, strict=True)
+            )
+
+    def state_dict(self) -> dict:
+        """
+        チェックポイントに保存するための記録を取得する関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        state: dict
+            番号, エポック, 学習率のテンソル (保存と読み込みを速くする形)
+        """
+        # 後から書き換わらないように複製してテンソルに変換
+        state = {
+            "step": torch.tensor(self.steps.tolist(), dtype=torch.int64),
+            "epoch": torch.tensor(self.epochs.tolist(), dtype=torch.int64),
+            "lr": torch.tensor(self.lrs.tolist(), dtype=torch.float64)
+        }
+
+        return state
+
+    def load_state_dict(self, state: dict) -> None:
+        """
+        チェックポイントから記録を戻す関数
+
+        Parameters
+        ----------
+        state: dict
+            state_dict で取得した記録
+
+        Returns
+        ----------
+        None
+        """
+        # 記録の置き換え
+        self.steps = array("q", state["step"].tolist())
+        self.epochs = array("q", state["epoch"].tolist())
+        self.lrs = array("d", state["lr"].tolist())

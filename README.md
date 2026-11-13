@@ -310,10 +310,10 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | `diff.yaml` | default から変えた項目 |
 | `train.log` | 差分, 環境の情報, モデルの構造, エポックごとの指標, 結果 |
 | `git_diff.patch` | 未コミットの変更がある場合のみ, commit id からの差分. 未追跡のファイルも含むが, `.gitignore` で除外したファイルと submodule の中の変更は含まない. バイナリファイルは変更されたことだけが記録される |
-| `history.csv` | エポックごとの指標と, エポックを始めた時点の学習率 (`lr`) |
-| `lr_steps.csv` | `scheduler.interval: step` の場合だけ. 更新ごとの通しの番号 (`step`), エポック (`epoch`), その更新に使った学習率 (`lr`). 学習を終えたときに保存し, 再開しても続きから記録する |
-| `<指標>_curve.png` | 指標ごとの学習曲線, 学習率の推移 (`lr_curve.png`) も含む |
-| `lr_steps_curve.png` | `lr_steps.csv` の学習率の推移 (横軸は更新の番号) |
+| `history.csv` | エポックごとの指標と, エポックを始めた時点の学習率 (`lr`. エポックの中の変化は `lr_steps.csv`) |
+| `lr_steps.csv` | `scheduler.interval: step` の場合だけ (エポックごとに変える設定で再開した場合は保存しない). 更新ごとの通しの番号 (`step`), エポック (`epoch`), その更新に使った学習率 (`lr`, `history.csv` と同じく最初のパラメータのグループの値). 学習を終えたときに保存し, 再開しても続きから記録する |
+| `<指標>_curve.png` | 指標ごとの学習曲線, 学習率の推移 (`lr_curve.png`, エポックを始めた時点の値) も含む |
+| `lr_steps.png` | `lr_steps.csv` の学習率の推移 (横軸は更新の番号) |
 | `best.pt` | ベストモデルのチェックポイント |
 | `last.pt` | 最後のエポックのチェックポイント, ベストモデルの重みも含む. 再開に使う |
 | `final_model.pt` | ベストモデルの重みだけ (`restore_best: false` の場合は最後のエポックの重み), cpu のテンソル |

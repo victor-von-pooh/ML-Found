@@ -15,11 +15,10 @@ ML-Found はその下で動く学習ライブラリとして, ダッシュボー
 ### 1. Optimizer と Scheduler の登録簿 (一部対応)
 
 `describe_optimizers()` と `describe_schedulers()` で, `torch.optim` の Optimizer と Scheduler ごとの引数の種類, 既定値, 必須か, 説明, 範囲を返すようにした. 引数は signature から取り出し, よく使うものには説明と範囲を付けた. Muon と SparseAdam は, そのままでは使えないことを理由付きで返す.
-`start_experiment` は, config の引数の名前の typo と必須の引数の不足を, 出力先を作る前に確かめる.
+`start_experiment` は, config の引数の名前の typo, 必須の引数の不足, 範囲の外の値を, 出力先を作る前に確かめる.
 
 残っていること.
 
-- 範囲外の値の確認 (今は範囲を返すだけ)
 - プロジェクト側で作った Optimizer を, 同じ仕組みで登録する方法
 
 ### 2. closure を渡す更新手順への対応 (対応済み)

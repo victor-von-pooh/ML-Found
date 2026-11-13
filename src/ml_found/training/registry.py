@@ -5,7 +5,7 @@ import types
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional, Union, get_args, get_origin
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
 from torch import optim
 
 from ml_found.training.optim import (
@@ -57,6 +57,8 @@ SCHEDULER_NOTES = {
 }
 
 # 引数の説明と範囲 (名前ごと, 全てのクラスで共通)
+# 範囲は意味のある値の範囲で, PyTorch の確認より狭いものもある
+# (momentum の上限など). torch のクラスでは, 範囲の外の値を学習の前にエラー
 PARAM_NOTES: dict[str, dict[str, Any]] = {
     "lr": {"description": "学習率", "minimum": 0.0},
     "weight_decay": {"description": "重み減衰の強さ", "minimum": 0.0},
@@ -69,7 +71,7 @@ PARAM_NOTES: dict[str, dict[str, Any]] = {
     "step_size": {"description": "学習率を下げる間隔 (エポック)", "minimum": 1},
     "milestones": {"description": "学習率を下げるエポックの一覧"},
     "T_max": {"description": "学習率を下げきるまでのエポック数", "minimum": 1},
-    "eta_min": {"description": "学習率の下限", "minimum": 0.0},
+    "eta_min": {"description": "学習率の下限"},
     "factor": {"description": "学習率に掛ける倍率", "minimum": 0.0},
     "patience": {"description": "改善しないのを待つエポック数", "minimum": 0},
     "min_lr": {"description": "学習率の下限", "minimum": 0.0},
@@ -92,7 +94,7 @@ CLASS_PARAM_NOTES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("Adafactor", "eps"): {"description": "0 除算を避ける小さな値の組"},
     # 以下は PyTorch が初期化で確かめる範囲か, 外れると学習中に 0 除算になる範囲
-    # 範囲は両端を含む形なので, 端を含まない境界は説明に記載
+    # 範囲は両端を含み, 端を含まない場合は exclusive_minimum などで指定
     ("OneCycleLR", "total_steps"): {
         "description": "全ステップ数. 省略する場合は epochs と steps_per_epoch が必要",
         "minimum": 1
@@ -113,16 +115,16 @@ CLASS_PARAM_NOTES: dict[tuple[str, str], dict[str, Any]] = {
         "minimum": 0.0, "maximum": 1.0
     },
     ("LinearLR", "start_factor"): {
-        "description": "最初の学習率の倍率 (0 より大きい値)",
-        "minimum": 0.0, "maximum": 1.0
+        "description": "最初の学習率の倍率",
+        "minimum": 0.0, "maximum": 1.0, "exclusive_minimum": True
     },
     ("LinearLR", "end_factor"): {
         "description": "total_iters の後の学習率の倍率",
         "minimum": 0.0, "maximum": 1.0
     },
     ("ReduceLROnPlateau", "factor"): {
-        "description": "改善しないときに学習率に掛ける倍率 (1 より小さい値)",
-        "minimum": 0.0, "maximum": 1.0
+        "description": "改善しないときに学習率に掛ける倍率",
+        "minimum": 0.0, "maximum": 1.0, "exclusive_maximum": True
     },
     ("CosineAnnealingWarmRestarts", "T_0"): {
         "description": "最初に学習率を戻すまでのエポック数", "minimum": 1
@@ -131,13 +133,12 @@ CLASS_PARAM_NOTES: dict[tuple[str, str], dict[str, Any]] = {
         "description": "学習率を戻すたびに周期に掛ける倍率", "minimum": 1
     },
     ("OneCycleLR", "div_factor"): {
-        "description": "最初の学習率を max_lr / div_factor にする値 (0 より大きい値)",
-        "minimum": 0.0
+        "description": "最初の学習率を max_lr / div_factor にする値",
+        "minimum": 0.0, "exclusive_minimum": True
     },
     ("OneCycleLR", "final_div_factor"): {
-        "description": "最後の学習率を最初の学習率の 1 / final_div_factor にする値"
-        " (0 より大きい値)",
-        "minimum": 0.0
+        "description": "最後の学習率を最初の学習率の 1 / final_div_factor にする値",
+        "minimum": 0.0, "exclusive_minimum": True
     },
     ("CyclicLR", "step_size_up"): {
         "description": "学習率を上げるステップ数", "minimum": 1
@@ -158,6 +159,9 @@ class ParamSpec:
     description: str = ""
     minimum: Optional[float] = None
     maximum: Optional[float] = None
+    # 範囲の端の値を含まないか (true なら minimum より大きい値だけを許可)
+    exclusive_minimum: bool = False
+    exclusive_maximum: bool = False
 
 
 @dataclass
@@ -340,7 +344,9 @@ def describe_params(cls: type) -> list[ParamSpec]:
                 name=param.name, kind=kind, default=default,
                 required=required, advanced=param.name in ADVANCED,
                 description=notes.get("description", ""),
-                minimum=notes.get("minimum"), maximum=notes.get("maximum")
+                minimum=notes.get("minimum"), maximum=notes.get("maximum"),
+                exclusive_minimum=notes.get("exclusive_minimum", False),
+                exclusive_maximum=notes.get("exclusive_maximum", False)
             )
         )
 
@@ -431,6 +437,154 @@ def describe_schedulers() -> list[dict[str, Any]]:
     return specs
 
 
+def is_checkable(cls: type) -> bool:
+    """
+    クラスの引数を名前で確かめられるかを判定する関数
+
+    Parameters
+    ----------
+    cls: type
+        Optimizer か Scheduler のクラス
+
+    Returns
+    ----------
+    checkable: bool
+        引数を取り出せ, 任意の名前の引数や位置だけの引数を受け取らないか
+    """
+    # 引数を取り出せないクラスと, 任意の名前の引数や位置だけの引数を受け取る
+    # クラス (自作のものなど) は確認の対象外
+    try:
+        parameters = list(inspect.signature(cls.__init__).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    checkable = not any(
+        param.kind in (param.VAR_KEYWORD, param.POSITIONAL_ONLY)
+        for param in parameters[2:]
+    )
+
+    return checkable
+
+
+def describe_range(spec: ParamSpec) -> str:
+    """
+    引数の範囲を文にする関数
+
+    Parameters
+    ----------
+    spec: ParamSpec
+        範囲を持つ引数の仕様
+
+    Returns
+    ----------
+    text: str
+        「0 以上 1 未満」「0 より大きく 1 以下」のような範囲の説明
+    """
+    # 端を含まない下限は, 上限が続く場合だけ「より大きく」とつなげる
+    parts = []
+    if spec.minimum is not None:
+        lower = "以上"
+        if spec.exclusive_minimum:
+            lower = "より大きく" if spec.maximum is not None else "より大きい"
+        parts.append(f"{spec.minimum} {lower}")
+    if spec.maximum is not None:
+        upper = "未満" if spec.exclusive_maximum else "以下"
+        parts.append(f"{spec.maximum} {upper}")
+    text = " ".join(parts)
+
+    return text
+
+
+def is_in_range(spec: ParamSpec, value: float) -> bool:
+    """
+    値が引数の範囲に入るかを判定する関数
+
+    Parameters
+    ----------
+    spec: ParamSpec
+        範囲を持つ引数の仕様
+    value: float
+        config に書かれた値
+
+    Returns
+    ----------
+    inside: bool
+        範囲に入るか (範囲が無ければ常に True)
+    """
+    # NaN は比べられないので範囲外として扱い
+    if math.isnan(value):
+        return False
+    inside = True
+    if spec.minimum is not None:
+        inside = inside and (
+            value > spec.minimum if spec.exclusive_minimum
+            else value >= spec.minimum
+        )
+    if spec.maximum is not None:
+        inside = inside and (
+            value < spec.maximum if spec.exclusive_maximum
+            else value <= spec.maximum
+        )
+
+    return inside
+
+
+def check_param_values(cls: type, params: Any) -> None:
+    """
+    config の引数の値が, 登録簿の範囲に入るかを確かめる関数
+
+    Parameters
+    ----------
+    cls: type
+        Optimizer か Scheduler のクラス
+    params: Any
+        config の optimizer.params か scheduler.params
+
+    Returns
+    ----------
+    None
+    """
+    # 範囲は torch のクラスの引数の意味で決めたので, 自作のクラス (同じ名前の
+    # 引数や同じクラス名でも意味が違う可能性あり) は対象外
+    if not cls.__module__.startswith("torch.") or not is_checkable(cls):
+        return
+
+    # 範囲を持つ引数の値を, 補間を解決してから確認
+    # ??? の値, 解決できない補間, 配列 (グループごとの値) と null は対象外
+    out_of_range = []
+    for spec in describe_params(cls):
+        if spec.minimum is None and spec.maximum is None:
+            continue
+        if spec.name not in params:
+            continue
+        try:
+            value = params[spec.name]
+        except Exception:
+            continue
+        if value is None or isinstance(value, (list, tuple, ListConfig)):
+            continue
+
+        # 引用符で囲んだ数や真偽値は, 学習を始めてからの分かりにくいエラーに
+        # なるので, 数で書くように通知
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            out_of_range.append(
+                f"{spec.name} は数で書いてください (今は {value!r})"
+            )
+            continue
+        try:
+            number = float(value)
+        except OverflowError:
+            number = math.inf
+        if math.isinf(number) or not is_in_range(spec, number):
+            out_of_range.append(
+                f"{spec.name} は {describe_range(spec)} (今は {value})"
+            )
+    if out_of_range:
+        raise ValueError(
+            f"{cls.__name__} の引数の値に誤りがあります: "
+            f"{', '.join(out_of_range)}"
+        )
+
+
 def check_params(cls: type, names: set[str]) -> None:
     """
     config の引数の名前が, クラスの引数として正しいかを確かめる関数
@@ -446,16 +600,7 @@ def check_params(cls: type, names: set[str]) -> None:
     ----------
     None
     """
-    # 引数を取り出せないクラスと, 任意の名前の引数や位置だけの引数を受け取る
-    # クラス (自作のものなど) は確認の対象外
-    try:
-        parameters = list(inspect.signature(cls.__init__).parameters.values())
-    except (TypeError, ValueError):
-        return
-    if any(
-        param.kind in (param.VAR_KEYWORD, param.POSITIONAL_ONLY)
-        for param in parameters[2:]
-    ):
+    if not is_checkable(cls):
         return
 
     # 存在しない名前の引数 (typo など) の確認
@@ -521,10 +666,12 @@ def check_optim_params(cfg: Any) -> None:
     None
     """
     # 自分で作った Optimizer を Trainer に渡す場合も, config の引数は確認
+    # 名前と必須の引数を確かめてから, 値の範囲を確認
     optimizer_cls = resolve_optimizer_class(cfg.optimizer.name)
     check_params(
         optimizer_cls, param_names(cfg.optimizer.params, "optimizer")
     )
+    check_param_values(optimizer_cls, cfg.optimizer.params)
 
     # Scheduler を使う場合だけ確認
     if cfg.scheduler.name is not None:
@@ -532,3 +679,4 @@ def check_optim_params(cfg: Any) -> None:
         check_params(
             scheduler_cls, param_names(cfg.scheduler.params, "scheduler")
         )
+        check_param_values(scheduler_cls, cfg.scheduler.params)

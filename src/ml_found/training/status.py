@@ -128,7 +128,7 @@ class RunStatus:
 
     def start(
         self, planned_epochs: int, start_epoch: int, monitor: str,
-        mode: str, seed: Optional[int], device: str
+        mode: str, seed: Optional[int], device: str, select_best: bool = True
     ) -> None:
         """
         学習を始めたことを run.json に書く関数
@@ -147,6 +147,8 @@ class RunStatus:
             乱数シード
         device: str
             学習に使うデバイス
+        select_best: bool = True
+            監視する指標でベストモデルを選ぶかどうか
 
         Returns
         ----------
@@ -169,6 +171,7 @@ class RunStatus:
             "completed_epochs": 0,
             "monitor": monitor,
             "mode": mode,
+            "select_best": select_best,
             "best_epoch": None,
             "best_value": None,
             "early_stopped_epoch": None,

@@ -800,6 +800,7 @@ class Trainer:
             "mode": self.trainer_cfg.mode,
             "monitor_tiebreak": self.trainer_cfg.monitor_tiebreak,
             "monitor_tiebreak_mode": self.trainer_cfg.monitor_tiebreak_mode,
+            "select_best": self.trainer_cfg.select_best,
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": (
@@ -902,7 +903,10 @@ class Trainer:
             self.trainer_cfg.monitor_tiebreak,
             self.trainer_cfg.monitor_tiebreak_mode
         )
-        if "monitor_tiebreak" in state and old_tiebreak != new_tiebreak:
+        if (
+            "monitor_tiebreak" in state and old_tiebreak != new_tiebreak
+            and self.trainer_cfg.select_best
+        ):
             raise ValueError(
                 "再開元と同じ値の場合に比べる指標が違います: 再開元は "
                 f"{old_tiebreak[0]} ({old_tiebreak[1]}), 今回は "
@@ -933,8 +937,15 @@ class Trainer:
 
         # チェックポイントに含まれるベストモデルの重みと最良値の復元
         # 重みを省いた場合は, 今のモデルか再開元の best.pt からの復元
+        # ベストモデルを選ばない設定では, 再開元のベストモデルの状態を捨てる
         self.checkpoint.load_state_dict(state["checkpoint"])
-        if self.checkpoint.best_model_state is None:
+        self.warn_select_best_change(state)
+        if not self.trainer_cfg.select_best:
+            self.checkpoint.best_value = None
+            self.checkpoint.best_epoch = 0
+            self.checkpoint.best_tiebreak = None
+            self.checkpoint.best_model_state = None
+        elif self.checkpoint.best_model_state is None:
             self.restore_best_weights(state, checkpoint_path)
 
         # 継承したクラスが加えた状態の復元
@@ -946,7 +957,10 @@ class Trainer:
         # 新しい保存先にも, 再開元の best.pt と読み込んだ状態を保存
         run_dir = self.experiment.run_dir
         best_path = checkpoint_path.with_name("best.pt")
-        if best_path.exists() and self.trainer_cfg.checkpoint.save_best:
+        if (
+            best_path.exists() and self.trainer_cfg.checkpoint.save_best
+            and self.trainer_cfg.select_best
+        ):
             self.copy_best(best_path, run_dir / "best.pt")
         if self.trainer_cfg.checkpoint.save_last:
             # 戻したベストモデルの重みを入れ直し, 今回の設定に合わせて保存
@@ -960,6 +974,37 @@ class Trainer:
         self.epoch = state["epoch"]
         self.global_step = state["global_step"]
         self.logger.info(f"再開元: {path} (エポック {state['epoch']})")
+
+    def warn_select_best_change(self, state: dict) -> None:
+        """
+        再開元と今回で select_best が違う場合に警告する関数
+
+        Parameters
+        ----------
+        state: dict
+            再開元のチェックポイントの内容
+
+        Returns
+        ----------
+        None
+        """
+        # この設定を入れる前のチェックポイントはベストモデルを選んでいたもの
+        old = state.get("select_best", True)
+        new = self.trainer_cfg.select_best
+        if old == new:
+            return
+        if new:
+            message = (
+                "再開元はベストモデルを選ばない設定 (select_best: false) なので, "
+                "ベストモデルは再開した後のエポックから選びます"
+            )
+        else:
+            message = (
+                "再開元のベストモデルは使わずに, 最後のエポックの重みを残します "
+                "(select_best: false)"
+            )
+        self.logger.warning(message)
+        warnings.warn(message, stacklevel=2)
 
     def restore_best_weights(self, state: dict, checkpoint_path: Path) -> None:
         """
@@ -1360,7 +1405,7 @@ class Trainer:
 
         # ベストモデルに戻す場合は, 学習の後にベストモデルの重みを使うので不要
         uses_best = (
-            self.trainer_cfg.restore_best
+            self.trainer_cfg.restore_best and self.trainer_cfg.select_best
             and self.checkpoint.best_model_state is not None
         )
         if not uses_best:
@@ -1479,7 +1524,8 @@ class Trainer:
             planned_epochs=self.trainer_cfg.epochs, start_epoch=1,
             monitor=monitor, mode=self.trainer_cfg.mode,
             seed=self.experiment.cfg.experiment.seed,
-            device=str(self.device)
+            device=str(self.device),
+            select_best=self.trainer_cfg.select_best
         )
 
         # データの量で決まる Scheduler の引数を補って作成 (再開の復元の前)

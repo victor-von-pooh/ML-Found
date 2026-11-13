@@ -82,7 +82,10 @@ def check_trainer_config(cfg: DictConfig) -> None:
     # last.pt にベストモデルの重みを入れず best.pt も残さないと, 再開した
     # 学習でベストモデルに戻せないので警告
     checkpoint_cfg = trainer_cfg.checkpoint
-    if not checkpoint_cfg.last_with_best and not checkpoint_cfg.save_best:
+    if (
+        not checkpoint_cfg.last_with_best and not checkpoint_cfg.save_best
+        and trainer_cfg.select_best
+    ):
         message = (
             "trainer.checkpoint.last_with_best: false と save_best: false を"
             "合わせると, 再開した学習ではベストモデルの重みに戻せません"
@@ -111,6 +114,11 @@ def check_trainer_config(cfg: DictConfig) -> None:
         raise ValueError(
             "trainer.select_best: false では trainer.early_stopping.use は"
             "使えません (改善を判定しないため)"
+        )
+    if not trainer_cfg.select_best and trainer_cfg.monitor_tiebreak:
+        raise ValueError(
+            "trainer.select_best: false では trainer.monitor_tiebreak は"
+            "使えません (ベストモデルを選ばないため)"
         )
 
 

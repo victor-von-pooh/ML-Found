@@ -5,7 +5,7 @@ import types
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional, Union, get_args, get_origin
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
 from torch import optim
 
 from ml_found.training.optim import (
@@ -57,6 +57,8 @@ SCHEDULER_NOTES = {
 }
 
 # 引数の説明と範囲 (名前ごと, 全てのクラスで共通)
+# 範囲は意味のある値の範囲で, PyTorch の確認より狭いものもある
+# (momentum の上限など). torch のクラスでは, 範囲の外の値を学習の前にエラー
 PARAM_NOTES: dict[str, dict[str, Any]] = {
     "lr": {"description": "学習率", "minimum": 0.0},
     "weight_decay": {"description": "重み減衰の強さ", "minimum": 0.0},
@@ -69,7 +71,7 @@ PARAM_NOTES: dict[str, dict[str, Any]] = {
     "step_size": {"description": "学習率を下げる間隔 (エポック)", "minimum": 1},
     "milestones": {"description": "学習率を下げるエポックの一覧"},
     "T_max": {"description": "学習率を下げきるまでのエポック数", "minimum": 1},
-    "eta_min": {"description": "学習率の下限", "minimum": 0.0},
+    "eta_min": {"description": "学習率の下限"},
     "factor": {"description": "学習率に掛ける倍率", "minimum": 0.0},
     "patience": {"description": "改善しないのを待つエポック数", "minimum": 0},
     "min_lr": {"description": "学習率の下限", "minimum": 0.0},
@@ -475,19 +477,18 @@ def describe_range(spec: ParamSpec) -> str:
     Returns
     ----------
     text: str
-        「0 より大きく 1 以下」のような範囲の説明
+        「0 以上 1 未満」「0 より大きく 1 以下」のような範囲の説明
     """
+    # 端を含まない下限は, 上限が続く場合だけ「より大きく」とつなげる
     parts = []
     if spec.minimum is not None:
-        parts.append(
-            f"{spec.minimum} より大きく" if spec.exclusive_minimum
-            else f"{spec.minimum} 以上"
-        )
+        lower = "以上"
+        if spec.exclusive_minimum:
+            lower = "より大きく" if spec.maximum is not None else "より大きい"
+        parts.append(f"{spec.minimum} {lower}")
     if spec.maximum is not None:
-        parts.append(
-            f"{spec.maximum} より小さい" if spec.exclusive_maximum
-            else f"{spec.maximum} 以下"
-        )
+        upper = "未満" if spec.exclusive_maximum else "以下"
+        parts.append(f"{spec.maximum} {upper}")
     text = " ".join(parts)
 
     return text
@@ -542,11 +543,13 @@ def check_param_values(cls: type, params: Any) -> None:
     ----------
     None
     """
-    if not is_checkable(cls):
+    # 範囲は torch のクラスの引数の意味で決めたので, 自作のクラス (同じ名前の
+    # 引数や同じクラス名でも意味が違う可能性あり) は対象外
+    if not cls.__module__.startswith("torch.") or not is_checkable(cls):
         return
 
-    # 範囲を持つ引数の, 数値で書かれた値だけを確認
-    # 補間を解決できない値, ??? の値, 文字や真偽値などは対象外
+    # 範囲を持つ引数の値を, 補間を解決してから確認
+    # ??? の値, 解決できない補間, 配列 (グループごとの値) と null は対象外
     out_of_range = []
     for spec in describe_params(cls):
         if spec.minimum is None and spec.maximum is None:
@@ -557,15 +560,28 @@ def check_param_values(cls: type, params: Any) -> None:
             value = params[spec.name]
         except Exception:
             continue
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if value is None or isinstance(value, (list, tuple, ListConfig)):
             continue
-        if not is_in_range(spec, float(value)):
+
+        # 引用符で囲んだ数や真偽値は, 学習を始めてからの分かりにくいエラーに
+        # なるので, 数で書くように通知
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            out_of_range.append(
+                f"{spec.name} は数で書いてください (今は {value!r})"
+            )
+            continue
+        try:
+            number = float(value)
+        except OverflowError:
+            number = math.inf
+        if math.isinf(number) or not is_in_range(spec, number):
             out_of_range.append(
                 f"{spec.name} は {describe_range(spec)} (今は {value})"
             )
     if out_of_range:
         raise ValueError(
-            f"{cls.__name__} の引数が範囲の外です: {', '.join(out_of_range)}"
+            f"{cls.__name__} の引数の値に誤りがあります: "
+            f"{', '.join(out_of_range)}"
         )
 
 

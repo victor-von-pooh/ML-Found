@@ -381,7 +381,7 @@ def test_param_values_out_of_range(tmp_path: Path) -> None:
     assert not (tmp_path / "negative" / "outputs").exists()
 
     # 端を含まない範囲は, 端の値もエラー
-    with pytest.raises(ValueError, match="factor は 0.0 以上 1.0 より小さい"):
+    with pytest.raises(ValueError, match="factor は 0.0 以上 1.0 未満"):
         make_experiment(
             tmp_path / "factor",
             "scheduler:\n  name: ReduceLROnPlateau\n  params:\n"
@@ -402,13 +402,77 @@ def test_param_values_out_of_range(tmp_path: Path) -> None:
             "    momentum: 1.5\n    weight_decay: -1\n"
         )
 
-    # 端を含む範囲の端の値, 範囲を持たない引数, 補間の値は通る
+    # 補間は解決した値で確認
+    with pytest.raises(ValueError, match=r"patience は 0 以上 \(今は -3\)"):
+        make_experiment(
+            tmp_path / "interpolation",
+            "wait: -3\n"
+            "scheduler:\n  name: ReduceLROnPlateau\n  params:\n"
+            "    patience: ${wait}\n"
+        )
+
+    # 引用符で囲んだ数, 真偽値, 無限大は誤り
+    with pytest.raises(ValueError, match="lr は数で書いてください"):
+        make_experiment(
+            tmp_path / "quoted",
+            "optimizer:\n  name: Adam\n  params:\n    lr: '0.001'\n"
+        )
+    with pytest.raises(ValueError, match="lr は数で書いてください"):
+        make_experiment(
+            tmp_path / "bool",
+            "optimizer:\n  name: Adam\n  params:\n    lr: true\n"
+        )
+    with pytest.raises(ValueError, match=r"lr は 0.0 以上 \(今は inf\)"):
+        make_experiment(
+            tmp_path / "inf",
+            "optimizer:\n  name: Adam\n  params:\n    lr: .inf\n"
+        )
+
+    # 端を含む範囲の端の値, 範囲を持たない引数, 範囲内の補間の値, 配列は通る
     make_experiment(
         tmp_path / "ok",
         "optimizer:\n  name: SGD\n  params:\n    lr: 0\n    momentum: 1.0\n"
         "    dampening: -5\n"
         "scheduler:\n  name: ReduceLROnPlateau\n  params:\n"
         "    factor: 0.0\n    patience: ${trainer.epochs}\n"
+        "    min_lr: [0.0]\n"
+    )
+
+
+class CustomLinearLR(optim.lr_scheduler.LinearLR):
+    def __init__(
+        self, optimizer: optim.Optimizer, start_factor: float = 0.5,
+        end_factor: float = 1.0, total_iters: int = 5
+    ):
+        # 親クラスのコンストラクタを呼び出す (start_factor は 0 より大きく補正)
+        super(CustomLinearLR, self).__init__(
+            optimizer, max(start_factor, 1e-8), end_factor, total_iters
+        )
+
+
+def test_custom_classes_skip_ranges(tmp_path: Path) -> None:
+    """
+    自作のクラスには, 登録簿の範囲を当てはめないことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 同じ名前の引数 (weight_decay) や同じ親クラスでも, 自作のものは対象外
+    make_experiment(
+        tmp_path / "optimizer",
+        "optimizer:\n  name: test_registry.RenamedSGD\n  params:\n"
+        "    lr: -0.1\n"
+    )
+    make_experiment(
+        tmp_path / "scheduler",
+        "scheduler:\n  name: test_registry.CustomLinearLR\n  params:\n"
+        "    start_factor: 0.0\n"
     )
 
 
@@ -434,6 +498,8 @@ def test_is_in_range() -> None:
     assert not is_in_range(spec, 1.0001)
     assert not is_in_range(spec, float("nan"))
     assert describe_range(spec) == "0.0 より大きく 1.0 以下"
+    spec.maximum = None
+    assert describe_range(spec) == "0.0 より大きい"
 
     unbounded = ParamSpec(
         name="y", kind="float", default=0.0, required=False, advanced=False

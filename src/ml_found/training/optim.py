@@ -2,8 +2,10 @@ import importlib
 import inspect
 from types import ModuleType
 from typing import Any, Iterable, Optional
+import warnings
 
 from omegaconf import DictConfig, OmegaConf
+import torch
 from torch import optim
 
 
@@ -371,3 +373,67 @@ def step_scheduler(
         scheduler.step(metric)
     else:
         scheduler.step()
+
+
+def try_build_optim(cfg: DictConfig, device: torch.device) -> None:
+    """
+    config の Optimizer と Scheduler を, 仮のパラメータで作れるかを確かめる関数
+
+    範囲を持たない引数や組み合わせの誤り (PyTorch が作るときに出すエラー) を,
+    出力先を作る前に見つけるために使う. データの量で決まる Scheduler の引数は
+    仮の値で補う
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        学習に使う config
+    device: torch.device
+        学習に使うデバイス (デバイスで決まる引数, fused などのため)
+
+    Returns
+    ----------
+    None
+    """
+    # 値の決まっていない引数 (??? や解決できない補間) がある場合は,
+    # 範囲の確認と同じく対象外
+    sections = [cfg.optimizer]
+    if cfg.scheduler.name is not None:
+        sections.append(cfg.scheduler)
+    for section in sections:
+        try:
+            OmegaConf.to_container(
+                section, resolve=True, throw_on_missing=True
+            )
+        except Exception:
+            return
+
+    # 学習と同じデバイスの仮のパラメータで Optimizer を作成
+    # 作るときの警告は学習の本番でも出るので, ここでは非表示
+    parameter = torch.nn.Parameter(torch.zeros(2, 2, device=device))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            optimizer = build_optimizer(cfg.optimizer, [parameter])
+        except Exception as error:
+            raise ValueError(
+                f"optimizer の引数で {cfg.optimizer.name} を作れません: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+        # Scheduler も作れるかを確認 (データの量で決まる引数は仮の値)
+        if cfg.scheduler.name is None:
+            return
+        scheduler_cfg = OmegaConf.create(
+            OmegaConf.to_container(cfg.scheduler, resolve=True)
+        )
+        for name in missing_data_size_params(scheduler_cfg):
+            scheduler_cfg.params[name] = (
+                int(cfg.trainer.epochs) if name == "epochs" else 1
+            )
+        try:
+            build_scheduler(scheduler_cfg, optimizer, cfg.trainer.mode)
+        except Exception as error:
+            raise ValueError(
+                f"scheduler の引数で {cfg.scheduler.name} を作れません: "
+                f"{type(error).__name__}: {error}"
+            ) from error

@@ -14,7 +14,7 @@ from ml_found.experiment.env_info import (
 )
 from ml_found.experiment.logger import get_logger
 from ml_found.experiment.seed import EXTRA_RNGS, fix_seed
-from ml_found.training.optim import check_optim_config
+from ml_found.training.optim import check_optim_config, try_build_optim
 from ml_found.training.registry import check_optim_params
 from ml_found.utils.device import get_device
 
@@ -254,10 +254,12 @@ def start_experiment(
         project_root = Path(project_dir).resolve()
 
     # 空の出力先が残らないように, ディレクトリを作る前にデバイス,
-    # Optimizer と Scheduler (クラスと引数) と学習の設定, 再開元の確認
+    # Optimizer と Scheduler (クラス, 引数, 仮のパラメータで作れるか) と
+    # 学習の設定, 再開元の確認
     device = get_device(cfg.experiment.device)
     check_optim_config(cfg)
     check_optim_params(cfg)
+    try_build_optim(cfg, device)
     check_trainer_config(cfg)
     check_resume_path(cfg, project_root)
 

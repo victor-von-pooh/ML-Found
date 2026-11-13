@@ -477,11 +477,12 @@ def test_custom_classes_skip_ranges(tmp_path: Path) -> None:
     ----------
     None
     """
-    # 同じ名前の引数 (weight_decay) や同じ親クラスでも, 自作のものは対象外
+    # 同じ名前の引数 (momentum) や同じ親クラスでも, 自作のものは対象外
+    # (SGD の範囲では momentum は 1 以下)
     make_experiment(
         tmp_path / "optimizer",
-        "optimizer:\n  name: test_registry.RenamedSGD\n  params:\n"
-        "    lr: -0.1\n"
+        "optimizer:\n  name: test_registry.FlexibleSGD\n  params:\n"
+        "    momentum: 1.5\n"
     )
     make_experiment(
         tmp_path / "scheduler",
@@ -557,19 +558,45 @@ def test_array_values_and_init_errors(tmp_path: Path) -> None:
         with pytest.raises(ValueError):
             cls(torch.nn.Linear(1, 1).parameters(), betas=(0.9, 1.0))
 
-    # 範囲の確認から外れる誤り (自作の Optimizer の引数) は Trainer の作成で
-    # エラーになり, train.log と run.json に残る
-    experiment = make_experiment(
-        tmp_path / "init",
-        "optimizer:\n  name: test_registry.RenamedSGD\n  params:\n"
-        "    lr: -0.1\n"
-    )
+    # 範囲の確認から外れる誤り (自作の Optimizer の引数) も, 仮のパラメータで
+    # 作ってみて出力先を作る前にエラー
+    with pytest.raises(ValueError, match="RenamedSGD を作れません"):
+        make_experiment(
+            tmp_path / "custom",
+            "optimizer:\n  name: test_registry.RenamedSGD\n  params:\n"
+            "    lr: -0.1\n"
+        )
+    assert not (tmp_path / "custom" / "outputs").exists()
+
+    # それ以外の Trainer の作成のエラー (モデルを移せないなど) は,
+    # train.log と run.json に残る
+    class BrokenModel(torch.nn.Linear):
+        # デバイスに移せないモデル
+        def to(self, *args: Any, **kwargs: Any) -> torch.nn.Module:
+            """
+            常にエラーにする関数
+
+            Parameters
+            ----------
+            *args: Any
+                移す先
+            **kwargs: Any
+                移す先
+
+            Returns
+            ----------
+            model: torch.nn.Module
+                返さない
+            """
+            raise ValueError("このモデルは移せません")
+
+    experiment = make_experiment(tmp_path / "init")
     with pytest.raises(ValueError):
-        Trainer(torch.nn.Linear(1, 1), experiment, lambda m, b, p: {})
+        Trainer(BrokenModel(1, 1), experiment, lambda m, b, p: {})
     status = json.loads(
         (experiment.run_dir / "run.json").read_text(encoding="utf-8")
     )
     assert status["status"] == "failed"
-    assert "learning rate" in status["error"]
+    assert "移せません" in status["error"]
     log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
     assert "Trainer の作成でエラーが起きました" in log

@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import socket
 import tempfile
@@ -86,16 +87,16 @@ class RunStatus:
 
         # run.json の内容, 最後に進み具合を書いた時刻, 開始時刻の入れ物を用意
         self.data: dict[str, Any] = {}
-        self.last_progress = 0.0
+        self.last_progress = -math.inf
         self.started = time.monotonic()
 
         # 最後に run.json を書いた時刻 (エポックごとの更新の間隔の確保に使用) と,
         # 間隔の中で書かずに残した更新があるかの印
-        self.last_update = 0.0
+        self.last_update = -math.inf
         self.pending = False
 
         # 最後にエポックの途中の中断の要求を確かめた時刻を用意
-        self.last_stop_check = 0.0
+        self.last_stop_check = -math.inf
 
         # 書き込みの失敗を 1 回だけ警告するための印を用意
         self.warned = False
@@ -153,7 +154,7 @@ class RunStatus:
         """
         # 開始時刻と, 終わるまで更新していく項目の初期値の設定
         self.started = time.monotonic()
-        self.last_progress = 0.0
+        self.last_progress = -math.inf
         self.data = {
             "format_version": FORMAT_VERSION,
             "status": "running",

@@ -1,6 +1,7 @@
 import csv
 from array import array
-from typing import Any
+import math
+from typing import Any, Optional
 
 import torch
 
@@ -97,10 +98,42 @@ class MetricTracker:
         self.counts = {}
 
 
+def to_tensor(values: array, dtype: torch.dtype) -> torch.Tensor:
+    """
+    数の配列を, 中身を写したテンソルにする関数
+
+    Parameters
+    ----------
+    values: array
+        数の配列 (d は float64, b は int8)
+    dtype: torch.dtype
+        テンソルの型
+
+    Returns
+    ----------
+    tensor: torch.Tensor
+        写したテンソル, 後から配列が増えても変わらない
+    """
+    # 空の配列はバッファから作れないので空のテンソル
+    if len(values) == 0:
+        tensor = torch.empty(0, dtype=dtype)
+        return tensor
+    tensor = torch.frombuffer(values, dtype=dtype).clone()
+
+    return tensor
+
+
 class History:
     def __init__(self):
         # エポックごとの記録を保存
         self.records: list[dict] = []
+
+        # チェックポイント用の列ごとの数の配列 (記録が増えた分だけ足す)
+        self.table_source: Optional[list[dict]] = None
+        self.table_rows = 0
+        self.table_columns: list[str] = []
+        self.table_values: list[array] = []
+        self.table_mask: list[array] = []
 
     def append(self, record: dict) -> None:
         """
@@ -175,6 +208,48 @@ class History:
             writer.writeheader()
             writer.writerows(self.records)
 
+    def update_table(self) -> None:
+        """
+        チェックポイント用の列ごとの数の配列に, 増えた記録を足す関数
+
+        記録の入れ物が置き換わった場合や減った場合は作り直す
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        # 記録が置き換わった場合と減った場合は作り直し
+        if (
+            self.table_source is not self.records
+            or self.table_rows > len(self.records)
+        ):
+            self.table_source = self.records
+            self.table_rows = 0
+            self.table_columns = []
+            self.table_values = []
+            self.table_mask = []
+
+        # 増えた記録を 1 行ずつ足し, 新しい列は前の行を記録なしで補う
+        for record in self.records[self.table_rows:]:
+            for key in record:
+                if key not in self.table_columns:
+                    self.table_columns.append(key)
+                    self.table_values.append(
+                        array("d", [math.nan] * self.table_rows)
+                    )
+                    self.table_mask.append(array("b", [0] * self.table_rows))
+            for j, key in enumerate(self.table_columns):
+                value = record.get(key)
+                self.table_values[j].append(
+                    math.nan if value is None else float(value)
+                )
+                self.table_mask[j].append(0 if value is None else 1)
+            self.table_rows += 1
+
     def state_dict(self) -> dict:
         """
         チェックポイントに保存するための記録を取得する関数
@@ -188,8 +263,17 @@ class History:
         state: dict
             エポックごとの記録
         """
-        # 後から書き換わらないように記録を複製して受け渡し
-        state = {"records": [dict(record) for record in self.records]}
+        # 記録が長くなっても保存が軽いように, 列ごとの数の配列にして受け渡し
+        # (辞書のリストのままだと, 毎回の保存で全ての記録を pickle するため)
+        # 記録の無い値は mask で区別し, 列の順は最初に現れた順
+        self.update_table()
+        state = {
+            "columns": list(self.table_columns),
+            "values": [to_tensor(column, torch.float64)
+                       for column in self.table_values],
+            "mask": [to_tensor(column, torch.int8)
+                     for column in self.table_mask]
+        }
 
         return state
 
@@ -206,8 +290,25 @@ class History:
         ----------
         None
         """
-        # 記録の置き換え
-        self.records = [dict(record) for record in state["records"]]
+        # 以前の形 (辞書のリスト) のチェックポイントはそのまま置き換え
+        if "records" in state:
+            self.records = [dict(record) for record in state["records"]]
+            return
+
+        # 列ごとの数の配列から, エポックごとの辞書に戻す (epoch は整数)
+        columns = list(state["columns"])
+        values = [column.tolist() for column in state["values"]]
+        mask = [column.tolist() for column in state["mask"]]
+        n_rows = len(values[0]) if values else 0
+        records = []
+        for i in range(n_rows):
+            record: dict[str, Any] = {}
+            for j, key in enumerate(columns):
+                if mask[j][i]:
+                    value = values[j][i]
+                    record[key] = int(value) if key == "epoch" else value
+            records.append(record)
+        self.records = records
 
 
 class LrSteps:

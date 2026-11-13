@@ -67,6 +67,39 @@ class StopWithinEpoch(Exception):
     pass
 
 
+# Scheduler の状態のうち, 学習の進み具合で変わる値 (引数ではないもの)
+PROGRESS_KEYS = {
+    "last_epoch", "base_lrs", "T_cur", "T_i", "best", "num_bad_epochs",
+    "cooldown_counter"
+}
+
+# Scheduler が Optimizer のパラメータグループに書き込む引数の値
+SCHEDULER_GROUP_KEYS = ("max_lr", "min_lr", "base_momentum", "max_momentum")
+
+
+def scheduler_group_values(optimizer: optim.Optimizer) -> list[dict]:
+    """
+    Scheduler が Optimizer のパラメータグループに書き込んだ値を取り出す関数
+
+    Parameters
+    ----------
+    optimizer: optim.Optimizer
+        Scheduler を付けた Optimizer
+
+    Returns
+    ----------
+    values: list[dict]
+        グループごとの, OneCycleLR の max_lr などの値
+    """
+    # グループごとに, 書き込まれている値だけを収集
+    values = [
+        {key: group[key] for key in SCHEDULER_GROUP_KEYS if key in group}
+        for group in optimizer.param_groups
+    ]
+
+    return values
+
+
 # extra に使えない名前 (記録の他の列と重なるもの)
 RESERVED_EXTRA = {"epoch", "lr"}
 
@@ -1058,12 +1091,17 @@ class Trainer:
             )
 
         # モデル, Optimizer, Scheduler, 記録の復元
+        # Scheduler が Optimizer に書き込む値 (OneCycleLR の max_lr など) も
+        # config と比べるため, 読み込む前の値を保持
         self.model.load_state_dict(state["model"])
+        fresh_groups = scheduler_group_values(self.optimizer)
         self.optimizer.load_state_dict(state["optimizer"])
         if self.scheduler is not None and state["scheduler"] is not None:
             fresh_state = self.scheduler.state_dict()
             self.scheduler.load_state_dict(state["scheduler"])
-            diffs = self.scheduler_param_diffs(fresh_state, state["scheduler"])
+            diffs = self.scheduler_param_diffs(
+                fresh_state, state["scheduler"], fresh_groups
+            )
             if diffs and self.trainer_cfg.resume_scheduler == "config":
                 self.replay_scheduler(state["scheduler"], diffs)
             else:
@@ -1330,10 +1368,16 @@ class Trainer:
             self.logger.info("更新の手順: closure を Optimizer に渡して更新")
 
     def scheduler_param_diffs(
-        self, fresh_state: dict, loaded_state: dict
+        self, fresh_state: dict, loaded_state: dict,
+        fresh_groups: list[dict]
     ) -> list[str]:
         """
         再開元の Scheduler の引数のうち config と違うものを求める関数
+
+        引数は名前を変えて持つものがある (CyclicLR の max_lr は max_lrs,
+        OneCycleLR の epochs は total_steps, max_lr は Optimizer の
+        max_lr など) ので, config の名前ではなく, config から作った直後の
+        状態と再開元の状態を比較
 
         Parameters
         ----------
@@ -1341,6 +1385,8 @@ class Trainer:
             config から作った直後の Scheduler の状態
         loaded_state: dict
             再開元のチェックポイントの Scheduler の状態
+        fresh_groups: list[dict]
+            config から作った直後の, Scheduler が Optimizer に書き込む値
 
         Returns
         ----------
@@ -1352,14 +1398,24 @@ class Trainer:
             diffs = []
             return diffs
 
-        # 型をそろえるため, config の値ではなく config から作った状態と比較
-        params = to_kwargs(self.experiment.cfg.scheduler.params)
+        # 学習の進み具合で変わる値と内部の値を除き, Scheduler の状態を比較
         diffs = [
             f"{key} (再開元 {loaded_state[key]}, config {fresh_state[key]})"
-            for key in params
-            if key in fresh_state and key in loaded_state
+            for key in fresh_state
+            if key in loaded_state and not key.startswith("_")
+            and key not in PROGRESS_KEYS
             and fresh_state[key] != loaded_state[key]
         ]
+
+        # Optimizer に書き込む値の比較
+        loaded_groups = scheduler_group_values(self.optimizer)
+        for i, (fresh, loaded) in enumerate(zip(fresh_groups, loaded_groups)):
+            for key in fresh:
+                if key in loaded and fresh[key] != loaded[key]:
+                    diffs.append(
+                        f"{key} (グループ {i}, 再開元 {loaded[key]}, "
+                        f"config {fresh[key]})"
+                    )
 
         return diffs
 
@@ -1379,6 +1435,8 @@ class Trainer:
         # Scheduler の状態は引数ごと戻るので, config で変えた引数は無効
         if len(diffs) == 0:
             return
+
+        # 警告とログで通知
         message = (
             "再開元の Scheduler の引数が config と違うので, "
             f"再開元の値を使います: {', '.join(diffs)}. config の値を使う"
@@ -1427,6 +1485,15 @@ class Trainer:
             self.experiment.cfg.scheduler, self.optimizer,
             self.trainer_cfg.mode
         )
+
+        # 総ステップ数の決まった Scheduler は, 進めた回数を超えられない
+        total = getattr(self.scheduler, "total_steps", None)
+        if total is not None and steps > total:
+            raise ValueError(
+                f"再開元は {steps} ステップ進めていて, config の "
+                f"{type(self.scheduler).__name__} の総ステップ数 ({total}) "
+                "を超えているので, config の引数では作り直せません"
+            )
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore", message=".*lr_scheduler.step\\(\\)",
@@ -1747,8 +1814,9 @@ class Trainer:
         message = (
             f"{type(self.scheduler).__name__} の総ステップ数 ({total}) と, "
             f"trainer.epochs と学習用データのバッチ数から求めた予定の総ステップ数 "
-            f"({planned}) が違います. 再開した場合は再開元の総ステップ数が使われ, "
-            "変えられません"
+            f"({planned}) が違います. 再開した場合は再開元の総ステップ数が使われ"
+            "ます (trainer.resume_scheduler: config で config の値で作り直せ"
+            "ます)"
         )
         if planned > total:
             raise ValueError(message)

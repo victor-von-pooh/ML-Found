@@ -1161,9 +1161,23 @@ def test_one_cycle_steps_resume(tmp_path: Path) -> None:
         auto + "trainer:\n  epochs: 4\n"
         f"  resume_from: {short.run_dir / 'last.pt'}\n"
     )
-    with pytest.raises(ValueError, match="変えられません"):
-        Trainer(nn.Linear(1, 1), longer, regression_step).fit(make_loader())
+    with pytest.warns(UserWarning, match="total_steps"):
+        with pytest.raises(ValueError, match="resume_scheduler: config"):
+            Trainer(nn.Linear(1, 1), longer, regression_step).fit(
+                make_loader()
+            )
     assert not (longer.run_dir / "last.pt").exists()
+
+    # config の値で作り直す設定なら, 補った総ステップ数で続きを学習
+    replayed = make_experiment(
+        tmp_path / "replayed",
+        auto + "trainer:\n  epochs: 4\n"
+        f"  resume_from: {short.run_dir / 'last.pt'}\n"
+        "  resume_scheduler: config\n"
+    )
+    trainer = Trainer(nn.Linear(1, 1), replayed, regression_step)
+    trainer.fit(make_loader())
+    assert trainer.scheduler.total_steps == 16
 
     # 書いた総ステップ数が予定より少ない場合も, 学習を始める前にエラー.
     # 多い場合は警告
@@ -2773,6 +2787,40 @@ def test_resume_scheduler_config(tmp_path: Path) -> None:
         encoding="utf-8"
     )
     assert "2 ステップ進めました" in log
+
+    # 名前を変えて持つ引数 (CyclicLR の max_lr は max_lrs, OneCycleLR の
+    # max_lr は Optimizer の max_lr) の違いも見つけて作り直す
+    for name, extra in (
+        ("CyclicLR", "    base_lr: 0.01\n    step_size_up: 2\n"),
+        ("OneCycleLR", "    total_steps: 20\n"),
+    ):
+        base = (
+            "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
+            f"scheduler:\n  name: {name}\n  interval: step\n  params:\n"
+            + extra
+        )
+        first = make_experiment(
+            tmp_path / f"{name}_first",
+            base + "    max_lr: 0.1\ntrainer:\n  epochs: 1\n"
+        )
+        Trainer(nn.Linear(1, 1), first, regression_step).fit(make_loader())
+        for mode in ("checkpoint", "config"):
+            experiment = make_experiment(
+                tmp_path / f"{name}_{mode}",
+                base + "    max_lr: 0.2\ntrainer:\n  epochs: 2\n"
+                f"  resume_from: {first.run_dir / 'last.pt'}\n"
+                f"  resume_scheduler: {mode}\n"
+            )
+            trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+            if mode == "checkpoint":
+                with pytest.warns(UserWarning, match="max_lr"):
+                    trainer.fit(make_loader())
+                continue
+            trainer.fit(make_loader())
+            log = next(
+                (tmp_path / f"{name}_{mode}").rglob("train.log")
+            ).read_text(encoding="utf-8")
+            assert "4 ステップ進めました" in log
 
     # 指標で学習率を変える ReduceLROnPlateau は進め直せないので警告
     plateau = (

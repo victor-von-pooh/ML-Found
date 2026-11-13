@@ -368,6 +368,10 @@ class Checkpoint:
         self.best_weights_only = best_weights_only
         self.last_with_best = last_with_best
 
+        # ベストモデルの重みを, 保存する今のモデルと別のモデル (EMA など)
+        # から取るかどうか, Trainer が eval_model に合わせて設定
+        self.separate_best_model = False
+
         # これまでの最良値, そのエポック, その時の重みを保存
         self.best_value: Optional[float] = None
         self.best_epoch = 0
@@ -458,13 +462,20 @@ class Checkpoint:
         # ベストモデルが更新された場合は保存
         # 今のモデルがベストモデルなので, 同じ重みを 2 つ持たないように省略
         # (再開時は今のモデルの重みからの復元)
+        # ベストモデルの重みを別のモデルから取る場合は, その重みを残す
         if improved and self.save_best:
             if self.best_weights_only:
+                weights = (
+                    self.best_model_state if self.separate_best_model
+                    else state["model"]
+                )
                 best_state = {
                     "weights_only": True, "epoch": state["epoch"],
                     "monitor": state["monitor"],
-                    "best_value": self.best_value, "model": state["model"]
+                    "best_value": self.best_value, "model": weights
                 }
+            elif self.separate_best_model:
+                best_state = state
             else:
                 best_state = without_best_model(state)
             save_checkpoint(best_state, self.run_dir / "best.pt")

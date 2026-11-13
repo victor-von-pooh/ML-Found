@@ -2366,10 +2366,10 @@ def test_eval_model_stop_within_epoch(tmp_path: Path) -> None:
 
     # EMA の状態を保存しない場合は戻せないので, 途中までの重み
     class NoExtraTrainer(EMATrainer):
-        # EMA の状態をチェックポイントに加えない Trainer
+        # EMA 以外の状態だけをチェックポイントに加える Trainer
         def extra_state_dict(self) -> dict:
             """
-            何も加えない関数
+            EMA ではない値だけを加える関数
 
             Parameters
             ----------
@@ -2378,10 +2378,10 @@ def test_eval_model_stop_within_epoch(tmp_path: Path) -> None:
             Returns
             ----------
             state: dict
-                空の辞書
+                EMA を含まない辞書
             """
-            # 加える状態なし
-            state = {}
+            # EMA ではない値だけ
+            state = {"counter": 1}
 
             return state
 

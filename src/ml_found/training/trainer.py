@@ -393,6 +393,7 @@ class Trainer:
         # エポックの途中で止めたときに戻す, 学習を始めた時点の重みと,
         # 戻せずに途中までの重みが残ったかどうかの印を用意
         self.start_state: Optional[dict] = None
+        self.epoch_start_step = 0
         self.partial_weights = False
 
     def step(self, batch: Any, phase: str) -> dict:
@@ -1954,15 +1955,31 @@ class Trainer:
             last = torch.load(
                 last_path, map_location="cpu", weights_only=True, mmap=True
             )
-            if last.get("epoch") == epoch - 1:
+            # この fit で書いた前のエポックのものか, 更新回数でも確認
+            # (前の fit が残した同じエポックの last.pt を除外)
+            if (
+                last.get("epoch") == epoch - 1
+                and last.get("global_step") == self.epoch_start_step
+            ):
                 source = last
                 message += f". 状態はエポック {epoch - 1} のものに戻しました"
         if source is not None:
+            # 評価に使うモデルが別の場合は, 戻したかを重みの変化で判定
+            separate = self.eval_model() is not self.model
+            before = (
+                clone_to_cpu(self.eval_model().state_dict()) if separate
+                else None
+            )
             self.load_training_state(source)
 
-            # 評価に使うモデルが別で, その状態を extra_state_dict で保存して
-            # いない場合は, そのモデルの途中の更新は戻せない
-            if self.eval_model() is not self.model and not source.get("extra"):
+            # 評価に使うモデルの状態を extra_state_dict で保存していない場合は,
+            # そのモデルの途中の更新は戻せないので途中までの重み
+            unchanged = before is not None and all(
+                torch.equal(before[key], value.detach().cpu())
+                for key, value in self.eval_model().state_dict().items()
+                if isinstance(value, torch.Tensor)
+            )
+            if unchanged:
                 self.partial_weights = True
                 message += (
                     ". 評価に使うモデル (eval_model) の状態は extra_state_dict "
@@ -2141,6 +2158,7 @@ class Trainer:
         # 退避 (以降のエポックでは last.pt から戻す)
         self.partial_weights = False
         self.start_state = self.training_state()
+        self.epoch_start_step = self.global_step
 
         # エポックごとに学習
         # 止めたエポックも数えられるように, 進捗バーは手動で更新
@@ -2159,6 +2177,7 @@ class Trainer:
                 # エポックの途中で止める要求があれば, このエポックを捨てて終了
                 record = {"epoch": epoch}
                 self.epoch_extra = {}
+                self.epoch_start_step = self.global_step
                 try:
                     record.update(self.run_epoch(train_loader, train=True))
                     if self.trainer_cfg.eval_train:

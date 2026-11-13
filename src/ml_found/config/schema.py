@@ -55,6 +55,13 @@ class CheckpointConfig:
     # last.pt を保存するエポックの間隔, 最後のエポックと止めたエポックは必ず保存
     every_n_epochs: int = 1
 
+    # best.pt にモデルの重みだけを保存するか (軽くなるが, 再開には使えない)
+    best_weights_only: bool = False
+
+    # last.pt にベストモデルの重みも入れるか. false にすると軽くなり,
+    # 再開時のベストモデルの重みは再開元の best.pt からの復元
+    last_with_best: bool = True
+
 
 @dataclass
 class TrainerConfig:

@@ -287,10 +287,33 @@ class EarlyStopping:
         self.best_tiebreak = state.get("best_tiebreak")
 
 
+def without_best_model(state: dict) -> dict:
+    """
+    チェックポイントの内容から, ベストモデルの重みを除いた写しを作る関数
+
+    Parameters
+    ----------
+    state: dict
+        チェックポイントとして保存する内容
+
+    Returns
+    ----------
+    light: dict
+        checkpoint.best_model を None にした写し (他の値は共有)
+    """
+    # ベストモデルの状態を持たない内容 (継承して作ったものなど) はそのまま
+    light = dict(state)
+    if isinstance(state.get("checkpoint"), dict):
+        light["checkpoint"] = {**state["checkpoint"], "best_model": None}
+
+    return light
+
+
 class Checkpoint:
     def __init__(
         self, run_dir: Path, mode: str = "min", save_best: bool = True,
-        save_last: bool = True, tiebreak_mode: str = "min"
+        save_last: bool = True, tiebreak_mode: str = "min",
+        best_weights_only: bool = False, last_with_best: bool = True
     ):
         # 指標の良し悪しの向きの確認
         check_mode(mode)
@@ -301,6 +324,10 @@ class Checkpoint:
         self.mode = mode
         self.save_best = save_best
         self.save_last = save_last
+
+        # ファイルを軽くする設定 (best.pt は重みだけ, last.pt にベストの重みなし)
+        self.best_weights_only = best_weights_only
+        self.last_with_best = last_with_best
 
         # これまでの最良値, そのエポック, その時の重みを保存
         self.best_value: Optional[float] = None
@@ -390,12 +417,25 @@ class Checkpoint:
         None
         """
         # ベストモデルが更新された場合は保存
+        # 今のモデルがベストモデルなので, 同じ重みを 2 つ持たないように省略
+        # (再開時は今のモデルの重みからの復元)
         if improved and self.save_best:
-            save_checkpoint(state, self.run_dir / "best.pt")
+            if self.best_weights_only:
+                best_state = {
+                    "weights_only": True, "epoch": state["epoch"],
+                    "monitor": state["monitor"],
+                    "best_value": self.best_value, "model": state["model"]
+                }
+            else:
+                best_state = without_best_model(state)
+            save_checkpoint(best_state, self.run_dir / "best.pt")
 
         # 学習を再開できるように最後のモデルを上書きで保存
         if write_last and self.save_last:
-            save_checkpoint(state, self.run_dir / "last.pt")
+            last_state = state if self.last_with_best else without_best_model(
+                state
+            )
+            save_checkpoint(last_state, self.run_dir / "last.pt")
 
     def restore_best(self, model: nn.Module) -> None:
         """

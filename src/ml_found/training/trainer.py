@@ -12,7 +12,8 @@ from tqdm import tqdm
 
 from ml_found.experiment.seed import get_rng_state, set_rng_state, set_seed
 from ml_found.training.callbacks import (
-    Checkpoint, EarlyStopping, load_checkpoint, save_checkpoint
+    Checkpoint, EarlyStopping, copy_state_dict, load_checkpoint,
+    save_checkpoint, without_best_model
 )
 from ml_found.training.history import (
     History, LrSteps, MetricTracker, to_float
@@ -100,7 +101,9 @@ class Trainer:
             experiment.run_dir, mode=self.trainer_cfg.mode,
             save_best=self.trainer_cfg.checkpoint.save_best,
             save_last=self.trainer_cfg.checkpoint.save_last,
-            tiebreak_mode=self.trainer_cfg.monitor_tiebreak_mode
+            tiebreak_mode=self.trainer_cfg.monitor_tiebreak_mode,
+            best_weights_only=self.trainer_cfg.checkpoint.best_weights_only,
+            last_with_best=self.trainer_cfg.checkpoint.last_with_best
         )
 
         # エポックごとの記録と, 最初のエポックを保存
@@ -679,6 +682,11 @@ class Trainer:
 
         # チェックポイントの読み込み
         state = load_checkpoint(path, self.device)
+        if state.get("weights_only"):
+            raise ValueError(
+                f"{path} は重みだけのチェックポイント (best_weights_only) なので"
+                "再開には使えません. last.pt を指定してください"
+            )
 
         # 監視する指標や向きが変わると最良値を比べられないので同じものに制限
         if (state["monitor"], state["mode"]) != (
@@ -730,7 +738,10 @@ class Trainer:
             self.early_stopping.load_state_dict(state["early_stopping"])
 
         # チェックポイントに含まれるベストモデルの重みと最良値の復元
+        # 重みを省いた場合は, 今のモデルか再開元の best.pt からの復元
         self.checkpoint.load_state_dict(state["checkpoint"])
+        if self.checkpoint.best_model_state is None:
+            self.restore_best_weights(state, checkpoint_path)
 
         # 継承したクラスが加えた状態の復元
         self.load_extra_state_dict(state.get("extra", {}))
@@ -744,6 +755,10 @@ class Trainer:
         if best_path.exists() and self.trainer_cfg.checkpoint.save_best:
             self.copy_best(best_path, run_dir / "best.pt")
         if self.trainer_cfg.checkpoint.save_last:
+            # 戻したベストモデルの重みを入れ直し, 今回の設定に合わせて保存
+            state["checkpoint"] = self.checkpoint.state_dict()
+            if not self.trainer_cfg.checkpoint.last_with_best:
+                state = without_best_model(state)
             save_checkpoint(state, run_dir / "last.pt")
 
         # 続きのエポックとパラメータの更新回数から開始
@@ -751,6 +766,63 @@ class Trainer:
         self.epoch = state["epoch"]
         self.global_step = state["global_step"]
         self.logger.info(f"再開元: {path} (エポック {state['epoch']})")
+
+    def restore_best_weights(self, state: dict, checkpoint_path: Path) -> None:
+        """
+        チェックポイントに無いベストモデルの重みを, 今のモデルか best.pt から
+        戻す関数
+
+        Parameters
+        ----------
+        state: dict
+            再開元のチェックポイントの内容
+        checkpoint_path: Path
+            再開元のチェックポイントのパス
+
+        Returns
+        ----------
+        None
+        """
+        best_epoch = self.checkpoint.best_epoch
+        if best_epoch == 0:
+            return
+
+        # 再開元のエポックがベストモデルなら, そのモデルの重みを使用
+        if state["epoch"] == best_epoch:
+            self.checkpoint.best_model_state = copy_state_dict(state["model"])
+            return
+
+        # 同じディレクトリの best.pt が同じエポックのものなら, その重みを使用
+        # 大きなモデルでもデバイスのメモリを使わないように, cpu の上で必要な
+        # 部分だけを参照
+        best_path = checkpoint_path.with_name("best.pt")
+        reason = f"{best_path.name} がありません"
+        if best_path.exists():
+            best = torch.load(
+                best_path, map_location="cpu", weights_only=True, mmap=True
+            )
+            if best["epoch"] == best_epoch:
+                self.checkpoint.best_model_state = copy_state_dict(
+                    best["model"]
+                )
+                self.logger.info(
+                    f"ベストモデル (エポック {best_epoch}) の重みを "
+                    f"{best_path} から戻しました"
+                )
+                return
+            reason = (
+                f"{best_path.name} はエポック {best['epoch']} のもので"
+                "合いません (every_n_epochs で last.pt の後に更新された場合など)"
+            )
+
+        # 見つからない場合は, 学習の後にベストモデルへ戻せないことを通知
+        message = (
+            f"ベストモデル (エポック {best_epoch}) の重みが last.pt に無く, "
+            f"再開元の {reason}. 再開後に改善しなければ, 最後のエポックの重みが"
+            "残ります"
+        )
+        self.logger.warning(message)
+        warnings.warn(message, stacklevel=2)
 
     def copy_best(self, source: Path, target: Path) -> None:
         """
@@ -781,6 +853,20 @@ class Trainer:
                 "写しません"
             )
             return
+
+        # 重みだけにする設定で, 再開元が重み以外も含む場合は重みだけを保存
+        if self.trainer_cfg.checkpoint.best_weights_only:
+            best = torch.load(
+                source, map_location="cpu", weights_only=True, mmap=True
+            )
+            if not best.get("weights_only"):
+                save_checkpoint({
+                    "weights_only": True, "epoch": best["epoch"],
+                    "monitor": best["monitor"],
+                    "best_value": self.checkpoint.best_value,
+                    "model": best["model"]
+                }, target)
+                return
         shutil.copyfile(source, target)
 
     def log_settings(self, monitor: str) -> None:
@@ -913,12 +999,18 @@ class Trainer:
         """
         # 設定に応じてベストモデルの重みに戻し,
         # 推論で使いやすいように重みだけを cpu に移して保存
+        # ベストモデルの重みが無い場合 (再開元から戻せなかった場合) は最後のまま
         run_dir = self.experiment.run_dir
-        if self.trainer_cfg.restore_best:
+        self.final_weights = "last"
+        if (
+            self.trainer_cfg.restore_best
+            and self.checkpoint.best_model_state is not None
+        ):
             self.checkpoint.restore_best(self.model)
-            weights = "ベストモデル"
-        else:
-            weights = "最後のエポック"
+            self.final_weights = "best"
+        weights = (
+            "ベストモデル" if self.final_weights == "best" else "最後のエポック"
+        )
         final_state = {
             key: (
                 value.detach().cpu() if isinstance(value, torch.Tensor)
@@ -986,7 +1078,7 @@ class Trainer:
             completed_epochs=len(self.history.records),
             best_epoch=self.checkpoint.best_epoch,
             best_value=self.checkpoint.best_value,
-            final_weights="best" if self.trainer_cfg.restore_best else "last"
+            final_weights=self.final_weights
         )
 
         return history

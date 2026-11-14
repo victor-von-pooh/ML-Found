@@ -460,9 +460,17 @@ class Trainer:
             last_with_best=self.trainer_cfg.checkpoint.last_with_best
         )
 
-        # エポックごとの記録と, 最初のエポックを保存
+        # エポックごとの記録と, 最初と最後のエポックを保存
+        # 同じ Trainer で fit を呼び直した場合は, 前の fit の続きのエポックから
+        # trainer.epochs の分だけ学習する
         self.history = History()
         self.start_epoch = 1
+        self.end_epoch = self.trainer_cfg.epochs
+        self.fit_count = 0
+
+        # fit の終わりにベストモデルなどの重みに置き換えた場合の, 置き換える前
+        # (最後のエポック) の重み. fit を呼び直したら, ここから続ける
+        self.continue_weights: Optional[dict] = None
 
         # エポックの終わりに呼ぶ関数 (add_callback で追加)
         self.callbacks: list[Callable[[dict], Optional[bool]]] = []
@@ -1010,7 +1018,7 @@ class Trainer:
             pass
         # 1 エポックが短い学習の邪魔にならないように, フェーズの始めも間隔を確保
         self.run_status.progress(
-            phase, self.epoch, self.trainer_cfg.epochs, 0, total_batches
+            phase, self.epoch, self.end_epoch, 0, total_batches
         )
 
         # バッチごとに計算, 設定に応じてエポックの中の進捗バーも表示
@@ -1054,7 +1062,7 @@ class Trainer:
 
                 # 一定の間隔で進み具合を書き出し
                 self.run_status.progress(
-                    phase, self.epoch, self.trainer_cfg.epochs, n_batches,
+                    phase, self.epoch, self.end_epoch, n_batches,
                     total_batches
                 )
 
@@ -1068,7 +1076,7 @@ class Trainer:
 
         # フェーズの終わりの進み具合の書き出し (間隔の中なら次の機会に)
         self.run_status.progress(
-            phase, self.epoch, self.trainer_cfg.epochs, n_batches,
+            phase, self.epoch, self.end_epoch, n_batches,
             total_batches
         )
 
@@ -1932,6 +1940,13 @@ class Trainer:
         # ベストモデルの重みが無い場合 (再開元から戻せなかった場合) は最後のまま
         run_dir = self.experiment.run_dir
         self.final_weights = "partial" if self.partial_weights else "last"
+        self.continue_weights = None
+        replaces = (
+            self.trainer_cfg.restore_best and self.trainer_cfg.select_best
+            and self.checkpoint.best_model_state is not None
+        ) or self.eval_model() is not self.model
+        if replaces:
+            self.continue_weights = clone_to_cpu(self.model.state_dict())
         if (
             self.trainer_cfg.restore_best and self.trainer_cfg.select_best
             and self.checkpoint.best_model_state is not None
@@ -2267,7 +2282,7 @@ class Trainer:
                 per_epoch = len(train_loader)
             except TypeError:
                 return
-        total = self.trainer_cfg.epochs * per_epoch
+        total = self.end_epoch * per_epoch
 
         # warmup が学習全体以上か, 割合が小さく 0 回になった場合は通知
         warmup = self.experiment.cfg.scheduler.get("warmup_steps")
@@ -2316,11 +2331,70 @@ class Trainer:
             "ます (trainer.resume_scheduler: config で config の値で作り直せ"
             "ます)"
         )
+        if self.fit_count > 1:
+            message += (
+                ". 同じ Trainer で fit を呼び直した場合は, 前の fit の分も含めた"
+                "予定の総ステップ数で確かめます"
+            )
         if planned > total:
             raise ValueError(message)
         message += " (学習率は最後まで下がりきりません)"
         self.logger.warning(message)
         warnings.warn(message, stacklevel=2)
+
+    def prepare_continue(self) -> None:
+        """
+        同じ Trainer で fit を呼び直した場合に, 前の fit の続きを準備する関数
+
+        最後に終えたエポックの次から trainer.epochs の分だけ学習するように
+        エポックの範囲を決め, 前の fit の終わりにベストモデルなどの重みに
+        置き換えた場合は, 置き換える前 (最後のエポック) の重みに戻す.
+        Optimizer, Scheduler, 更新回数, 記録, ベストモデルはそのまま続け,
+        Early Stopping は止めた印と我慢の回数を戻す
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        # 最後に終えたエポック (記録が無ければ始める前のエポック) の次から開始
+        records = self.history.records
+        last_epoch = (
+            int(records[-1]["epoch"]) if records else self.start_epoch - 1
+        )
+        self.start_epoch = last_epoch + 1
+        self.end_epoch = last_epoch + self.trainer_cfg.epochs
+        self.epoch = last_epoch
+
+        # Optimizer の状態と揃うように, 最後のエポックの重みに戻す
+        if self.continue_weights is not None:
+            self.model.load_state_dict(self.continue_weights)
+            self.continue_weights = None
+
+        # Early Stopping は, 呼び直したら我慢の回数を数え直す
+        if self.early_stopping is not None:
+            self.early_stopping.counter = 0
+            self.early_stopping.stopped = False
+
+        # auto で補った Scheduler の長さは最初の fit の分なので, 続きの学習では
+        # 予定の外に出ることを通知
+        if self.auto_values:
+            filled = ", ".join(
+                f"{name}={value}" for name, value in self.auto_values.items()
+            )
+            message = (
+                f"auto で補った Scheduler の引数 ({filled}) は最初の fit の長さ"
+                "です. 続きの学習では予定の長さを超えて Scheduler を進めます"
+            )
+            self.logger.warning(message)
+            warnings.warn(message, stacklevel=4)
+        self.logger.info(
+            f"前の fit の続きとして, エポック {self.start_epoch} から "
+            f"{self.end_epoch} まで学習します"
+        )
 
     def train_epochs(
         self, train_loader: Iterable, valid_loader: Optional[Iterable]
@@ -2346,9 +2420,18 @@ class Trainer:
         # 同じ Trainer で fit を繰り返す場合に備えて, 中断の印を初期化
         self.stopped_by_request = False
 
+        # 2 回目以降の fit は前の fit の続き (最後に終えたエポックの次から,
+        # trainer.epochs の分だけ追加で学習)
+        continuing = self.fit_count > 0
+        self.fit_count += 1
+        if continuing:
+            self.prepare_continue()
+        else:
+            self.end_epoch = self.trainer_cfg.epochs
+
         # 再開の前に失敗しても分かるように, 学習を始めたことを書き出し
         self.run_status.start(
-            planned_epochs=self.trainer_cfg.epochs, start_epoch=1,
+            planned_epochs=self.end_epoch, start_epoch=self.start_epoch,
             monitor=monitor, mode=self.trainer_cfg.mode,
             seed=self.experiment.cfg.experiment.seed,
             device=str(self.device),
@@ -2381,11 +2464,11 @@ class Trainer:
         if self.pending_scheduler:
             self.build_scheduler_from_data(train_loader)
         self.plan_total_steps(train_loader)
-        if self.trainer_cfg.resume_from is None:
+        if self.trainer_cfg.resume_from is None or continuing:
             self.check_total_steps()
 
-        # 再開する場合はチェックポイントから状態の復元
-        if self.trainer_cfg.resume_from is not None:
+        # 再開する場合はチェックポイントから状態の復元 (最初の fit だけ)
+        if self.trainer_cfg.resume_from is not None and not continuing:
             self.warn_persistent_workers([train_loader, valid_loader])
             self.resume(self.trainer_cfg.resume_from, monitor)
             self.run_status.update(
@@ -2402,7 +2485,7 @@ class Trainer:
             )
 
         # Early Stopping で既に止めた学習を再開した場合は学習なし
-        epochs = range(self.start_epoch, self.trainer_cfg.epochs + 1)
+        epochs = range(self.start_epoch, self.end_epoch + 1)
         if self.early_stopping is not None and self.early_stopping.stopped:
             self.logger.info("Early Stopping で止めた学習のため学習しません")
             epochs = range(0)
@@ -2506,7 +2589,7 @@ class Trainer:
                 # last.pt は決めた間隔と, 最後のエポックと止めるエポックに保存
                 # 保存するものがある場合だけ, 更新した状態をまとめて保存
                 write_last = (
-                    epoch % every == 0 or epoch == self.trainer_cfg.epochs
+                    epoch % every == 0 or epoch == self.end_epoch
                     or should_stop or stop_requested
                 )
                 if self.checkpoint.needs_save(improved, write_last):
@@ -2542,7 +2625,7 @@ class Trainer:
 
                 # 外から止める要求があった場合は, このエポックで学習の停止
                 # 予定の最後のエポックの場合は全て学習したので完了扱い
-                if stop_requested and epoch < self.trainer_cfg.epochs:
+                if stop_requested and epoch < self.end_epoch:
                     self.stopped_by_request = True
                     source = (
                         "中断の要求" if file_stop else "登録した関数の要求"

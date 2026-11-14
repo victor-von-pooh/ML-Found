@@ -346,6 +346,20 @@ trainer:
 - `persistent_workers=True` の DataLoader では, ワーカーの乱数の種を最初の 1 回だけ引くので, 再開した学習は通しで学習した場合と一致しない (警告が出る). 一致させたい場合は `num_workers: 0` にする
 - 存在しない `resume_from` は, 出力先を作る前にエラーになる
 
+同じ `Trainer` で `fit` を呼び直すと, 前の `fit` の続きとして, 最後に終えたエポックの次から `trainer.epochs` の分だけ学習する (3 エポックの後なら 4 から 6). 記録, `last.pt`, `run.json` は同じ実験のディレクトリに続けて書く.
+
+```python
+trainer = Trainer(model, experiment, step)
+trainer.fit(train_loader, valid_loader)   # エポック 1 から 3
+trainer.fit(train_loader, valid_loader)   # エポック 4 から 6 (続き)
+```
+
+- モデルの重みは, 前の `fit` の最後のエポックのものから続ける (学習の後にベストモデルや `eval_model` の重みに置き換えていても, 置き換える前に戻す). Optimizer, Scheduler, 更新回数, 乱数, ベストモデルもそのまま続く. 置き換える前の重みは, 呼び直しに備えて `fit` の後も cpu に持つ
+- Early Stopping は, 呼び直すたびに止めた印と我慢の回数を戻す (前の `fit` で止めていても学習する)
+- `resume_from` は最初の `fit` だけで使う
+- `auto` で補った Scheduler の引数 (`T_max` など) は最初の `fit` の長さなので, 続きの学習では予定を超えて進む (警告が出る). `OneCycleLR` は総ステップ数を超えられないので, 始める前にエラーになる
+- Optimizer を差し替えたい場合 (一部を凍結した後に全体を学習するなど) は, 新しい `Trainer` を作る
+
 ### 学習後のモデル
 
 `fit` の後の `trainer.model` はベストモデルの重みになっている (`trainer.restore_best: true` かつ `select_best: true` の場合). `eval_model` を上書きした場合は, そのモデルの重み (EMA の重みなど) になる.
@@ -471,7 +485,7 @@ history = trainer.fit(train_loader, valid_loader)
 
 `STOP` に `now` と書くと, エポックの途中でも止める (バッチを終えるたびに, 前に確かめてから 1 秒以上空いていれば確かめる). 途中のエポックは捨てて記録に加えず, 最後に終えたエポックの状態に戻す. そのエポックの最後のフェーズ (検証, 検証しない場合は `eval_train` の評価し直しか学習) の最後のバッチで気付いた場合は, 中身の無い `STOP` と同じくエポックの区切りで止める.
 
-- 前のエポックの `last.pt` (学習を始めたエポックなら始めた時点) から, モデル, Optimizer, Scheduler, 更新回数 (`global_step`), 乱数, 継承したクラスが加えた状態 (`extra_state_dict`) をメモリの上でも戻す. `last.pt` は, この `fit` で前のエポックに保存したもの (エポックと更新回数が合うもの) だけを使う. ただし学習の後に, 設定に応じてモデルの重みはベストモデルや `eval_model` の重みに置き換わる. 同じ `Trainer` で `fit` を呼び直す使い方 (記録の続き方など) は決めていないので, 続きを学習する場合は `last.pt` から再開する
+- 前のエポックの `last.pt` (学習を始めたエポックなら始めた時点) から, モデル, Optimizer, Scheduler, 更新回数 (`global_step`), 乱数, 継承したクラスが加えた状態 (`extra_state_dict`) をメモリの上でも戻す. `last.pt` は, この `fit` で前のエポックに保存したもの (エポックと更新回数が合うもの) だけを使う. ただし学習の後に, 設定に応じてモデルの重みはベストモデルや `eval_model` の重みに置き換わる. 続きを学習する場合は, 同じ `Trainer` で `fit` を呼び直すか (「学習の再開」), `last.pt` から再開する
 - `final_model.pt` は, `restore_best` と `select_best` でベストモデルがあればその重み. そうでなければ戻した重み. `every_n_epochs` などで前のエポックの `last.pt` が無い場合と, `eval_model` を上書きしてそのモデルの状態を `extra_state_dict` で保存していない場合 (戻した後もそのモデルの重みが変わらない場合) は, 途中までの重みが残り, 警告が出て `run.json` の `final_weights` が `partial` になる
 - `last.pt` は書かないので, 再開は最後に保存した `last.pt` から. `every_n_epochs` が 2 以上だと, 再開できる `last.pt` が無いこともある
 - 状態は予定の最後のエポックでも `stopped` になる. 1 エポック目の途中で止めると記録は 0 件になる

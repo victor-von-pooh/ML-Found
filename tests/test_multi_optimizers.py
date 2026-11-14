@@ -1,0 +1,410 @@
+import csv
+from pathlib import Path
+
+import pytest
+import torch
+from torch import nn
+
+from ml_found.config.loader import load_config
+from ml_found.experiment.setup import Experiment, start_experiment
+from ml_found.training.multi import split_parameters
+from ml_found.training.trainer import Trainer
+
+from test_trainer import make_loader
+
+# 2 つの部分を名前付きの Optimizer で学習する config
+NAMED = (
+    "optimizers:\n"
+    "  first:\n"
+    "    name: SGD\n"
+    "    params: {lr: 0.1}\n"
+    "    modules: [first]\n"
+    "  second:\n"
+    "    name: Adam\n"
+    "    params: {lr: 0.01}\n"
+    "    modules: [second]\n"
+)
+
+
+class TwoParts(nn.Module):
+    """
+    2 つの線形層を順につなぐモデル
+
+    Parameters
+    ----------
+    None
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.first = nn.Linear(1, 1)
+        self.second = nn.Linear(1, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        2 つの層を順に通す関数
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            入力
+
+        Returns
+        ----------
+        y: torch.Tensor
+            出力
+        """
+        y = self.second(self.first(x))
+
+        return y
+
+
+def named_step(model: nn.Module, batch: tuple, phase: str) -> dict:
+    """
+    名前ごとの損失を返す step
+
+    first は 1 層目の出力を y に近づけ, second は全体の出力を y に近づける
+
+    Parameters
+    ----------
+    model: nn.Module
+        学習するモデル
+    batch: tuple
+        x と y
+    phase: str
+        train または valid
+
+    Returns
+    ----------
+    outputs: dict
+        名前ごとの損失と平均絶対誤差
+    """
+    x, y = batch
+    hidden = model.first(x)
+    pred = model.second(hidden)
+    outputs = {
+        "loss": {
+            "first": ((hidden - y) ** 2).mean(),
+            "second": ((pred - y) ** 2).mean()
+        },
+        "mae": (pred - y).abs().mean()
+    }
+
+    return outputs
+
+
+def make_named_experiment(tmp_path: Path, text: str = "") -> Experiment:
+    """
+    名前付きの Optimizer を使うテスト用の実験を開始する関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    text: str = ""
+        default に加える YAML の内容
+
+    Returns
+    ----------
+    experiment: Experiment
+        cpu で進捗バーを出さない実験
+    """
+    # default と experiment を書いて読み込み
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    default_path = tmp_path / "default.yaml"
+    default_path.write_text(
+        "experiment:\n  name: test\n  device: cpu\n  seed: 0\n" + NAMED + text,
+        encoding="utf-8"
+    )
+    experiment_path = tmp_path / "experiment.yaml"
+    experiment_path.write_text("", encoding="utf-8")
+    cfg, diff = load_config(str(default_path), str(experiment_path))
+    cfg.trainer.progress_bar = False
+    experiment = start_experiment(cfg, diff, str(tmp_path))
+
+    return experiment
+
+
+def read_rows(path: Path) -> list[dict]:
+    """
+    CSV を読む関数
+
+    Parameters
+    ----------
+    path: Path
+        CSV のパス
+
+    Returns
+    ----------
+    rows: list[dict]
+        行ごとの辞書
+    """
+    with path.open(encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+
+    return rows
+
+
+def test_named_optimizers_update_own_parts(tmp_path: Path) -> None:
+    """
+    名前付きの Optimizer が, それぞれの損失の勾配で受け持つ部分だけを
+    更新することを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 1 バッチだけ学習
+    experiment = make_named_experiment(tmp_path, "trainer:\n  epochs: 1\n")
+    torch.manual_seed(0)
+    model = TwoParts()
+    expected = TwoParts()
+    expected.load_state_dict(model.state_dict())
+    trainer = Trainer(model, experiment, named_step)
+    loader = make_loader(n=8, batch_size=8)
+    trainer.fit(loader)
+
+    # 期待値: first は first の損失だけ, second は second の損失だけの勾配
+    x, y = next(iter(loader))
+    hidden = expected.first(x)
+    pred = expected.second(hidden)
+    first_grads = torch.autograd.grad(
+        ((hidden - y) ** 2).mean(), list(expected.first.parameters()),
+        retain_graph=True
+    )
+    second_grads = torch.autograd.grad(
+        ((pred - y) ** 2).mean(), list(expected.second.parameters())
+    )
+    for parameter, grad in zip(expected.first.parameters(), first_grads):
+        assert torch.allclose(
+            trainer.model.first.state_dict()["weight"]
+            if parameter.dim() == 2 else
+            trainer.model.first.state_dict()["bias"],
+            parameter.detach() - 0.1 * grad
+        )
+    adam = torch.optim.Adam(expected.second.parameters(), lr=0.01)
+    for parameter, grad in zip(expected.second.parameters(), second_grads):
+        parameter.grad = grad
+    adam.step()
+    for key, value in expected.second.state_dict().items():
+        assert torch.allclose(trainer.model.second.state_dict()[key], value)
+
+
+def test_named_records_losses_and_lrs(tmp_path: Path) -> None:
+    """
+    名前ごとの損失, 合計の損失, 名前ごとの学習率と勾配のノルムを記録する
+    ことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # second に step ごとの Scheduler を付けて学習
+    experiment = make_named_experiment(
+        tmp_path,
+        "trainer:\n  epochs: 2\n  log_grad_norm: true\n"
+        "  grad_clip_norm: 1.0\n"
+    )
+    experiment.cfg.optimizers.second.scheduler.name = "StepLR"
+    experiment.cfg.optimizers.second.scheduler.interval = "step"
+    experiment.cfg.optimizers.second.scheduler.params = {
+        "step_size": 1, "gamma": 0.5
+    }
+    trainer = Trainer(TwoParts(), experiment, named_step)
+    trainer.fit(make_loader(), make_loader())
+
+    # 学習曲線の記録
+    rows = read_rows(experiment.run_dir / "history.csv")
+    for key in (
+        "train/loss", "train/loss_first", "train/loss_second",
+        "valid/loss_first", "train/grad_norm_first", "train/grad_norm_second",
+        "lr_first", "lr_second"
+    ):
+        assert key in rows[0], key
+    loss = float(rows[0]["train/loss"])
+    parts = float(rows[0]["train/loss_first"]) + float(
+        rows[0]["train/loss_second"]
+    )
+    assert loss == pytest.approx(parts)
+    assert float(rows[0]["lr_first"]) == pytest.approx(0.1)
+
+    # 更新ごとの学習率は名前ごとの列, second だけ下がる
+    steps = read_rows(experiment.run_dir / "lr_steps.csv")
+    assert list(steps[0].keys()) == ["step", "epoch", "lr_first", "lr_second"]
+    assert float(steps[-1]["lr_first"]) == pytest.approx(0.1)
+    assert float(steps[1]["lr_second"]) == pytest.approx(0.005)
+
+
+def test_named_resume_matches_uninterrupted(tmp_path: Path) -> None:
+    """
+    名前付きの Optimizer と Scheduler の状態を保存して再開すると, 通して
+    学習した場合と同じ結果になることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # Scheduler は first に付ける
+    scheduler = (
+        "    scheduler:\n      name: StepLR\n"
+        "      params: {step_size: 1, gamma: 0.5}\n"
+    )
+    text = NAMED.replace(
+        "    modules: [first]\n", "    modules: [first]\n" + scheduler
+    )
+
+    def run(path: Path, epochs: int, resume: str = "") -> Path:
+        """
+        決めたエポック数を学習して実験のディレクトリを返す関数
+
+        Parameters
+        ----------
+        path: Path
+            一時ディレクトリ
+        epochs: int
+            エポック数
+        resume: str = ""
+            再開元の last.pt, 空の場合は再開しない
+
+        Returns
+        ----------
+        run_dir: Path
+            実験のディレクトリ
+        """
+        path.mkdir(parents=True, exist_ok=True)
+        default_path = path / "default.yaml"
+        default_path.write_text(
+            "experiment:\n  name: test\n  device: cpu\n  seed: 0\n" + text
+            + f"trainer:\n  epochs: {epochs}\n"
+            + (f"  resume_from: {resume}\n" if resume else ""),
+            encoding="utf-8"
+        )
+        (path / "experiment.yaml").write_text("", encoding="utf-8")
+        cfg, diff = load_config(
+            str(default_path), str(path / "experiment.yaml")
+        )
+        cfg.trainer.progress_bar = False
+        experiment = start_experiment(cfg, diff, str(path))
+        torch.manual_seed(0)
+        Trainer(TwoParts(), experiment, named_step).fit(
+            make_loader(), make_loader()
+        )
+
+        return experiment.run_dir
+
+    once = run(tmp_path / "once", 4)
+    first = run(tmp_path / "first", 2)
+    resumed = run(tmp_path / "resumed", 4, str(first / "last.pt"))
+
+    # 再開した学習の記録が, 通した学習と一致
+    expected = read_rows(once / "history.csv")
+    rows = read_rows(resumed / "history.csv")
+    assert len(rows) == 4
+    for row, other in zip(rows, expected):
+        for key in ("valid/loss", "lr_first", "lr_second"):
+            assert float(row[key]) == pytest.approx(float(other[key])), key
+
+
+def test_named_config_errors(tmp_path: Path) -> None:
+    """
+    名前付きの Optimizer の設定の誤りがエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 一番上の scheduler との併用
+    with pytest.raises(ValueError, match="optimizers.<名前>.scheduler"):
+        make_named_experiment(
+            tmp_path / "top",
+            "scheduler:\n  name: StepLR\n  params: {step_size: 1}\n"
+        )
+
+    # 受け持つ部分の無いモデル, 受け持たないパラメータ
+    experiment = make_named_experiment(tmp_path / "parts")
+    model = TwoParts()
+    model.third = nn.Linear(1, 1)
+    with pytest.raises(ValueError, match="受け持たない"):
+        Trainer(model, experiment, named_step)
+    with pytest.raises(ValueError, match="ありません"):
+        split_parameters(TwoParts(), {"first": ["missing"]})
+    with pytest.raises(ValueError, match="同じパラメータ"):
+        split_parameters(TwoParts(), {"a": ["first"], "b": ["", "first"]})
+
+    # 名前の違う損失
+    def wrong_step(model: nn.Module, batch: tuple, phase: str) -> dict:
+        """
+        名前を書き間違えた損失を返す step
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            名前を書き間違えた損失
+        """
+        outputs = named_step(model, batch, phase)
+        outputs["loss"] = {"first": outputs["loss"]["first"]}
+
+        return outputs
+
+    trainer = Trainer(TwoParts(), experiment, wrong_step)
+    with pytest.raises(ValueError, match="optimizers の名前"):
+        trainer.fit(make_loader())
+
+
+def test_named_both_styles_error(tmp_path: Path) -> None:
+    """
+    optimizer と optimizers を両方書くとエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # default に両方
+    default_path = tmp_path / "default.yaml"
+    default_path.write_text(
+        NAMED + "optimizer:\n  name: SGD\n", encoding="utf-8"
+    )
+    experiment_path = tmp_path / "experiment.yaml"
+    experiment_path.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="両方"):
+        load_config(str(default_path), str(experiment_path))
+
+    # default は optimizers, experiment は optimizer
+    default_path.write_text(NAMED, encoding="utf-8")
+    experiment_path.write_text("optimizer:\n  name: SGD\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="optimizers.<名前>"):
+        load_config(str(default_path), str(experiment_path))

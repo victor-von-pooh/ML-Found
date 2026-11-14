@@ -285,7 +285,48 @@ experiment = start_experiment(cfg, diff, str(project_dir))
 - 勾配法の Optimizer は `zero_grad`, `loss.backward()`, 勾配のクリッピング, `optimizer.step()` の順に更新する
 - LBFGS のように `step` に closure が必要な Optimizer は自動で見分け, 同じバッチで損失と勾配を計算し直す closure を渡す. 見分ける順は, クラスの属性 `requires_closure` (自作の Optimizer が `True` か `False` で宣言), torch の Optimizer の仕様 (LBFGS. `describe_optimizers()` の `requires_closure` と同じ), `step` の `closure` が既定値の無い引数かどうか. 自作の Optimizer で `closure` に既定値があるのに実際には必要な場合は, クラスの本体に `requires_closure = True` と書く (property や `__init__` の中で付けた属性は見ない). closure は `step` を何度も呼ぶので, `step` で予測を貯めるなどの処理は, closure の中では `self.in_closure` が `True` になることを使って飛ばす
 - Nelder-Mead 法のような勾配を使わない Optimizer は, クラスの本体に `uses_gradients = False` と書く. ML-Found は学習でも勾配を計算せず (逆伝播しない), 今のパラメータの損失を求める closure を `step` に渡す (`step` は勾配の記録を止めて呼ぶので, パラメータを直接書き換えてよい). `trainer.grad_clip_norm` と `log_grad_norm` とは一緒に使えない (config で指定した場合は出力先を作る前にエラー). `trainer.valid_grad` は検証だけに効く. `manual_optimization: true` の場合はそちらが優先され, 学習でも勾配を記録して `step` の中で自分で更新する. 登録簿の仕様にも `uses_gradients` を返す
-- GAN のように複数の Optimizer を自分で使う場合は, `trainer.manual_optimization: true` にして `step` の中で更新する. ML-Found は逆伝播, 勾配のクリッピング, 更新を行わず (`grad_clip_norm` と `log_grad_norm` と同時に使うとエラー), 更新回数と Scheduler (`interval` に応じて step ごとかエポックごと) だけを進める. `step` は勾配の流れない損失 (`loss.detach()`) を返してよい
+- 複数の Optimizer を使う場合は, 下の「複数の Optimizer」のように config の `optimizers` に名前付きで書く. 更新の順番が込み入る場合 (識別器を更新した後の値で生成器の損失を求めるなど) は, `trainer.manual_optimization: true` にして `step` の中で更新する. ML-Found は逆伝播, 勾配のクリッピング, 更新を行わず (`grad_clip_norm` と `log_grad_norm` と同時に使うとエラー), 更新回数と Scheduler (`interval` に応じて step ごとかエポックごと) だけを進める. `step` は勾配の流れない損失 (`loss.detach()`) を返してよい
+
+### 複数の Optimizer
+
+GAN (生成器と識別器) や強化学習の Actor-Critic のように, モデルの部分ごとに別の損失と別の Optimizer で更新する場合は, `optimizer` と `scheduler` の代わりに `optimizers` に名前付きで書く.
+
+```yaml
+# configs/default/train.yaml
+optimizers:
+  discriminator:
+    name: Adam
+    params: {lr: 0.0002, betas: [0.5, 0.999]}
+    modules: [discriminator]      # 受け持つ部分 (model の属性の名前, . で区切って入れ子も可)
+  generator:
+    name: Adam
+    params: {lr: 0.0002, betas: [0.5, 0.999]}
+    modules: [generator]
+    scheduler:                    # 書き方は一番上の scheduler と同じ (省略可)
+      name: StepLR
+      params: {step_size: 10}
+```
+
+`step` は `loss` に, Optimizer の名前ごとの損失の辞書を返す.
+
+```python
+def step(self, batch, phase):
+    x, _ = batch
+    fake = self.model.generator(torch.randn(len(x), 64, device=x.device))
+    d_loss = bce(self.model.discriminator(x), 1) + bce(self.model.discriminator(fake.detach()), 0)
+    g_loss = bce(self.model.discriminator(fake), 1)
+    return {"loss": {"discriminator": d_loss, "generator": g_loss}}
+```
+
+- ML-Found は, 損失ごとに受け持つ部分のパラメータだけの勾配を求め (`torch.autograd.grad`), Optimizer ごとに勾配をクリップしてから, config に書いた順に更新する. 全ての損失の勾配は更新の前の同じパラメータで求める (同時の更新). 例えば生成器の損失の勾配は識別器のパラメータに入らない
+- 学習するパラメータ (`requires_grad`) は, ちょうど 1 つの Optimizer が受け持つ. どれにも入らないものと, 2 つ以上に入るものは, `Trainer` を作るときにエラーになる
+- 記録は, 名前ごとの損失 (`train/loss_<名前>`), その合計 (`train/loss`), 名前ごとの学習率 (`lr_<名前>`, `lr_steps.csv` の列も同じ), `log_grad_norm` の場合は名前ごとの勾配のノルム (`train/grad_norm_<名前>`)
+- Optimizer と Scheduler の状態は名前ごとにチェックポイントに保存し, 再開できる. 名前と Scheduler の組み立て (クラス, warmup の有無) は再開元と同じにする. `trainer.resume_scheduler: config` は使えない
+- Scheduler の `interval` は, Scheduler を付けた全ての Optimizer で同じにする. `auto`, warmup, `OneCycleLR` の補う引数は, Scheduler ごとに補う
+- 継承したクラスからは, `self.optimizer["generator"]` で名前ごとの Optimizer を, `self.scheduler["generator"]` で Scheduler を取り出せる (`self.optimizer` は名前ごとの Optimizer をまとめたもの)
+- `optimizer` と `optimizers` は一方だけ書く (default に両方書いた場合と, `optimizers` を使う default に experiment で `optimizer` を書いた場合はエラー). 一番上の `scheduler` は使わない (書くとエラー)
+- closure が必要な Optimizer (LBFGS など), 勾配を使わない Optimizer, `Trainer` に渡す自分で作った Optimizer と Scheduler は使えない
+- `trainer.manual_optimization: true` と組み合わせると, ML-Found は更新を行わず, `step` は 1 つの損失を返してもよい
 
 ### 検証の設定
 
@@ -391,6 +432,7 @@ ML-Found が使う項目と既定値.
 | `optimizer.name` | `Adam` | `torch.optim` のクラス名, `.` を含めると自作のクラスも読み込める |
 | `optimizer.params` | `{lr: 0.001}` | Optimizer に渡す引数 |
 | `scheduler.name` | `null` | `torch.optim.lr_scheduler` のクラス名, `null` の場合は使わない |
+| `optimizers` | `{}` | 名前付きの複数の Optimizer (「複数の Optimizer」). 名前ごとに `name`, `params`, `modules`, `scheduler` |
 | `scheduler.params` | `{}` | Scheduler に渡す引数 |
 | `scheduler.interval` | `epoch` | 学習率を更新する間隔, `epoch` か `step` |
 | `scheduler.warmup_steps` | `null` | 学習の始めに学習率を線形に上げる回数 (`interval` の単位) |

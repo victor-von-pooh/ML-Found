@@ -184,7 +184,8 @@ class NamedOptimizers:
             「名前: Optimizer の表示」を名前の順に並べた文字列
         """
         text = "\n".join(
-            f"{name}: {optimizer}" for name, optimizer in self.optimizers.items()
+            f"{name}: {optimizer}"
+            for name, optimizer in self.optimizers.items()
         )
 
         return text

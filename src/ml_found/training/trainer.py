@@ -1,12 +1,13 @@
+import contextlib
 import copy
 import math
 from pathlib import Path
 import shutil
 import time
 import warnings
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Union
 
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 import torch
 from torch import nn, optim
 from tqdm import tqdm
@@ -21,10 +22,14 @@ from ml_found.training.callbacks import (
 from ml_found.training.history import (
     History, LrSteps, MetricTracker, to_float
 )
+from ml_found.training.multi import (
+    NamedOptimizers, NamedSchedulers, split_parameters
+)
 from ml_found.training.optim import (
     auto_params, build_optimizer, build_scheduler, check_scheduler,
-    class_uses_gradients, missing_data_size_params, needs_data,
-    requires_closure, step_scheduler, to_kwargs
+    class_uses_gradients, missing_data_size_params, named_errors, named_views,
+    needs_data, requires_closure, step_scheduler, to_kwargs,
+    uses_named_optimizers
 )
 from ml_found.training.status import STOP_FILE, RunStatus
 from ml_found.utils.batch import find_batch_size, move_to_device
@@ -402,43 +407,24 @@ class Trainer:
         # 1 ステップの計算を行う関数を保存
         self.step_fn = step_fn
 
-        # Optimizer が渡されていない場合は config から作成
-        if optimizer is None:
-            optimizer = build_optimizer(
-                experiment.cfg.optimizer, self.model.parameters()
-            )
-        self.optimizer = optimizer
-
-        # Scheduler が渡されていない場合は config から作成し, どちらかを保存
-        # データの量で決まる引数 (OneCycleLR の steps_per_epoch など) が
-        # 無い場合は, 学習用データが分かる fit の初めまで作成を保留
-        self.scheduler_from_config = scheduler is None
+        # Optimizer と Scheduler の作成 (名前付きの複数の Optimizer は別に作成)
+        self.named = uses_named_optimizers(experiment.cfg)
         self.auto_values: dict[str, int] = {}
         self.warmup_from_ratio = False
-        self.pending_scheduler = scheduler is None and needs_data(
-            experiment.cfg.scheduler
-        )
         # 予定の総ステップ数 (OneCycleLR の総ステップ数との食い違いの確認に使用)
         self.planned_total_steps: Optional[int] = None
-        if scheduler is None and not self.pending_scheduler:
-            scheduler = build_scheduler(
-                experiment.cfg.scheduler, self.optimizer,
-                experiment.cfg.trainer.mode
-            )
-        elif (
-            scheduler is not None and scheduler.optimizer is not self.optimizer
-        ):
-            raise ValueError(
-                "scheduler は Trainer が使う optimizer で作ってください"
-            )
-        self.scheduler = scheduler
+        if self.named:
+            self.build_named_parts(optimizer, scheduler)
+        else:
+            self.build_single_parts(optimizer, scheduler)
 
-        # 学習率を更新する間隔を保存し, Scheduler との組み合わせの確認
-        self.scheduler_interval = experiment.cfg.scheduler.interval
-        check_scheduler(
-            self.scheduler, self.scheduler_interval,
-            experiment.cfg.trainer.mode
-        )
+        # Scheduler との組み合わせの確認
+        for _, scheduler_entry, _ in self.scheduler_entries():
+            if scheduler_entry is not None:
+                check_scheduler(
+                    scheduler_entry, self.scheduler_interval,
+                    experiment.cfg.trainer.mode
+                )
 
         # Early Stopping を使う場合は作成
         self.early_stopping = None
@@ -478,7 +464,7 @@ class Trainer:
         self.callbacks: list[Callable[[dict], Optional[bool]]] = []
 
         # step ごとに学習率を変える場合の, 更新ごとの学習率の記録
-        self.lr_steps = LrSteps()
+        self.lr_steps = LrSteps(self.lr_columns)
 
         # step から参照できるように, 今のエポックとパラメータの更新回数を保存
         self.epoch = 0
@@ -486,8 +472,11 @@ class Trainer:
 
         # LBFGS のように損失を計算し直す closure が必要な Optimizer かどうかと,
         # 勾配を使わない Optimizer かどうかを保存
-        self.use_closure = requires_closure(self.optimizer)
-        self.use_gradients = class_uses_gradients(type(self.optimizer))
+        # (名前付きの Optimizer は, どちらでもないことを config の確認で保証)
+        self.use_closure = not self.named and requires_closure(self.optimizer)
+        self.use_gradients = self.named or class_uses_gradients(
+            type(self.optimizer)
+        )
         if not self.use_gradients and (
             self.trainer_cfg.grad_clip_norm is not None
             or self.trainer_cfg.log_grad_norm
@@ -499,7 +488,7 @@ class Trainer:
 
         # closure で使う学習時のバッチと, 最後に求めた勾配のノルムの入れ物を用意
         self.current_batch: Any = None
-        self.last_grad_norm: Optional[float] = None
+        self.last_grad_norm: Optional[Union[float, dict[str, float]]] = None
 
         # closure の中で step を呼んでいるかどうかの印を用意
         # closure は step を何度も呼ぶので, 予測を貯める処理などを飛ばすのに使用
@@ -522,6 +511,162 @@ class Trainer:
         self.start_state: Optional[dict] = None
         self.epoch_start_step = 0
         self.partial_weights = False
+
+    def build_single_parts(
+        self, optimizer: Optional[optim.Optimizer],
+        scheduler: Optional[optim.lr_scheduler.LRScheduler]
+    ) -> None:
+        """
+        config の optimizer と scheduler から, 1 つの Optimizer と Scheduler を
+        用意する関数
+
+        Parameters
+        ----------
+        optimizer: Optional[optim.Optimizer]
+            自分で作った Optimizer, None の場合は config から作成
+        scheduler: Optional[optim.lr_scheduler.LRScheduler]
+            自分で作った Scheduler, None の場合は config から作成
+
+        Returns
+        ----------
+        None
+        """
+        # Optimizer が渡されていない場合は config から作成
+        cfg = self.experiment.cfg
+        if optimizer is None:
+            optimizer = build_optimizer(cfg.optimizer, self.model.parameters())
+        self.optimizer = optimizer
+
+        # Scheduler が渡されていない場合は config から作成し, どちらかを保存
+        # データの量で決まる引数 (OneCycleLR の steps_per_epoch など) が
+        # 無い場合は, 学習用データが分かる fit の初めまで作成を保留
+        self.scheduler_from_config = scheduler is None
+        self.pending_scheduler = scheduler is None and needs_data(
+            cfg.scheduler
+        )
+        if scheduler is None and not self.pending_scheduler:
+            scheduler = build_scheduler(
+                cfg.scheduler, self.optimizer, cfg.trainer.mode
+            )
+        elif (
+            scheduler is not None and scheduler.optimizer is not self.optimizer
+        ):
+            raise ValueError(
+                "scheduler は Trainer が使う optimizer で作ってください"
+            )
+        self.scheduler = scheduler
+
+        # 学習率を更新する間隔と, 更新ごとの学習率の記録 (列は lr)
+        self.scheduler_interval = cfg.scheduler.interval
+        self.lr_columns = ["lr"]
+
+    def build_named_parts(
+        self, optimizer: Optional[optim.Optimizer],
+        scheduler: Optional[optim.lr_scheduler.LRScheduler]
+    ) -> None:
+        """
+        config の optimizers から, 名前付きの複数の Optimizer と Scheduler を
+        用意する関数
+
+        学習するパラメータを modules で Optimizer ごとに分け, それぞれの
+        Optimizer と Scheduler を作って NamedOptimizers と NamedSchedulers に
+        まとめる
+
+        Parameters
+        ----------
+        optimizer: Optional[optim.Optimizer]
+            使えないので None (自分で作った Optimizer は渡せない)
+        scheduler: Optional[optim.lr_scheduler.LRScheduler]
+            使えないので None
+
+        Returns
+        ----------
+        None
+        """
+        # 自分で作った Optimizer と Scheduler は, 名前との対応が無いので不可
+        if optimizer is not None or scheduler is not None:
+            raise ValueError(
+                "config の optimizers を使う場合は, Trainer に optimizer と "
+                "scheduler を渡さないでください"
+            )
+
+        # 学習するパラメータを Optimizer ごとに分けて作成
+        cfg = self.experiment.cfg
+        modules = {
+            str(name): [str(path) for path in entry.modules]
+            for name, entry in cfg.optimizers.items()
+        }
+        self.named_params = split_parameters(self.model, modules)
+        optimizers = {}
+        for name, view in named_views(cfg):
+            with named_errors(name):
+                optimizers[name] = build_optimizer(
+                    view.optimizer, self.named_params[name]
+                )
+        self.optimizer = NamedOptimizers(optimizers)
+
+        # Scheduler は Optimizer ごとに作成し, データの量で決まる引数がある
+        # ものは fit の初めまで保留
+        self.scheduler_from_config = True
+        schedulers: dict[str, Optional[optim.lr_scheduler.LRScheduler]] = {}
+        self.pending_named: set[str] = set()
+        intervals = set()
+        for name, entry in cfg.optimizers.items():
+            name = str(name)
+            schedulers[name] = None
+            if entry.scheduler.name is None and not (
+                entry.scheduler.get("warmup_steps")
+                or entry.scheduler.get("warmup_ratio")
+            ):
+                continue
+            intervals.add(entry.scheduler.interval)
+            if needs_data(entry.scheduler):
+                self.pending_named.add(name)
+                continue
+            with named_errors(name):
+                schedulers[name] = build_scheduler(
+                    entry.scheduler, optimizers[name], cfg.trainer.mode
+                )
+        self.pending_scheduler = bool(self.pending_named)
+        self.scheduler = (
+            NamedSchedulers(schedulers) if intervals else None
+        )
+
+        # 学習率を更新する間隔 (全ての Scheduler で同じ) と, 更新ごとの学習率の
+        # 記録の列 (lr_<名前>)
+        self.scheduler_interval = intervals.pop() if intervals else "epoch"
+        self.lr_columns = [f"lr_{name}" for name in optimizers]
+
+    def scheduler_entries(
+        self
+    ) -> list[tuple[str, Optional[optim.lr_scheduler.LRScheduler], Any]]:
+        """
+        Scheduler を, 名前, Scheduler, scheduler の config の組で返す関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        entries: list[tuple[str, Optional[LRScheduler], Any]]
+            1 つの Optimizer の場合は名前が空の 1 組, 名前付きの場合は
+            Optimizer ごとの組
+        """
+        cfg = self.experiment.cfg
+        if not self.named:
+            entries = [("", self.scheduler, cfg.scheduler)]
+            return entries
+        schedulers = (
+            self.scheduler.schedulers
+            if isinstance(self.scheduler, NamedSchedulers) else {}
+        )
+        entries = [
+            (str(name), schedulers.get(str(name)), entry.scheduler)
+            for name, entry in cfg.optimizers.items()
+        ]
+
+        return entries
 
     def step(self, batch: Any, phase: str) -> dict:
         """
@@ -797,13 +942,16 @@ class Trainer:
 
         return loss
 
-    def clip_gradients(self) -> Optional[float]:
+    def clip_gradients(
+        self, params: Optional[list[nn.Parameter]] = None
+    ) -> Optional[float]:
         """
         勾配のノルムを求め, 上限が設定されていればクリップする関数
 
         Parameters
         ----------
-        None
+        params: Optional[list[nn.Parameter]] = None
+            対象のパラメータ, None の場合は Optimizer が更新する全てのもの
 
         Returns
         ----------
@@ -816,10 +964,12 @@ class Trainer:
             grad_norm = None
             return grad_norm
 
-        # Optimizer が更新するパラメータだけを対象に設定
-        params = [
-            p for group in self.optimizer.param_groups for p in group["params"]
-        ]
+        # 指定が無い場合は, Optimizer が更新するパラメータだけを対象に設定
+        if params is None:
+            params = [
+                p for group in self.optimizer.param_groups
+                for p in group["params"]
+            ]
 
         # 上限が無い場合は勾配を変えずにノルムだけ計算
         # (torch 2.6 より前にも対応するため, パラメータごとのノルムから計算)
@@ -924,6 +1074,135 @@ class Trainer:
 
         return closure
 
+    def current_lrs(self) -> dict[str, float]:
+        """
+        今の学習率を, 記録の列の名前ごとに返す関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        lrs: dict[str, float]
+            1 つの Optimizer は lr, 名前付きの Optimizer は lr_<名前> ごとの
+            最初のパラメータグループの学習率
+        """
+        if isinstance(self.optimizer, NamedOptimizers):
+            lrs = {
+                f"lr_{name}": float(optimizer.param_groups[0]["lr"])
+                for name, optimizer in self.optimizer.items()
+            }
+        else:
+            lrs = {"lr": float(self.optimizer.param_groups[0]["lr"])}
+
+        return lrs
+
+    def expand_named_loss(self, outputs: Any) -> Any:
+        """
+        名前付きの Optimizer の場合に, step が返した名前ごとの損失を取り出し,
+        記録する指標 (loss_<名前> と合計の loss) に展開する関数
+
+        Parameters
+        ----------
+        outputs: Any
+            step の戻り値
+
+        Returns
+        ----------
+        outputs: Any
+            loss を合計に置き換え, loss_<名前> を加えた戻り値. 名前付きの
+            Optimizer を使わない場合はそのまま
+        """
+        # 1 つの Optimizer の場合と, 辞書でない戻り値はそのまま (後で確認)
+        self.named_losses: Optional[dict[str, torch.Tensor]] = None
+        if not self.named or not isinstance(outputs, dict):
+            return outputs
+        losses = outputs.get("loss")
+
+        # 自分で更新する設定では 1 つの損失も可, それ以外は名前ごとの辞書
+        if not isinstance(losses, dict):
+            if self.trainer_cfg.manual_optimization:
+                return outputs
+            raise ValueError(
+                "optimizers を使う場合は, step の loss を Optimizer の名前ごとの"
+                f"損失の辞書にしてください ({list(self.optimizer)})"
+            )
+        if set(losses) != set(self.optimizer):
+            raise ValueError(
+                f"step の loss の名前 {sorted(losses)} が optimizers の名前 "
+                f"{sorted(self.optimizer)} と違います"
+            )
+
+        # 名前ごとの損失と合計を, 他の指標と重ならない名前で記録
+        expanded = dict(outputs)
+        for name in self.optimizer:
+            loss = losses[name]
+            if not isinstance(loss, torch.Tensor):
+                raise ValueError(
+                    f"loss の {name} は torch.Tensor で返してください"
+                )
+            key = f"loss_{name}"
+            if key in outputs:
+                raise ValueError(
+                    f"optimizers を使う場合は step で {key} を返さないでください"
+                )
+            expanded[key] = loss.detach()
+        expanded["loss"] = sum(losses[name] for name in self.optimizer)
+        self.named_losses = {name: losses[name] for name in self.optimizer}
+
+        return expanded
+
+    def update_named(self) -> None:
+        """
+        名前付きの Optimizer で, 損失ごとに受け持つパラメータの勾配を求めて
+        更新する関数
+
+        全ての損失の勾配を, 更新の前の同じパラメータで求めてから, config に
+        書いた順に更新する (同時の更新). 勾配は受け持つパラメータだけに求める
+        ので, 例えば生成器の損失の勾配は識別器のパラメータに入らない
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        # 名前ごとの損失 (expand_named_loss で取り出したもの)
+        losses = self.named_losses
+        if losses is None:
+            raise ValueError("optimizers の損失が取り出されていません")
+
+        # 損失ごとに, 受け持つパラメータだけの勾配を計算
+        # 計算グラフは, 最後の損失の勾配を求めるまで保持
+        names = list(self.optimizer)
+        grads = {}
+        for index, name in enumerate(names):
+            loss = losses[name]
+            if not loss.requires_grad:
+                raise ValueError(
+                    f"loss の {name} が勾配を持ちません (パラメータから計算した"
+                    "損失を返してください)"
+                )
+            grads[name] = torch.autograd.grad(
+                loss, self.named_params[name],
+                retain_graph=index < len(names) - 1, allow_unused=True
+            )
+
+        # 勾配を書き込み, Optimizer ごとにクリップして更新
+        norms = {}
+        for name in names:
+            for parameter, grad in zip(self.named_params[name], grads[name]):
+                parameter.grad = grad
+            norm = self.clip_gradients(self.named_params[name])
+            if norm is not None:
+                norms[name] = norm
+        for name in names:
+            self.optimizer[name].step()
+        self.last_grad_norm = norms or None
+
     def update_parameters(self, loss: torch.Tensor) -> None:
         """
         損失から勾配を求めてパラメータを更新する関数
@@ -948,6 +1227,10 @@ class Trainer:
             with torch.no_grad():
                 self.optimizer.step(self.make_loss_closure())
 
+        # 名前付きの Optimizer は, 損失ごとに受け持つパラメータの勾配を求めて更新
+        elif self.named:
+            self.update_named()
+
         # closure が必要な Optimizer は損失を計算し直す関数を渡して更新
         elif self.use_closure:
             self.optimizer.step(self.make_closure())
@@ -968,7 +1251,7 @@ class Trainer:
             if self.scheduler is not None:
                 self.lr_steps.append(
                     self.global_step, self.epoch,
-                    float(self.optimizer.param_groups[0]["lr"])
+                    list(self.current_lrs().values())
                 )
             step_scheduler(self.scheduler)
 
@@ -1038,7 +1321,7 @@ class Trainer:
 
                 # 決めた範囲だけ勾配を計算
                 with torch.set_grad_enabled(grad_enabled):
-                    outputs = self.step(batch, phase)
+                    outputs = self.expand_named_loss(self.step(batch, phase))
 
                 # 戻り値を確かめて, 学習時は closure 用にバッチを保存して更新
                 loss = self.check_outputs(outputs, phase)
@@ -1127,7 +1410,17 @@ class Trainer:
             )
 
         # 勾配を計算しなかった場合 (自分で更新する設定など) は追加なし
-        if self.last_grad_norm is not None:
+        # 名前付きの Optimizer は Optimizer ごと (grad_norm_<名前>)
+        if isinstance(self.last_grad_norm, dict):
+            for name, value in self.last_grad_norm.items():
+                key = f"grad_norm_{name}"
+                if key in metrics:
+                    raise ValueError(
+                        f"log_grad_norm を使う場合は step で {key} を返さないで"
+                        "ください"
+                    )
+                metrics[key] = value
+        elif self.last_grad_norm is not None:
             metrics["grad_norm"] = self.last_grad_norm
 
     def run_valid_epoch(
@@ -1267,7 +1560,13 @@ class Trainer:
                 None if self.scheduler is None
                 else self.scheduler.state_dict()
             ),
-            "scheduler_classes": scheduler_classes(self.scheduler),
+            "scheduler_classes": (
+                {
+                    name: scheduler_classes(scheduler)
+                    for name, scheduler in self.scheduler.items()
+                } if isinstance(self.scheduler, NamedSchedulers)
+                else scheduler_classes(self.scheduler)
+            ),
             "history": self.history.state_dict(),
             "lr_steps": self.lr_steps.state_dict(),
             "early_stopping": (
@@ -1378,41 +1677,12 @@ class Trainer:
         # Scheduler が Optimizer に書き込む値 (OneCycleLR の max_lr など) も
         # config と比べるため, 読み込む前の値を保持
         self.model.load_state_dict(state["model"])
-        fresh_groups = scheduler_group_values(self.optimizer)
-        self.optimizer.load_state_dict(state["optimizer"])
-        if self.scheduler is not None and state["scheduler"] is not None:
-            # Scheduler の組み立て (warmup の有無など) が再開元と違う場合は,
-            # 状態を読み込めないので, config の値で作り直すかエラー
-            fresh_state = self.scheduler.state_dict()
-            old, new = saved_scheduler_classes(state), scheduler_classes(
-                self.scheduler
-            )
-            if not same_classes(old, new):
-                old_text = " + ".join(old) if old else "warmup なし"
-                change = f"{old_text} から {' + '.join(new)}"
-                if self.trainer_cfg.resume_scheduler != "config":
-                    raise ValueError(
-                        f"Scheduler の組み立てが再開元と違う ({change}) ので, "
-                        "再開元の状態を読み込めません (warmup の有無を変えた"
-                        "場合など). config の値で作り直す場合は "
-                        "trainer.resume_scheduler: config にしてください"
-                    )
-                self.replay_scheduler(state["scheduler"], [change])
-            else:
-                self.scheduler.load_state_dict(state["scheduler"])
-                diffs = self.scheduler_param_diffs(
-                    fresh_state, state["scheduler"], fresh_groups
-                )
-                if diffs and self.trainer_cfg.resume_scheduler == "config":
-                    self.replay_scheduler(state["scheduler"], diffs)
-                else:
-                    self.check_auto_params()
-                    self.warn_scheduler_params(diffs)
-
-            # 再開元の総ステップ数の確認 (ファイルを写す前)
-            self.check_total_steps()
+        if self.named:
+            self.resume_named(state)
+        else:
+            self.resume_single(state)
         self.history.load_state_dict(state["history"])
-        self.lr_steps = LrSteps()
+        self.lr_steps = LrSteps(self.lr_columns)
         if state.get("lr_steps") is not None:
             self.lr_steps.load_state_dict(state["lr_steps"])
 
@@ -1465,6 +1735,104 @@ class Trainer:
         self.epoch = state["epoch"]
         self.global_step = state["global_step"]
         self.logger.info(f"再開元: {path} (エポック {state['epoch']})")
+
+    def resume_single(self, state: dict) -> None:
+        """
+        チェックポイントから, 1 つの Optimizer と Scheduler の状態を戻す関数
+
+        Parameters
+        ----------
+        state: dict
+            チェックポイントの内容
+
+        Returns
+        ----------
+        None
+        """
+        # 名前付きの Optimizer で保存した状態は読めない
+        if "optimizers" in (state.get("optimizer") or {}):
+            raise ValueError(
+                "再開元は optimizers を使った学習なので, optimizer の学習の"
+                "状態として読み込めません"
+            )
+        fresh_groups = scheduler_group_values(self.optimizer)
+        self.optimizer.load_state_dict(state["optimizer"])
+        if self.scheduler is not None and state["scheduler"] is not None:
+            # Scheduler の組み立て (warmup の有無など) が再開元と違う場合は,
+            # 状態を読み込めないので, config の値で作り直すかエラー
+            fresh_state = self.scheduler.state_dict()
+            old, new = saved_scheduler_classes(state), scheduler_classes(
+                self.scheduler
+            )
+            if not same_classes(old, new):
+                old_text = " + ".join(old) if old else "warmup なし"
+                change = f"{old_text} から {' + '.join(new)}"
+                if self.trainer_cfg.resume_scheduler != "config":
+                    raise ValueError(
+                        f"Scheduler の組み立てが再開元と違う ({change}) ので, "
+                        "再開元の状態を読み込めません (warmup の有無を変えた"
+                        "場合など). config の値で作り直す場合は "
+                        "trainer.resume_scheduler: config にしてください"
+                    )
+                self.replay_scheduler(state["scheduler"], [change])
+            else:
+                self.scheduler.load_state_dict(state["scheduler"])
+                diffs = self.scheduler_param_diffs(
+                    fresh_state, state["scheduler"], fresh_groups
+                )
+                if diffs and self.trainer_cfg.resume_scheduler == "config":
+                    self.replay_scheduler(state["scheduler"], diffs)
+                else:
+                    self.check_auto_params()
+                    self.warn_scheduler_params(diffs)
+
+            # 再開元の総ステップ数の確認 (ファイルを写す前)
+            self.check_total_steps()
+
+    def resume_named(self, state: dict) -> None:
+        """
+        チェックポイントから, 名前付きの Optimizer と Scheduler の状態を戻す
+        関数
+
+        Scheduler の組み立て (クラス, warmup の有無) は名前ごとに再開元と
+        同じものに限る. 引数の違いの確認と config の値での作り直し
+        (resume_scheduler: config) には対応しない
+
+        Parameters
+        ----------
+        state: dict
+            チェックポイントの内容
+
+        Returns
+        ----------
+        None
+        """
+        # Optimizer の状態を名前ごとに復元 (名前が違う場合はエラー)
+        self.optimizer.load_state_dict(state["optimizer"])
+
+        # Scheduler は名前ごとに組み立てを比べてから復元
+        if self.scheduler is None:
+            if state.get("scheduler") is not None and any(
+                value is not None
+                for value in state["scheduler"].get("schedulers", {}).values()
+            ):
+                raise ValueError(
+                    "再開元は Scheduler を使った学習ですが, 今回の optimizers "
+                    "には Scheduler がありません"
+                )
+            return
+        saved = state.get("scheduler_classes") or {}
+        for name, scheduler in self.scheduler.items():
+            new = scheduler_classes(scheduler)
+            old = saved.get(name, []) if isinstance(saved, dict) else None
+            if old is not None and old != new:
+                raise ValueError(
+                    f"optimizers.{name} の Scheduler の組み立てが再開元と違います"
+                    f": 再開元は {' + '.join(old) or 'なし'}, 今回は "
+                    f"{' + '.join(new) or 'なし'}"
+                )
+        self.scheduler.load_state_dict(state["scheduler"])
+        self.check_total_steps()
 
     def warn_select_best_change(self, state: dict) -> None:
         """
@@ -1648,19 +2016,79 @@ class Trainer:
 
         # Optimizer, Scheduler, 監視する指標を記録
         self.logger.info(f"Optimizer:\n\n{self.optimizer}\n")
-        scheduler_name = (
-            "なし" if self.scheduler is None
-            else type(self.scheduler).__name__
+        if self.named:
+            self.log_named_settings()
+        else:
+            self.log_scheduler(self.scheduler)
+        self.log_monitor(monitor)
+
+    def log_named_settings(self) -> None:
+        """
+        名前付きの Optimizer ごとの受け持つ部分と Scheduler を記録する関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        # Scheduler の名前を 1 行にまとめ, 中の状態は名前ごとに記録
+        cfg = self.experiment.cfg
+        schedulers = (
+            dict(self.scheduler.items())
+            if isinstance(self.scheduler, NamedSchedulers) else {}
         )
-        self.logger.info(f"Scheduler: {scheduler_name}")
-        if self.scheduler is not None:
+        names = ", ".join(
+            f"{name}={type(schedulers[name]).__name__}"
+            if schedulers.get(name) is not None else f"{name}=なし"
+            for name in self.optimizer
+        )
+        self.logger.info(f"Scheduler: {names}")
+        for name in self.optimizer:
+            modules = list(cfg.optimizers[name].modules)
+            count = sum(p.numel() for p in self.named_params[name])
+            self.logger.info(
+                f"Optimizer {name} が受け持つ部分: {modules} "
+                f"(学習するパラメータ数: {count})"
+            )
+            if schedulers.get(name) is not None:
+                self.log_scheduler(schedulers[name], name)
+
+    def log_scheduler(
+        self, scheduler: Optional[optim.lr_scheduler.LRScheduler],
+        name: str = ""
+    ) -> None:
+        """
+        Scheduler の名前と状態を記録する関数
+
+        Parameters
+        ----------
+        scheduler: Optional[optim.lr_scheduler.LRScheduler]
+            記録する Scheduler, 使わない場合は None
+        name: str = ""
+            名前付きの Optimizer の名前, 1 つの Optimizer の場合は空
+
+        Returns
+        ----------
+        None
+        """
+        # 1 つの Optimizer の場合は Scheduler の名前の行も記録
+        label = f" ({name})" if name else ""
+        if not name:
+            scheduler_name = (
+                "なし" if scheduler is None else type(scheduler).__name__
+            )
+            self.logger.info(f"Scheduler: {scheduler_name}")
+        if scheduler is not None:
             # warmup を付けた場合は中の Scheduler ごとの状態も記録
-            inners = [self.scheduler]
-            if isinstance(self.scheduler, optim.lr_scheduler.SequentialLR):
-                inners += list(self.scheduler._schedulers)
+            inners = [scheduler]
+            if isinstance(scheduler, optim.lr_scheduler.SequentialLR):
+                inners += list(scheduler._schedulers)
                 self.logger.info(
-                    "Scheduler の区切り: "
-                    f"{self.scheduler.state_dict()['_milestones']}"
+                    f"Scheduler の区切り{label}: "
+                    f"{scheduler.state_dict()['_milestones']}"
                 )
             for inner in inners:
                 scheduler_state = {
@@ -1668,9 +2096,23 @@ class Trainer:
                     if not key.startswith("_")
                 }
                 self.logger.info(
-                    f"Scheduler の状態 ({type(inner).__name__}): "
+                    f"Scheduler の状態{label} ({type(inner).__name__}): "
                     f"{scheduler_state}"
                 )
+
+    def log_monitor(self, monitor: str) -> None:
+        """
+        監視する指標, 評価に使うモデル, 更新の手順を記録する関数
+
+        Parameters
+        ----------
+        monitor: str
+            ベストモデルの判定に使う指標の名前
+
+        Returns
+        ----------
+        None
+        """
         self.logger.info(f"監視する指標: {monitor} ({self.trainer_cfg.mode})")
         if self.trainer_cfg.monitor_tiebreak is not None:
             self.logger.info(
@@ -1689,6 +2131,11 @@ class Trainer:
         # 更新の手順を記録
         if self.trainer_cfg.manual_optimization:
             self.logger.info("更新の手順: step の中で自分で更新")
+        elif self.named:
+            self.logger.info(
+                "更新の手順: 名前付きの Optimizer ごとに, 損失の勾配を受け持つ"
+                "パラメータだけに求めて, config の順に更新"
+            )
         elif not self.use_gradients:
             self.logger.info(
                 "更新の手順: 勾配を使わず, 損失を求める closure を Optimizer "
@@ -2047,6 +2494,8 @@ class Trainer:
         """
         データの量で決まる Scheduler の引数を学習用データから補って作る関数
 
+        名前付きの Optimizer の場合は, 作成を保留した Optimizer ごとに作る
+
         Parameters
         ----------
         train_loader: Iterable
@@ -2056,10 +2505,20 @@ class Trainer:
         ----------
         None
         """
-        # 1 エポックで Scheduler を進める回数 (step ごとならバッチ数)
+        # 作成を保留した Scheduler の config と Optimizer と, 書く場所の名前
         cfg = self.experiment.cfg
-        auto = set(auto_params(cfg.scheduler))
-        missing = missing_data_size_params(cfg.scheduler)
+        if self.named:
+            targets = [
+                (
+                    name, cfg.optimizers[name].scheduler,
+                    self.optimizer[name], f"optimizers.{name}.scheduler"
+                )
+                for name in self.optimizer if name in self.pending_named
+            ]
+        else:
+            targets = [("", cfg.scheduler, self.optimizer, "scheduler")]
+
+        # 1 エポックで Scheduler を進める回数 (step ごとならバッチ数)
         per_epoch = 1
         if self.scheduler_interval == "step":
             try:
@@ -2068,6 +2527,8 @@ class Trainer:
                     raise ValueError("train の loader が空です")
             except TypeError as error:
                 # バッチ数が要る引数を名前に出して, 書き方を案内
+                _, scheduler_cfg, _, section = targets[0]
+                missing = missing_data_size_params(scheduler_cfg)
                 needed = [name for name in missing if name != "epochs"]
                 name = needed[0] if needed else "warmup_ratio"
                 hint = (
@@ -2075,22 +2536,83 @@ class Trainer:
                     if name == "steps_per_epoch" else "値を"
                 )
                 raise ValueError(
-                    f"{cfg.scheduler.name or 'warmup'} の {name} を補えません. "
+                    f"{scheduler_cfg.name or 'warmup'} の {name} を補えません. "
                     "train_loader が len() を持たないので, "
-                    f"scheduler の設定に{hint}書いてください"
+                    f"{section} の設定に{hint}書いてください"
                 ) from error
 
+        # Scheduler ごとに引数を補って作成
+        built = {}
+        messages = []
+        for label, scheduler_cfg, optimizer, section in targets:
+            with named_errors(label) if label else contextlib.nullcontext():
+                built[label], filled = self.fill_scheduler(
+                    scheduler_cfg, optimizer, per_epoch, label
+                )
+            messages.append(
+                f"{scheduler_cfg.name or 'warmup'} の引数を学習用データから"
+                f"補いました: {', '.join(filled)}" if not label else
+                f"{section} ({scheduler_cfg.name or 'warmup'}): "
+                f"{', '.join(filled)}"
+            )
+        if self.named:
+            schedulers = dict(self.scheduler.schedulers)
+            schedulers.update(built)
+            self.scheduler = NamedSchedulers(schedulers)
+        else:
+            self.scheduler = built[""]
+        self.pending_scheduler = False
+
+        # 学習中に読まれても壊れた中身が見えないように, 一時ファイルから置き換え
+        path = self.experiment.run_dir / "config.yaml"
+        temp = path.with_name("config.yaml.tmp")
+        OmegaConf.save(cfg, temp, resolve=True)
+        temp.replace(path)
+        if self.named:
+            messages = [
+                "Scheduler の引数を学習用データから補いました: "
+                f"{'; '.join(messages)}"
+            ]
+        self.logger.info(messages[0])
+
+    def fill_scheduler(
+        self, scheduler_cfg: DictConfig, optimizer: optim.Optimizer,
+        per_epoch: int, label: str
+    ) -> tuple[Optional[optim.lr_scheduler.LRScheduler], list[str]]:
+        """
+        1 つの Scheduler の, データの量で決まる引数を補って作る関数
+
+        Parameters
+        ----------
+        scheduler_cfg: DictConfig
+            scheduler の config, 補った値を書き込む
+        optimizer: optim.Optimizer
+            Scheduler を付ける Optimizer
+        per_epoch: int
+            1 エポックで Scheduler を進める回数
+        label: str
+            名前付きの Optimizer の名前, 1 つの Optimizer の場合は空
+
+        Returns
+        ----------
+        scheduler: Optional[optim.lr_scheduler.LRScheduler]
+            作った Scheduler
+        filled: list[str]
+            補った引数と値 (ログに書く形)
+        """
         # 学習全体のステップ数と, 割合で書いた warmup の回数
+        auto = set(auto_params(scheduler_cfg))
+        missing = missing_data_size_params(scheduler_cfg)
         total = self.trainer_cfg.epochs * per_epoch
         values: dict[str, int] = {}
         filled = []
-        if cfg.scheduler.get("warmup_ratio") is not None:
-            warmup = int(round(cfg.scheduler.warmup_ratio * total))
-            cfg.scheduler.warmup_steps = warmup
-            cfg.scheduler.warmup_ratio = None
+        if scheduler_cfg.get("warmup_ratio") is not None:
+            warmup = int(round(scheduler_cfg.warmup_ratio * total))
+            scheduler_cfg.warmup_steps = warmup
+            scheduler_cfg.warmup_ratio = None
             filled.append(f"warmup_steps={warmup}")
             self.warmup_from_ratio = True
-        warmup = int(cfg.scheduler.get("warmup_steps") or 0)
+        warmup = int(scheduler_cfg.get("warmup_steps") or 0)
 
         # OneCycleLR の引数と, auto と書いた引数 (warmup の後の残りの回数)
         for name in missing:
@@ -2103,28 +2625,22 @@ class Trainer:
         if any(value < 1 for value in values.values()):
             raise ValueError(
                 f"warmup ({warmup}) が学習全体のステップ数 ({total}) 以上なので, "
-                f"{cfg.scheduler.name} の auto を補えません"
+                f"{scheduler_cfg.name} の auto を補えません"
             )
-        self.auto_values = {name: values[name] for name in auto}
+        prefix = f"{label}." if label else ""
+        self.auto_values.update(
+            {f"{prefix}{name}": values[name] for name in auto}
+        )
 
-        # config に書き込んで作成し, 補った値が残るように config.yaml も更新
+        # config に書き込んで作成
         for name, value in values.items():
-            cfg.scheduler.params[name] = value
+            scheduler_cfg.params[name] = value
             filled.append(f"{name}={value}")
-        self.scheduler = build_scheduler(
-            cfg.scheduler, self.optimizer, self.trainer_cfg.mode
+        scheduler = build_scheduler(
+            scheduler_cfg, optimizer, self.trainer_cfg.mode
         )
-        self.pending_scheduler = False
 
-        # 学習中に読まれても壊れた中身が見えないように, 一時ファイルから置き換え
-        path = self.experiment.run_dir / "config.yaml"
-        temp = path.with_name("config.yaml.tmp")
-        OmegaConf.save(cfg, temp, resolve=True)
-        temp.replace(path)
-        self.logger.info(
-            f"{cfg.scheduler.name or 'warmup'} の引数を学習用データから補いました: "
-            f"{', '.join(filled)}"
-        )
+        return scheduler, filled
 
     def training_state(self) -> dict:
         """
@@ -2307,22 +2823,27 @@ class Trainer:
 
         # warmup が学習全体以上か, 割合が小さく 0 回になった場合は通知
         # (続きの学習では warmup を終えているので確認不要)
-        warmup = self.experiment.cfg.scheduler.get("warmup_steps")
-        message = None
-        if not continuing and warmup and warmup >= total:
-            message = (
-                f"warmup ({warmup} 回) が学習全体のステップ数 ({total}) 以上なので,"
-                " 後ろの Scheduler に切り替わりません"
-            )
-        elif not continuing and warmup == 0 and self.warmup_from_ratio:
-            message = "scheduler.warmup_ratio が小さく, warmup は 0 回になりました"
-        if message is not None:
-            self.logger.warning(message)
-            warnings.warn(message, stacklevel=2)
+        for label, scheduler, scheduler_cfg in self.scheduler_entries():
+            warmup = scheduler_cfg.get("warmup_steps")
+            prefix = f"optimizers.{label}." if label else ""
+            message = None
+            if not continuing and warmup and warmup >= total:
+                message = (
+                    f"{prefix}warmup ({warmup} 回) が学習全体のステップ数 "
+                    f"({total}) 以上なので, 後ろの Scheduler に切り替わりません"
+                )
+            elif not continuing and warmup == 0 and self.warmup_from_ratio:
+                message = (
+                    f"{prefix}scheduler.warmup_ratio が小さく, warmup は 0 回に"
+                    "なりました"
+                )
+            if message is not None:
+                self.logger.warning(message)
+                warnings.warn(message, stacklevel=2)
 
-        # OneCycleLR の総ステップ数の確認に使う予定の値
-        if isinstance(self.scheduler, optim.lr_scheduler.OneCycleLR):
-            self.planned_total_steps = total
+            # OneCycleLR の総ステップ数の確認に使う予定の値
+            if isinstance(scheduler, optim.lr_scheduler.OneCycleLR):
+                self.planned_total_steps = total
 
     def check_total_steps(self) -> None:
         """
@@ -2342,13 +2863,40 @@ class Trainer:
         ----------
         None
         """
-        total = getattr(self.scheduler, "total_steps", None)
+        # Scheduler ごと (名前付きの Optimizer なら名前ごと) に確認
         planned = self.planned_total_steps
-        if total is None or planned is None or total == planned:
-            return
+        for label, scheduler, _ in self.scheduler_entries():
+            total = getattr(scheduler, "total_steps", None)
+            if total is None or planned is None or total == planned:
+                continue
+            self.warn_total_steps(scheduler, label, total, planned)
 
+    def warn_total_steps(
+        self, scheduler: optim.lr_scheduler.LRScheduler, label: str,
+        total: int, planned: int
+    ) -> None:
+        """
+        OneCycleLR の総ステップ数が予定と違うことを, 多い場合は警告し,
+        少ない場合はエラーにする関数
+
+        Parameters
+        ----------
+        scheduler: optim.lr_scheduler.LRScheduler
+            確かめた Scheduler
+        label: str
+            名前付きの Optimizer の名前, 1 つの Optimizer の場合は空
+        total: int
+            Scheduler の総ステップ数
+        planned: int
+            予定の総ステップ数
+
+        Returns
+        ----------
+        None
+        """
+        prefix = f"optimizers.{label}: " if label else ""
         message = (
-            f"{type(self.scheduler).__name__} の総ステップ数 ({total}) と, "
+            f"{prefix}{type(scheduler).__name__} の総ステップ数 ({total}) と, "
             f"trainer.epochs と学習用データのバッチ数から求めた予定の総ステップ数 "
             f"({planned}) が違います. 再開した場合は再開元の総ステップ数が使われ"
             "ます (trainer.resume_scheduler: config で config の値で作り直せ"
@@ -2581,7 +3129,7 @@ class Trainer:
                 self.epoch = epoch
 
                 # このエポックを始めた時点の学習率の保持
-                lr = self.optimizer.param_groups[0]["lr"]
+                lrs = self.current_lrs()
 
                 # 学習し, 検証用のデータがある場合は検証
                 # エポックの途中で止める要求があれば, このエポックを捨てて終了
@@ -2602,12 +3150,12 @@ class Trainer:
                         f"中断の要求でエポック {epoch} の途中で学習を止めました"
                     )
                     break
-                record["lr"] = lr
+                record.update(lrs)
 
                 # step の extra で返した値は, 平均せずにエポックの最後の値を記録
                 # 指標と同じ名前は学習曲線とダッシュボードで混ざるので禁止
                 for name in self.epoch_extra:
-                    if any(
+                    if name in lrs or any(
                         f"{phase}/{name}" in record
                         for phase in ("train", "train_eval", "valid")
                     ):

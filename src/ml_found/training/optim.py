@@ -718,6 +718,13 @@ def step_scheduler(
     if scheduler is None:
         return
 
+    # 名前付きの Optimizer の Scheduler をまとめた入れ物は, 中で 1 つずつ更新
+    if not isinstance(
+        scheduler, optim.lr_scheduler.LRScheduler
+    ) and hasattr(scheduler, "schedulers"):
+        scheduler.step(metric)
+        return
+
     # ReduceLROnPlateau は指標の値を見て学習率を下げるので値の受け渡し
     if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
         if metric is None:

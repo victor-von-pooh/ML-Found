@@ -91,6 +91,11 @@ def check_trainer_config(cfg: DictConfig) -> None:
             "trainer.resume_scheduler は checkpoint か config にしてください: "
             f"{trainer_cfg.resume_scheduler}"
         )
+    if trainer_cfg.resume_scheduler == "config" and cfg.get("optimizers"):
+        raise ValueError(
+            "optimizers を使う場合は trainer.resume_scheduler: config を使えません"
+            " (再開元の Scheduler の状態を使います)"
+        )
 
     # last.pt を保存する間隔は 1 以上に制限
     if trainer_cfg.checkpoint.every_n_epochs < 1:

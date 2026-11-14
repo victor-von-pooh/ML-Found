@@ -10,8 +10,8 @@ from torch import optim
 
 from ml_found.training.optim import (
     REGISTERED_OPTIMIZERS, auto_total_params, class_requires_closure,
-    class_uses_gradients,
-    resolve_optimizer_class, resolve_scheduler_class
+    class_uses_gradients, named_errors, named_views,
+    resolve_optimizer_class, resolve_scheduler_class, uses_named_optimizers
 )
 
 # 学習の結果ではなく実装の都合で使う引数 (画面では詳細設定として扱う)
@@ -898,6 +898,13 @@ def check_optim_params(cfg: Any) -> None:
     ----------
     None
     """
+    # 名前付きの Optimizer は, 名前ごとに同じ確認を実行
+    if uses_named_optimizers(cfg):
+        for name, view in named_views(cfg):
+            with named_errors(name):
+                check_optim_params(view)
+        return
+
     # 自分で作った Optimizer を Trainer に渡す場合も, config の引数は確認
     # 名前と必須の引数を確かめてから, 値の範囲を確認
     optimizer_cls = resolve_optimizer_class(cfg.optimizer.name)

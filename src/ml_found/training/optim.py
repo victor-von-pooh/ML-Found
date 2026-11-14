@@ -1,7 +1,8 @@
+import contextlib
 import importlib
 import inspect
 from types import ModuleType
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional
 import warnings
 
 from omegaconf import DictConfig, OmegaConf
@@ -285,6 +286,117 @@ def class_requires_closure(optimizer_cls: type) -> bool:
     return required
 
 
+def uses_named_optimizers(cfg: Any) -> bool:
+    """
+    config が optimizers に名前付きで複数の Optimizer を書いているかを返す関数
+
+    Parameters
+    ----------
+    cfg: Any
+        学習に使う config
+
+    Returns
+    ----------
+    named: bool
+        optimizers が空でない場合は True
+    """
+    named = bool(cfg.get("optimizers")) if hasattr(cfg, "get") else False
+
+    return named
+
+
+def named_views(cfg: DictConfig) -> list[tuple[str, DictConfig]]:
+    """
+    optimizers の名前ごとに, optimizer と scheduler の 1 組を持つ config を
+    作る関数
+
+    1 つの Optimizer の場合の確認 (check_optim_config など) を, 名前ごとに
+    そのまま使うために使う
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        学習に使う config
+
+    Returns
+    ----------
+    views: list[tuple[str, DictConfig]]
+        名前と, optimizer, scheduler, trainer を持つ config の組 (書いた順)
+    """
+    # 名前ごとに optimizer と scheduler を差し替えた config を作成
+    views = []
+    for name, entry in cfg.optimizers.items():
+        view = OmegaConf.create({
+            "optimizer": {
+                "name": entry.name,
+                "params": OmegaConf.to_container(entry.params)
+            },
+            "scheduler": OmegaConf.to_container(entry.scheduler),
+            "trainer": OmegaConf.to_container(cfg.trainer)
+        })
+        views.append((str(name), view))
+
+    return views
+
+
+def check_named_optimizers(cfg: DictConfig) -> None:
+    """
+    optimizers に名前付きで書いた Optimizer の設定を確かめる関数
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        学習に使う config
+
+    Returns
+    ----------
+    None
+    """
+    # 一番上の scheduler は使わず, Optimizer ごとの scheduler に書く
+    top = cfg.scheduler
+    if top.name is not None or top.get("warmup_steps") is not None or (
+        top.get("warmup_ratio") is not None
+    ):
+        raise ValueError(
+            "optimizers を使う場合は, Scheduler と warmup を一番上の scheduler "
+            "ではなく optimizers.<名前>.scheduler に書いてください"
+        )
+
+    # 受け持つ部分は 1 つ以上の名前のリスト
+    intervals = set()
+    for name, entry in cfg.optimizers.items():
+        modules = list(entry.modules)
+        if not modules or not all(
+            isinstance(module, str) and module for module in modules
+        ):
+            raise ValueError(
+                f"optimizers.{name}.modules に, 受け持つモデルの部分 (model の"
+                f"属性の名前) を 1 つ以上書いてください: {modules}"
+            )
+
+        # 損失ごとに勾配を求めて更新するので, closure が必要なものと
+        # 勾配を使わないものは不可
+        optimizer_cls = resolve_optimizer_class(entry.name)
+        if class_requires_closure(optimizer_cls) or not class_uses_gradients(
+            optimizer_cls
+        ):
+            raise ValueError(
+                f"optimizers.{name}: {entry.name} は closure が必要か勾配を"
+                "使わない Optimizer なので, optimizers では使えません"
+            )
+        if entry.scheduler.name is not None or entry.scheduler.get(
+            "warmup_steps"
+        ) or entry.scheduler.get("warmup_ratio"):
+            intervals.add(entry.scheduler.interval)
+
+    # 学習率を更新する間隔は, Scheduler を付けた全ての Optimizer で同じ
+    if len(intervals) > 1:
+        raise ValueError(
+            "optimizers の Scheduler の interval は全て同じにしてください: "
+            f"{sorted(intervals)}"
+        )
+
+
 def check_optim_config(cfg: DictConfig) -> None:
     """
     Optimizer と Scheduler の設定を, モデルを作る前に確かめる関数
@@ -298,6 +410,14 @@ def check_optim_config(cfg: DictConfig) -> None:
     ----------
     None
     """
+    # 名前付きの Optimizer は, 名前ごとに同じ確認を実行
+    if uses_named_optimizers(cfg):
+        check_named_optimizers(cfg)
+        for name, view in named_views(cfg):
+            with named_errors(name):
+                check_optim_config(view)
+        return
+
     # Optimizer のクラスが見つかり, Optimizer であることの確認
     # 自分で作った Optimizer を Trainer に渡す場合も config の名前を確認
     resolve_optimizer_class(cfg.optimizer.name)
@@ -626,6 +746,13 @@ def try_build_optim(cfg: DictConfig, device: torch.device) -> None:
     ----------
     None
     """
+    # 名前付きの Optimizer は, 名前ごとに同じ確認を実行
+    if uses_named_optimizers(cfg):
+        for name, view in named_views(cfg):
+            with named_errors(name):
+                try_build_optim(view, device)
+        return
+
     # 値の決まっていない引数 (???) がある場合は, 範囲の確認と同じく対象外
     # (解決できない補間は, その前の確認でエラー)
     sections = [cfg.optimizer]
@@ -672,3 +799,25 @@ def try_build_optim(cfg: DictConfig, device: torch.device) -> None:
                 f"scheduler の引数で {cfg.scheduler.name} を作れません: "
                 f"{type(error).__name__}: {error}"
             ) from error
+
+
+@contextlib.contextmanager
+def named_errors(name: str) -> Iterator[None]:
+    """
+    名前付きの Optimizer の確認で出たエラーに, どの Optimizer かを付ける
+    文脈
+
+    Parameters
+    ----------
+    name: str
+        optimizers に書いた名前
+
+    Returns
+    ----------
+    None
+    """
+    # ValueError だけ, 名前を付けて同じ種類で投げ直し
+    try:
+        yield
+    except ValueError as error:
+        raise ValueError(f"optimizers.{name}: {error}") from error

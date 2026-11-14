@@ -44,6 +44,17 @@ class SchedulerConfig:
 
 
 @dataclass
+class NamedOptimizerConfig:
+    # optimizers に名前付きで書く Optimizer の 1 つ分
+    # クラス名と引数, 受け持つモデルの部分 (model の属性の名前, . で区切って
+    # 入れ子も可), この Optimizer に付ける Scheduler
+    name: str = "Adam"
+    params: dict[str, Any] = field(default_factory=lambda: {"lr": 1e-3})
+    modules: list[str] = field(default_factory=list)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+
+
+@dataclass
 class EarlyStoppingConfig:
     # 監視する指標が patience 回続けて改善しなければ学習の停止
     use: bool = False
@@ -140,4 +151,9 @@ class Config:
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+
+    # 複数の Optimizer を名前付きで使う場合 (GAN など) の, 名前ごとの設定
+    # 空でない場合は optimizer と scheduler の代わりに使う
+    # (中身は NamedOptimizerConfig の形に揃えて確認)
+    optimizers: dict[str, Any] = field(default_factory=dict)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)

@@ -1079,6 +1079,10 @@ def test_one_cycle_steps_from_loader(tmp_path: Path) -> None:
     assert trainer.scheduler is None
     trainer.fit(make_loader(n=64, batch_size=16))
     assert trainer.scheduler.total_steps == 12
+    status = json.loads(
+        (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+    )
+    assert status["optimizers"][0]["scheduler"] == "OneCycleLR"
     saved = OmegaConf.load(experiment.run_dir / "config.yaml")
     assert saved.scheduler.params.steps_per_epoch == 4
     assert saved.scheduler.params.epochs == 3
@@ -3222,6 +3226,15 @@ def test_warmup(tmp_path: Path) -> None:
     assert saved.scheduler.warmup_steps == 3
     assert saved.scheduler.warmup_ratio is None
     assert saved.scheduler.params.T_max == 9
+
+    # 学習を始めるときに作った Scheduler も, warmup の中のクラスと一緒に
+    # run.json に記録
+    status = json.loads(
+        (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+    )
+    assert status["optimizers"][0]["scheduler"] == (
+        "SequentialLR(LinearLR, CosineAnnealingLR)"
+    )
 
     # Scheduler の名前が無い場合は warmup だけ (その後は一定)
     experiment = make_experiment(

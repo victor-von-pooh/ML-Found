@@ -90,6 +90,9 @@ class RunStatus:
         self.last_progress = -math.inf
         self.started = time.monotonic()
 
+        # 前の fit までの所要時間 (fit を呼び直した続きの学習で足す分)
+        self.duration_base = 0.0
+
         # 最後に run.json を書いた時刻 (エポックごとの更新の間隔の確保に使用) と,
         # 間隔の中で書かずに残した更新があるかの印
         self.last_update = -math.inf
@@ -128,7 +131,8 @@ class RunStatus:
 
     def start(
         self, planned_epochs: int, start_epoch: int, monitor: str,
-        mode: str, seed: Optional[int], device: str, select_best: bool = True
+        mode: str, seed: Optional[int], device: str, select_best: bool = True,
+        continue_run: bool = False
     ) -> None:
         """
         学習を始めたことを run.json に書く関数
@@ -136,9 +140,10 @@ class RunStatus:
         Parameters
         ----------
         planned_epochs: int
-            予定のエポック数 (trainer.epochs)
+            予定のエポック数 (trainer.epochs. fit を呼び直した場合は前の
+            fit までを含めた数)
         start_epoch: int
-            最初のエポック, 再開した場合は 2 以上
+            最初のエポック, 再開した場合と fit を呼び直した場合は 2 以上
         monitor: str
             監視する指標
         mode: str
@@ -149,11 +154,19 @@ class RunStatus:
             学習に使うデバイス
         select_best: bool = True
             監視する指標でベストモデルを選ぶかどうか
+        continue_run: bool = False
+            同じ Trainer で fit を呼び直した続きの学習かどうか. True の場合は,
+            前の fit の開始時刻, 終えたエポック数, ベストモデルを引き継ぎ,
+            所要時間は前の fit までの分に足す
 
         Returns
         ----------
         None
         """
+        # 続きの学習で引き継ぐ, 前の fit までの値
+        previous = self.data if continue_run else {}
+        self.duration_base = float(previous.get("duration_sec") or 0.0)
+
         # 開始時刻と, 終わるまで更新していく項目の初期値の設定
         self.started = time.monotonic()
         self.last_progress = -math.inf
@@ -162,18 +175,18 @@ class RunStatus:
             "status": "running",
             "pid": os.getpid(),
             "hostname": socket.gethostname(),
-            "started_at": now_iso(),
+            "started_at": previous.get("started_at") or now_iso(),
             "updated_at": now_iso(),
             "finished_at": None,
             "duration_sec": None,
             "planned_epochs": planned_epochs,
             "start_epoch": start_epoch,
-            "completed_epochs": 0,
+            "completed_epochs": previous.get("completed_epochs", 0),
             "monitor": monitor,
             "mode": mode,
             "select_best": select_best,
-            "best_epoch": None,
-            "best_value": None,
+            "best_epoch": previous.get("best_epoch"),
+            "best_value": previous.get("best_value"),
             "early_stopped_epoch": None,
             "final_weights": None,
             "seed": seed,
@@ -235,7 +248,9 @@ class RunStatus:
         if self.data:
             self.data.update(
                 status=status, finished_at=now_iso(),
-                duration_sec=round(time.monotonic() - self.started, 3),
+                duration_sec=round(
+                    self.duration_base + time.monotonic() - self.started, 3
+                ),
                 **fields
             )
             self.data["updated_at"] = now_iso()

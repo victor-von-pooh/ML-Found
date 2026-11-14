@@ -146,6 +146,33 @@ def scheduler_classes(
     return names
 
 
+def scheduler_label(
+    scheduler: Optional[optim.lr_scheduler.LRScheduler]
+) -> Optional[str]:
+    """
+    run.json に書く Scheduler の名前を返す関数
+
+    Parameters
+    ----------
+    scheduler: Optional[optim.lr_scheduler.LRScheduler]
+        Scheduler, 使わない場合と学習を始めるまで作らない場合は None
+
+    Returns
+    ----------
+    label: Optional[str]
+        クラス名, warmup を付けた場合は中のクラス名も付けた名前
+        (例: SequentialLR(LinearLR, CosineAnnealingLR)), 無い場合は None
+    """
+    names = scheduler_classes(scheduler)
+    if not names:
+        return None
+    label = names[0]
+    if len(names) > 1:
+        label += f"({', '.join(names[1:])})"
+
+    return label
+
+
 def saved_scheduler_classes(state: dict) -> Optional[list[str]]:
     """
     チェックポイントに残る Scheduler の組み立てを返す関数
@@ -2074,6 +2101,51 @@ class Trainer:
             self.log_scheduler(self.scheduler)
         self.log_monitor(monitor)
 
+    def optimizer_info(self) -> list[dict]:
+        """
+        run.json に書く, Optimizer ごとの名前, クラス, 受け持つ部分, Scheduler
+        をまとめる関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        info: list[dict]
+            Optimizer ごとの name, optimizer, modules, scheduler の辞書.
+            1 つの Optimizer の場合は name と modules が None の 1 つ.
+            学習を始めるまで作らない Scheduler は, 作るまで None
+        """
+        # 名前付きの場合は config の順に, 受け持つ部分と Scheduler を付加
+        if self.named:
+            schedulers = (
+                dict(self.scheduler.items())
+                if isinstance(self.scheduler, NamedSchedulers) else {}
+            )
+            cfg = self.experiment.cfg
+            info = [
+                {
+                    "name": name,
+                    "optimizer": type(self.optimizer[name]).__name__,
+                    "modules": [
+                        str(module) for module in cfg.optimizers[name].modules
+                    ],
+                    "scheduler": scheduler_label(schedulers.get(name))
+                }
+                for name in self.optimizer
+            ]
+            return info
+
+        # 1 つの Optimizer の場合
+        info = [{
+            "name": None, "optimizer": type(self.optimizer).__name__,
+            "modules": None,
+            "scheduler": scheduler_label(self.scheduler)
+        }]
+
+        return info
+
     def log_named_settings(self) -> None:
         """
         名前付きの Optimizer ごとの受け持つ部分と Scheduler を記録する関数
@@ -3111,7 +3183,7 @@ class Trainer:
             seed=self.experiment.cfg.experiment.seed,
             device=str(self.device),
             select_best=self.trainer_cfg.select_best,
-            continue_run=continuing
+            continue_run=continuing, optimizers=self.optimizer_info()
         )
 
         # 学習用データの評価し直しは, ワーカーを使い回す DataLoader では
@@ -3139,6 +3211,9 @@ class Trainer:
         # 予定の総ステップ数を求め, 再開しない場合はここで確認
         if self.pending_scheduler:
             self.build_scheduler_from_data(train_loader)
+            self.run_status.update(
+                force=True, optimizers=self.optimizer_info()
+            )
         self.plan_total_steps(train_loader, continuing)
         if self.trainer_cfg.resume_from is None or continuing:
             self.check_total_steps()

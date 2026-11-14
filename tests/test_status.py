@@ -56,6 +56,10 @@ def test_completed_status(tmp_path: Path) -> None:
     assert status["final_weights"] == "best"
     assert status["seed"] == 0
     assert status["device"] == "cpu"
+    assert status["optimizers"] == [
+        {"name": None, "optimizer": "Adam", "modules": None,
+         "scheduler": None}
+    ]
     assert status["duration_sec"] >= 0
     assert status["error"] is None
 

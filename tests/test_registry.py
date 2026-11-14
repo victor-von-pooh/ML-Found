@@ -600,6 +600,7 @@ def test_array_values_and_init_errors(tmp_path: Path) -> None:
     )
     assert status["status"] == "failed"
     assert "移せません" in status["error"]
+    assert status["optimizers"] is None
     log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
     assert "Trainer の作成でエラーが起きました" in log
 

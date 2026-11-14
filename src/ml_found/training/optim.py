@@ -324,6 +324,7 @@ def named_views(cfg: DictConfig) -> list[tuple[str, DictConfig]]:
         名前と, optimizer, scheduler, trainer を持つ config の組 (書いた順)
     """
     # 名前ごとに optimizer と scheduler を差し替えた config を作成
+    # 新しい config には他の項目が無いので, 値の参照 (${...}) は元の config で解決
     views = []
     for name, entry in cfg.optimizers.items():
         view = OmegaConf.create({
@@ -334,7 +335,7 @@ def named_views(cfg: DictConfig) -> list[tuple[str, DictConfig]]:
             "scheduler": OmegaConf.to_container(
                 entry.scheduler, resolve=True
             ),
-            "trainer": OmegaConf.to_container(cfg.trainer)
+            "trainer": OmegaConf.to_container(cfg.trainer, resolve=True)
         })
         views.append((str(name), view))
 

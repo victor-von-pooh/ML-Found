@@ -154,7 +154,7 @@ python train.py --experiment configs/experiment/examples/my.yaml trainer.epochs=
 上書きは experiment の後に重なり, experiment と同じく default にある項目だけを書けて, `diff.yaml` にも残る. 上書きでクラス名を変えると, default と experiment に書いた前のクラスの引数は捨てられる. 値は YAML として読むので, `scheduler.name=null` で使わない設定にできる. 項目の削除 (`~`) や追加 (`+`) の書き方には対応していない.
 独自の引数 (`--seed` など) を持つ学習スクリプトは, 自分の parser に `add_config_arguments(parser)` で `--experiment` と上書きを加え, 読み込んだ引数を `load_config_from_args(project_dir, args)` に渡す. パスや上書きを自分で決める場合は `load_config(default_path, experiment_path, overrides)` を使う.
 
-`start_experiment` が返す `Experiment` は, 学習に使う config (`cfg`), プロジェクトのディレクトリ (`project_dir`), 実験の出力先 (`run_dir`. `outputs/<experiment.name>/<日付>/<時刻>/` の `Path`), ロガー (`logger`), デバイス (`device`) を持つ. モデルを作るのに使ったファイル (モデルの定義など) を残す場合は `run_dir` に写す.
+`start_experiment` が返す `Experiment` は, 学習に使う config (`cfg`), プロジェクトのディレクトリ (`project_dir`), 実験の出力先 (`run_dir`. `<output_dir>/<name>/<日付>/<時刻>/` の `Path`), ロガー (`logger`), デバイス (`device`) を持つ. モデルを作るのに使ったファイル (モデルの定義など) を残す場合は `run_dir` に写す.
 
 `step(model, batch, phase)` の決まりは以下の通り.
 

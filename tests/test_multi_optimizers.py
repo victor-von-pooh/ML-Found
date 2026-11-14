@@ -1,6 +1,7 @@
 import csv
 from pathlib import Path
 
+from omegaconf import OmegaConf
 import pytest
 import torch
 from torch import nn, optim
@@ -8,6 +9,7 @@ from torch import nn, optim
 from ml_found.config.loader import load_config
 from ml_found.experiment.setup import Experiment, start_experiment
 from ml_found.training.multi import split_parameters
+from ml_found.training.optim import named_views
 from ml_found.training.trainer import Trainer
 from test_trainer import make_loader
 
@@ -531,3 +533,34 @@ def test_named_resume_auto_mismatch(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="T_max"):
         Trainer(TwoParts(), resumed, named_step).fit(make_loader())
+
+
+def test_named_views_resolve_interpolations() -> None:
+    """
+    名前ごとの config で, 他の項目を参照する値 (${...}) を元の config で
+    解決することを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # Optimizer の引数と trainer.epochs が, 他の項目を参照する config
+    cfg = OmegaConf.create({
+        "model": {"lr": 0.01, "epochs": 3},
+        "trainer": {"epochs": "${model.epochs}", "mode": "min"},
+        "optimizers": {
+            "first": {
+                "name": "SGD", "params": {"lr": "${model.lr}"},
+                "modules": ["first"],
+                "scheduler": {"name": None, "params": {}}
+            }
+        }
+    })
+    (name, view), = named_views(cfg)
+    assert name == "first"
+    assert view.optimizer.params.lr == 0.01
+    assert view.trainer.epochs == 3

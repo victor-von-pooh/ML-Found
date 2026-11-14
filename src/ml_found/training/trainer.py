@@ -2074,6 +2074,56 @@ class Trainer:
             self.log_scheduler(self.scheduler)
         self.log_monitor(monitor)
 
+    def optimizer_info(self) -> list[dict]:
+        """
+        run.json に書く, Optimizer ごとの名前, クラス, 受け持つ部分, Scheduler
+        をまとめる関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        info: list[dict]
+            Optimizer ごとの name, optimizer, modules, scheduler の辞書.
+            1 つの Optimizer の場合は name と modules が None の 1 つ
+        """
+        # 名前付きの場合は config の順に, 受け持つ部分と Scheduler を付加
+        if self.named:
+            schedulers = (
+                dict(self.scheduler.items())
+                if isinstance(self.scheduler, NamedSchedulers) else {}
+            )
+            cfg = self.experiment.cfg
+            info = [
+                {
+                    "name": name,
+                    "optimizer": type(self.optimizer[name]).__name__,
+                    "modules": [
+                        str(module) for module in cfg.optimizers[name].modules
+                    ],
+                    "scheduler": (
+                        type(schedulers[name]).__name__
+                        if schedulers.get(name) is not None else None
+                    )
+                }
+                for name in self.optimizer
+            ]
+            return info
+
+        # 1 つの Optimizer の場合
+        info = [{
+            "name": None, "optimizer": type(self.optimizer).__name__,
+            "modules": None,
+            "scheduler": (
+                type(self.scheduler).__name__
+                if self.scheduler is not None else None
+            )
+        }]
+
+        return info
+
     def log_named_settings(self) -> None:
         """
         名前付きの Optimizer ごとの受け持つ部分と Scheduler を記録する関数
@@ -3111,7 +3161,7 @@ class Trainer:
             seed=self.experiment.cfg.experiment.seed,
             device=str(self.device),
             select_best=self.trainer_cfg.select_best,
-            continue_run=continuing
+            continue_run=continuing, optimizers=self.optimizer_info()
         )
 
         # 学習用データの評価し直しは, ワーカーを使い回す DataLoader では

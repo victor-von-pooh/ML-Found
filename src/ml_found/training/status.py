@@ -132,7 +132,7 @@ class RunStatus:
     def start(
         self, planned_epochs: int, start_epoch: int, monitor: str,
         mode: str, seed: Optional[int], device: str, select_best: bool = True,
-        continue_run: bool = False
+        continue_run: bool = False, optimizers: Optional[list] = None
     ) -> None:
         """
         学習を始めたことを run.json に書く関数
@@ -158,6 +158,11 @@ class RunStatus:
             同じ Trainer で fit を呼び直した続きの学習かどうか. True の場合は,
             前の fit の開始時刻, 終えたエポック数, ベストモデルを引き継ぎ,
             所要時間は前の fit までの分に足す
+        optimizers: Optional[list] = None
+            Optimizer ごとの name (名前付きの場合の名前, 1 つの場合は None),
+            optimizer (クラスの名前), modules (受け持つ部分, 1 つの場合は
+            None), scheduler (クラスの名前, 使わない場合は None) の辞書の
+            リスト. Trainer を作れなかった場合は None
 
         Returns
         ----------
@@ -191,6 +196,7 @@ class RunStatus:
             "final_weights": None,
             "seed": seed,
             "device": device,
+            "optimizers": optimizers,
             "error": None
         }
         self.last_update = time.monotonic()

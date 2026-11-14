@@ -1,4 +1,5 @@
 import csv
+import json
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -243,6 +244,17 @@ def test_named_records_losses_and_lrs(tmp_path: Path) -> None:
     assert list(steps[0].keys()) == ["step", "epoch", "lr_first", "lr_second"]
     assert float(steps[-1]["lr_first"]) == pytest.approx(0.1)
     assert float(steps[1]["lr_second"]) == pytest.approx(0.005)
+
+    # run.json の Optimizer ごとの名前, クラス, 受け持つ部分, Scheduler
+    status = json.loads(
+        (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+    )
+    assert status["optimizers"] == [
+        {"name": "first", "optimizer": "SGD", "modules": ["first"],
+         "scheduler": None},
+        {"name": "second", "optimizer": "Adam", "modules": ["second"],
+         "scheduler": "StepLR"}
+    ]
 
 
 def test_named_resume_matches_uninterrupted(tmp_path: Path) -> None:

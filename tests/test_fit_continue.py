@@ -432,3 +432,25 @@ def test_fit_again_removes_stop_and_sums_duration(tmp_path: Path) -> None:
     assert second["status"] == "completed"
     assert second["started_at"] == first["started_at"]
     assert second["duration_sec"] >= first["duration_sec"]
+
+
+def test_fit_again_monitor_must_match(tmp_path: Path) -> None:
+    """
+    呼び直した fit で監視する指標が変わる場合 (検証用データを渡さないなど)
+    はエラーにすることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 1 回目は valid/loss, 2 回目は検証用データが無いので train/loss
+    experiment = make_experiment(tmp_path, "trainer:\n  epochs: 2\n")
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    trainer.fit(make_loader(), make_loader())
+    with pytest.raises(ValueError, match="監視する指標が違います"):
+        trainer.fit(make_loader())

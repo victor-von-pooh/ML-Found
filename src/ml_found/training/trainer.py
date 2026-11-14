@@ -467,6 +467,7 @@ class Trainer:
         self.start_epoch = 1
         self.end_epoch = self.trainer_cfg.epochs
         self.loop_started = False
+        self.last_monitor: Optional[str] = None
         self.fit_finished = False
 
         # fit の終わりにベストモデルなどの重みに置き換えた場合の, 置き換える前
@@ -2477,6 +2478,14 @@ class Trainer:
         # 次から, trainer.epochs の分だけ追加で学習)
         continuing = self.loop_started
         if continuing:
+            # ベストモデルと Early Stopping の値を比べられるように, 監視する
+            # 指標は前の fit と同じものに制限 (検証用データの有無など)
+            if monitor != self.last_monitor:
+                raise ValueError(
+                    f"前の fit と監視する指標が違います: 前の fit は "
+                    f"{self.last_monitor}, 今回は {monitor}. 続きの学習では"
+                    "同じ指標になるように, 検証用データの有無を揃えてください"
+                )
             self.prepare_continue()
         else:
             self.end_epoch = self.trainer_cfg.epochs
@@ -2557,8 +2566,9 @@ class Trainer:
         self.start_state = self.training_state()
         self.epoch_start_step = self.global_step
 
-        # 学習を始めた印 (この後に fit を呼び直すと続きの学習)
+        # 学習を始めた印 (この後に fit を呼び直すと続きの学習) と監視する指標
         self.loop_started = True
+        self.last_monitor = monitor
 
         # エポックごとに学習
         # 止めたエポックも数えられるように, 進捗バーは手動で更新

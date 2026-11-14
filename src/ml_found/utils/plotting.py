@@ -132,7 +132,8 @@ def plot_lr_steps(records: list[dict], output_path: str) -> None:
     Parameters
     ----------
     records: list[dict]
-        更新ごとの step (通しの更新回数), epoch, lr
+        更新ごとの step (通しの更新回数), epoch と, 学習率の列 (lr か
+        lr_<名前>)
     output_path: str
         画像の保存先のパス
 
@@ -147,11 +148,16 @@ def plot_lr_steps(records: list[dict], output_path: str) -> None:
     ax.set_xlabel("Step")
     ax.set_ylabel("lr")
 
-    # 更新ごとの学習率を描画して保存
-    ax.plot(
-        [record["step"] for record in records],
-        [record["lr"] for record in records], label="lr"
-    )
+    # 更新ごとの学習率を, 列 (名前付きの Optimizer なら lr_<名前>) ごとに描画
+    columns = [
+        key for key in (records[0] if records else {"lr": None})
+        if key not in ("step", "epoch")
+    ]
+    for column in columns:
+        ax.plot(
+            [record["step"] for record in records],
+            [record[column] for record in records], label=column
+        )
     ax.legend(bbox_to_anchor=(1.01, 1), loc="upper left", borderaxespad=0)
     fig.savefig(output_path)
     plt.close(fig)

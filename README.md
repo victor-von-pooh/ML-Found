@@ -162,7 +162,7 @@ python train.py --experiment configs/experiment/examples/my.yaml trainer.epochs=
 - 指標は 1 つの値にし, 名前には `/` を使わない (学習曲線の画像のファイル名に使うため)
 - 指標はバッチのサンプル数で重み付けして平均する. サンプル数は自動で推定するが, 戻り値に `batch_size` を入れると, そちらを使う. 推定できない場合 (テンソルを含まないバッチなど) は 1 として扱い, `train.log` に警告を 1 回出す
 - 重み付き平均してよいのは, 損失, MAE, 正解率のように「サンプルごとの値の平均」になる指標だけ. RMSE, AUC, F1 のようにエポック全体から求める指標は, 下の `on_epoch_end` で求める
-- 平均せずに記録だけしたい値 (KL の重みのようなスケジュールの値など) は, 戻り値の `extra` に「名前: 値」の辞書で入れる. `train/` や `valid/` を付けずに, エポックの最後に返した値を `history.csv` の列に記録する (学習率の `lr` と同じ扱い). 検証でも返した場合は検証の値が残る (`trainer.eval_train` の評価し直しで返した値は記録しない). 名前は空でない文字列で, `/`, カンマ, `=`, `epoch`, `lr` と, 指標と同じ名前 (`loss` など, 学習曲線で混ざるため) は使えない. 値は数か 1 つの値のテンソル. `extra` という名前の指標は返せない
+- 平均せずに記録だけしたい値 (KL の重みのようなスケジュールの値など) は, 戻り値の `extra` に「名前: 値」の辞書で入れる. `train/` や `valid/` を付けずに, エポックの最後に返した値を `history.csv` の列に記録する (学習率の `lr` と同じ扱い. `epoch`, `lr` と, `optimizers` の場合の `lr_<名前>` は使えない). 検証でも返した場合は検証の値が残る (`trainer.eval_train` の評価し直しで返した値は記録しない). 名前は空でない文字列で, `/`, カンマ, `=`, `epoch`, `lr` と, 指標と同じ名前 (`loss` など, 学習曲線で混ざるため) は使えない. 値は数か 1 つの値のテンソル. `extra` という名前の指標は返せない
 
 ### フルバッチ学習
 
@@ -208,7 +208,7 @@ class MyTrainer(Trainer):
 | メソッド | 用途 |
 | --- | --- |
 | `update_parameters(loss)` | 更新の手順を変える. `super().update_parameters(loss)` の後に EMA の重みを更新する, など |
-| `extra_state_dict()` | チェックポイントに加える状態を辞書で返す (2 つ目の Optimizer, EMA の重みなど). `load_extra_state_dict(state)` も合わせて上書きすると, 再開時に戻る |
+| `extra_state_dict()` | チェックポイントに加える状態を辞書で返す (EMA の重み, ML-Found の外で作った Optimizer など). `load_extra_state_dict(state)` も合わせて上書きすると, 再開時に戻る |
 | `eval_model()` | 検証, ベストモデルの判定, `final_model.pt` に使うモデルを返す (既定は `self.model`). EMA の重みで検証する場合は EMA のモデルを返す |
 
 `eval_model` を上書きした場合の動作.
@@ -285,7 +285,57 @@ experiment = start_experiment(cfg, diff, str(project_dir))
 - 勾配法の Optimizer は `zero_grad`, `loss.backward()`, 勾配のクリッピング, `optimizer.step()` の順に更新する
 - LBFGS のように `step` に closure が必要な Optimizer は自動で見分け, 同じバッチで損失と勾配を計算し直す closure を渡す. 見分ける順は, クラスの属性 `requires_closure` (自作の Optimizer が `True` か `False` で宣言), torch の Optimizer の仕様 (LBFGS. `describe_optimizers()` の `requires_closure` と同じ), `step` の `closure` が既定値の無い引数かどうか. 自作の Optimizer で `closure` に既定値があるのに実際には必要な場合は, クラスの本体に `requires_closure = True` と書く (property や `__init__` の中で付けた属性は見ない). closure は `step` を何度も呼ぶので, `step` で予測を貯めるなどの処理は, closure の中では `self.in_closure` が `True` になることを使って飛ばす
 - Nelder-Mead 法のような勾配を使わない Optimizer は, クラスの本体に `uses_gradients = False` と書く. ML-Found は学習でも勾配を計算せず (逆伝播しない), 今のパラメータの損失を求める closure を `step` に渡す (`step` は勾配の記録を止めて呼ぶので, パラメータを直接書き換えてよい). `trainer.grad_clip_norm` と `log_grad_norm` とは一緒に使えない (config で指定した場合は出力先を作る前にエラー). `trainer.valid_grad` は検証だけに効く. `manual_optimization: true` の場合はそちらが優先され, 学習でも勾配を記録して `step` の中で自分で更新する. 登録簿の仕様にも `uses_gradients` を返す
-- GAN のように複数の Optimizer を自分で使う場合は, `trainer.manual_optimization: true` にして `step` の中で更新する. ML-Found は逆伝播, 勾配のクリッピング, 更新を行わず (`grad_clip_norm` と `log_grad_norm` と同時に使うとエラー), 更新回数と Scheduler (`interval` に応じて step ごとかエポックごと) だけを進める. `step` は勾配の流れない損失 (`loss.detach()`) を返してよい
+- 複数の Optimizer を使う場合は, 下の「複数の Optimizer」のように config の `optimizers` に名前付きで書く. 更新の順番が込み入る場合 (識別器を更新した後の値で生成器の損失を求めるなど) は, `trainer.manual_optimization: true` にして `step` の中で更新する. ML-Found は逆伝播, 勾配のクリッピング, 更新を行わず (`grad_clip_norm` と `log_grad_norm` と同時に使うとエラー), 更新回数と Scheduler (`interval` に応じて step ごとかエポックごと) だけを進める. `step` は勾配の流れない損失 (`loss.detach()`) を返してよい
+
+### 複数の Optimizer
+
+GAN (生成器と識別器) や強化学習の Actor-Critic のように, モデルの部分ごとに別の損失と別の Optimizer で更新する場合は, `optimizer` と `scheduler` の代わりに `optimizers` に名前付きで書く.
+
+```yaml
+# configs/default/train.yaml
+optimizers:
+  discriminator:
+    name: Adam
+    params: {lr: 0.0002, betas: [0.5, 0.999]}
+    modules: [discriminator]      # 受け持つ部分 (model の属性の名前, . で区切って入れ子も可)
+  generator:
+    name: Adam
+    params: {lr: 0.0002, betas: [0.5, 0.999]}
+    modules: [generator]
+    scheduler:                    # 書き方は一番上の scheduler と同じ (省略可)
+      name: StepLR
+      params: {step_size: 10}
+```
+
+`step` は `loss` に, Optimizer の名前ごとの損失の辞書を返す (`Trainer` に渡す関数でも, 継承したクラスの `step` でもよい).
+
+```python
+bce = nn.BCEWithLogitsLoss()
+
+
+def step(model, batch, phase):
+    x, _ = batch
+    fake = model.generator(torch.randn(len(x), 64, device=x.device))
+    real_logits = model.discriminator(x)
+    fake_logits = model.discriminator(fake)
+    d_loss = (
+        bce(real_logits, torch.ones_like(real_logits))
+        + bce(fake_logits, torch.zeros_like(fake_logits))
+    )
+    g_loss = bce(fake_logits, torch.ones_like(fake_logits))
+    return {"loss": {"discriminator": d_loss, "generator": g_loss}}
+```
+
+- **更新**: ML-Found は, 損失ごとに受け持つ部分のパラメータだけの勾配を求め (`torch.autograd.grad`), Optimizer ごとに勾配をクリップしてから, config に書いた順に更新する. 全ての損失の勾配は更新の前の同じパラメータで求める (同時の更新). 例えば生成器の損失の勾配は識別器のパラメータに入らないので, 上の例の `d_loss` に `fake.detach()` を使わなくてもよい. 損失が届かないパラメータの勾配は `None` になり, その更新では Optimizer が飛ばす (weight decay や momentum も進まない). クリップは Optimizer ごとのパラメータを, それぞれ `trainer.grad_clip_norm` に収める
+- **受け持つ部分**: `modules` は `model.get_submodule` で探す名前のリスト (空のリストとモデル全体の `''` は不可). 中のパラメータを受け持つ (凍結したものも受け持ち, 学習の途中で凍結を解くと更新する. 途中で凍結したものは勾配を求めない). 学習するパラメータ (`requires_grad`) は, どれかの Optimizer が受け持つ. どれにも入らない学習するパラメータ, 2 つ以上に入るパラメータ, 名前がモデルに無いもの, パラメータを 1 つも受け持たない Optimizer は, `Trainer` を作るときにエラーになる (出力先を作った後)
+- **記録**: 名前ごとの損失 (`train/loss_<名前>`, 検証では `valid/loss_<名前>`), その合計 (`train/loss`, `valid/loss`), 名前ごとの学習率 (`lr_<名前>`, `lr_steps.csv` の列も同じ), `log_grad_norm` の場合は名前ごとのクリップ前の勾配のノルム (`train/grad_norm_<名前>`). 合計の `loss` は既定の監視する指標になるが, GAN のように損失の合計が良し悪しを表さない場合は `trainer.monitor` を書くか `trainer.select_best: false` にする. `step` は `loss_<名前>` と `grad_norm_<名前>` を, `extra` は `lr_<名前>` を返せない. 損失は名前ごとに `torch.Tensor` で, 勾配を持つものにする
+- **Scheduler**: `interval` は, Scheduler を付けた全ての Optimizer で同じにする. `auto`, warmup, `OneCycleLR` の補う引数は, Scheduler ごとに補う (補う前と, Scheduler を付けない名前は `self.scheduler["名前"]` が `None`)
+- **保存と再開**: Optimizer と Scheduler の状態は名前ごとにチェックポイントに保存し, 再開できる. 名前と, 名前ごとの Scheduler の組み立て (有無, クラス, warmup の有無) は再開元と同じにする. 1 つの Optimizer の学習の `last.pt` から名前付きで再開することと, その逆はできない. `auto` や `warmup_ratio` で補った値が再開元と違う場合 (エポック数を変えた場合など) はエラー. それ以外の Scheduler の引数の違いは確かめず, 再開元の状態を使う (`trainer.resume_scheduler: config` は使えない)
+- **config の書き方**: 名前は `.`, `/`, 空白を含まない文字列にする. `optimizers` は default の config に書き, experiment と上書きでは既にある名前の項目だけを変えられる (名前の追加と削除はできない). `optimizer` と `optimizers` は一方だけ書く (default に両方書いた場合と, `optimizers` を使う default に experiment で `optimizer` を書いた場合はエラー). 一番上の `scheduler` は既定値のまま使わない (変えるとエラー). 使わない `optimizer` の既定値は `config.yaml` に残る. 名前ごとの `name` と `params` を省略すると `Adam` と `{lr: 0.001}` になる
+- **ログ**: `train.log` に `Optimizer:` (名前ごとの Optimizer), `Scheduler: discriminator=なし, generator=StepLR`, `Optimizer <名前> が受け持つ部分: [...] (学習するパラメータ数: ...)`, 名前ごとの Scheduler の状態を書く
+- **継承したクラス**: `self.optimizer["generator"]` で名前ごとの Optimizer を, `self.scheduler["generator"]` で Scheduler を取り出せる (`self.optimizer` と `self.scheduler` は名前ごとのものをまとめたもの). `update_parameters` は合計の損失を受け取り, 名前ごとの損失は `self.named_losses` にある
+- **使えないもの**: closure が必要な Optimizer (LBFGS など), 勾配を使わない Optimizer (`manual_optimization` でも不可), `Trainer` に渡す自分で作った Optimizer と Scheduler. 確かめるのは出力先を作る前 (`modules` の書き方, 一番上の `scheduler`, `interval` の違い, `resume_scheduler: config` も同じ)
+- **`trainer.manual_optimization: true`**: ML-Found は更新を行わない. `step` は名前ごとの損失の辞書 (`loss_<名前>` と合計を記録) か, 1 つの損失を返す. 更新の順番が込み入る場合 (識別器を更新した後の値で生成器の損失を求めるなど) に使う
 
 ### 検証の設定
 
@@ -396,13 +446,14 @@ ML-Found が使う項目と既定値.
 | `scheduler.warmup_steps` | `null` | 学習の始めに学習率を線形に上げる回数 (`interval` の単位) |
 | `scheduler.warmup_ratio` | `null` | warmup の回数を学習全体のステップ数に対する割合で書く (学習を始めるときに `warmup_steps` に直す) |
 | `scheduler.warmup_start_factor` | `0.01` | warmup の最初の学習率の倍率 |
+| `optimizers` | `{}` | 名前付きの複数の Optimizer (「複数の Optimizer」). 名前ごとに `name` (既定 `Adam`), `params` (既定 `{lr: 0.001}`), `modules` (必須), `scheduler` (一番上の `scheduler` と同じ項目) |
 | `trainer.epochs` | `100` | エポック数 (同じ `Trainer` で `fit` を呼び直した場合は, 1 回の `fit` で追加するエポック数) |
 | `trainer.monitor` | `null` | ベストモデルの判定に使う指標, `null` の場合は `valid/loss`, 検証しない場合は `train/loss` |
 | `trainer.mode` | `min` | 指標は小さい方と大きい方のどちらが良いか |
 | `trainer.monitor_tiebreak` | `null` | 監視する指標が最良値と同じ値 (相対誤差 1e-6 以内) か, 最良値より悪くないが `min_delta` 未満の改善の場合に比べる指標 (例: `valid/loss`), `null` の場合は同じ値を改善とみなさない |
 | `trainer.monitor_tiebreak_mode` | `min` | 同じ値の場合に比べる指標は小さい方と大きい方のどちらが良いか |
-| `trainer.grad_clip_norm` | `null` | 勾配のノルムの上限, `null` の場合はクリッピングしない. Optimizer が更新するパラメータだけが対象 |
-| `trainer.log_grad_norm` | `false` | クリップ前の勾配のノルムを `train/grad_norm` として記録するかどうか |
+| `trainer.grad_clip_norm` | `null` | 勾配のノルムの上限, `null` の場合はクリッピングしない. Optimizer が更新するパラメータだけが対象 (`optimizers` の場合は Optimizer ごと) |
+| `trainer.log_grad_norm` | `false` | クリップ前の勾配のノルムを `train/grad_norm` (`optimizers` の場合は `train/grad_norm_<名前>`) として記録するかどうか |
 | `trainer.restore_best` | `true` | 学習後にベストモデルの重みに戻すかどうか, `false` の場合は最後のエポックの重み |
 | `trainer.select_best` | `true` | 監視する指標でベストモデルを選ぶかどうか. GAN のように損失で良し悪しを決められない学習では `false` にし, `best.pt` を作らず `final_model.pt` に最後のエポックの重みを残す (Early Stopping と `monitor_tiebreak` とは一緒に使えない. 監視する指標は発散の確認と ReduceLROnPlateau に使う). 選ぶ設定の `last.pt` から `false` で再開すると, 再開元のベストモデルは使わない |
 | `trainer.valid_grad` | `false` | 検証時にも勾配を計算するかどうか |
@@ -447,9 +498,9 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | `train.log` | 差分, 環境の情報, モデルの構造, エポックごとの指標, 結果 |
 | `model_summary.csv` | モデルのパラメータとバッファの一覧 (名前, 種類, 持っている層のクラス名, 形, 型, 要素数, 学習するか, 共有している場合は最初の名前 `same_as`. 要素数の合計では共有したものを 1 回だけ数える) |
 | `git_diff.patch` | 未コミットの変更がある場合のみ, commit id からの差分. 未追跡のファイルも含むが, `.gitignore` で除外したファイルと submodule の中の変更は含まない. バイナリファイルは変更されたことだけが記録される |
-| `history.csv` | エポックごとの指標と, エポックを始めた時点の学習率 (`lr`. エポックの中の変化は `lr_steps.csv`), `step` の `extra` で返した値 |
-| `lr_steps.csv` | Scheduler を使い `scheduler.interval: step` の場合だけ (エポックごとに変える設定で再開した場合は保存しない). 更新ごとの通しの番号 (`step`), エポック (`epoch`), その更新に使った学習率 (`lr`, `history.csv` と同じく最初のパラメータのグループの値). 学習を終えたときに保存し, 再開しても続きから記録する |
-| `<指標>_curve.png` | 指標ごとの学習曲線, 学習率の推移 (`lr_curve.png`, エポックを始めた時点の値) も含む |
+| `history.csv` | エポックごとの指標と, エポックを始めた時点の学習率 (`lr`, `optimizers` の場合は `lr_<名前>`. エポックの中の変化は `lr_steps.csv`), `step` の `extra` で返した値 |
+| `lr_steps.csv` | Scheduler を使い `scheduler.interval: step` (`optimizers` の場合は名前ごとの `scheduler.interval: step`) の場合だけ (エポックごとに変える設定で再開した場合は保存しない). 更新ごとの通しの番号 (`step`), エポック (`epoch`), その更新に使った学習率 (`lr`, `history.csv` と同じく最初のパラメータのグループの値). 学習を終えたときに保存し, 再開しても続きから記録する |
+| `<指標>_curve.png` | 指標ごとの学習曲線, 学習率の推移 (`lr_curve.png`, `optimizers` の場合は `lr_<名前>_curve.png`. エポックを始めた時点の値) も含む |
 | `lr_steps.png` | `lr_steps.csv` の学習率の推移 (横軸は更新の番号) |
 | `best.pt` | ベストモデルのチェックポイント (`best_weights_only: true` の場合は重みだけ. `select_best: false` の場合は作らない) |
 | `last.pt` | 最後のエポックのチェックポイント, ベストモデルの重みも含む (`last_with_best: false` の場合は含まない). 再開に使う |

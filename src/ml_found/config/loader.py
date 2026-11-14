@@ -3,16 +3,93 @@ from pathlib import Path
 import sys
 from typing import Any, Optional, Sequence
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 from omegaconf.errors import OmegaConfBaseException
 
-from ml_found.config.schema import Config
+from ml_found.config.schema import Config, NamedOptimizerConfig
 
 # 差分で, 片方にしか存在しない項目の値として使う印
 ABSENT = "<未定義>"
 
 # torch のクラスに渡す引数の項目 (クラスを変えると必要な引数も変化)
 PARAMS_SECTIONS = ("optimizer", "scheduler")
+
+
+def params_sections(cfg: Any) -> list[str]:
+    """
+    torch のクラスに渡す引数を持つ項目の名前を返す関数
+
+    optimizer と scheduler に加えて, optimizers に名前付きで書いた
+    Optimizer ごとの項目と, その Scheduler の項目を返す
+
+    Parameters
+    ----------
+    cfg: Any
+        config (DictConfig か辞書)
+
+    Returns
+    ----------
+    sections: list[str]
+        項目の名前 (例: optimizer, optimizers.generator.scheduler)
+    """
+    # 名前付きの Optimizer ごとに, Optimizer と Scheduler の項目を追加
+    sections = list(PARAMS_SECTIONS)
+    named = cfg.get("optimizers") if hasattr(cfg, "get") else None
+    for name in named or {}:
+        sections += [f"optimizers.{name}", f"optimizers.{name}.scheduler"]
+
+    return sections
+
+
+def normalize_optimizers(cfg: DictConfig) -> None:
+    """
+    optimizers に名前付きで書いた Optimizer ごとの設定を, 既定値を補って
+    NamedOptimizerConfig の形に揃える関数
+
+    書き間違えた項目 (存在しないキー) は, ここでエラーになる
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        ML-Found の既定値に default を重ねた config, その場で書き換える
+
+    Returns
+    ----------
+    None
+    """
+    # 名前付きの Optimizer ごとに, 既定値に重ねて存在しないキーを禁止
+    # 名前は記録の列 (lr_<名前>) と項目の場所 (optimizers.<名前>) に使うので,
+    # . と / を含まない文字列に限定
+    if not isinstance(cfg.optimizers, DictConfig):
+        raise ValueError(
+            "optimizers は Optimizer の名前ごとの設定の辞書にしてください"
+        )
+    for name in list(cfg.optimizers.keys()):
+        if not isinstance(name, str) or not name or any(
+            char in name for char in "./ "
+        ):
+            raise ValueError(
+                f"optimizers の名前 {name!r} は . / と空白を含まない文字列に"
+                "してください"
+            )
+        entry = cfg.optimizers[name]
+        if not isinstance(entry, DictConfig):
+            raise ValueError(
+                f"optimizers.{name} は name, params, modules, scheduler を持つ"
+                f"辞書にしてください: {entry}"
+            )
+        base = OmegaConf.structured(NamedOptimizerConfig)
+        OmegaConf.set_struct(base, True)
+        OmegaConf.set_struct(base.params, False)
+        OmegaConf.set_struct(base.scheduler.params, False)
+        try:
+            merged = OmegaConf.merge(base, entry)
+        except OmegaConfBaseException as e:
+            raise ValueError(
+                f"optimizers.{name} の設定が正しくありません: {e}"
+            ) from e
+        with open_dict(cfg.optimizers):
+            cfg.optimizers[name] = merged
 
 
 def load_yaml(path: str) -> DictConfig:
@@ -58,8 +135,8 @@ def unlock_params(cfg: DictConfig) -> DictConfig:
         optimizer と scheduler の params だけキーを追加できるようにした config
     """
     # Optimizer や Scheduler を切り替えると必要な引数も変わるので自由に追加可能に設定
-    for section in PARAMS_SECTIONS:
-        OmegaConf.set_struct(cfg[section].params, False)
+    for section in params_sections(cfg):
+        OmegaConf.set_struct(OmegaConf.select(cfg, section).params, False)
 
     return cfg
 
@@ -85,15 +162,27 @@ def build_default(default_path: str) -> DictConfig:
     OmegaConf.set_struct(schema, False)
 
     # ML-Found が使う項目は typo を見つけられるように存在しないキーを禁止
+    # (optimizers は名前を自由に付けられるので, 中身を後で確認)
     for key in schema.keys():
-        OmegaConf.set_struct(schema[key], True)
+        OmegaConf.set_struct(schema[key], key != "optimizers")
     schema = unlock_params(schema)
 
-    # プロジェクトの default のマージ
+    # optimizer と optimizers は, どちらか一方だけ書けるように確認
+    raw = load_yaml(default_path)
+    if raw.get("optimizers") and "optimizer" in raw:
+        raise ValueError(
+            "default の config に optimizer と optimizers の両方が書かれています. "
+            "Optimizer が 1 つなら optimizer, 名前付きで複数使うなら optimizers "
+            "の一方にしてください"
+        )
+
+    # プロジェクトの default のマージと, 名前付きの Optimizer の形の確認
     try:
-        default_cfg = OmegaConf.merge(schema, load_yaml(default_path))
-    except OmegaConfBaseException as e:
+        default_cfg = OmegaConf.merge(schema, raw)
+    except (OmegaConfBaseException, TypeError) as e:
         raise ValueError(f"default の config が正しくありません: {e}") from e
+    normalize_optimizers(default_cfg)
+    default_cfg = unlock_params(default_cfg)
 
     return default_cfg
 
@@ -118,8 +207,14 @@ def check_structure(
     None
     """
     # torch に渡す引数の項目は自由に書けるので確認不要
-    if prefix in [f"{section}.params" for section in PARAMS_SECTIONS]:
-        return
+    # (optimizer, scheduler と, 名前付きの Optimizer とその Scheduler)
+    if prefix.endswith(".params"):
+        parts = prefix.split(".")[:-1]
+        named = parts[0] == "optimizers" and (
+            len(parts) == 2 or (len(parts) == 3 and parts[2] == "scheduler")
+        )
+        if ".".join(parts) in PARAMS_SECTIONS or named:
+            return
 
     # 辞書と辞書以外を入れ替えると項目の追加や削除になるのでエラー
     if isinstance(experiment, dict) != isinstance(default, dict):
@@ -156,10 +251,11 @@ def reset_params(base: DictConfig, experiment: DictConfig) -> DictConfig:
         クラスを変える項目だけ params を空にした config
     """
     # クラスを変えると default の引数はそのクラスで使えないことがあるので空に初期化
-    for section in PARAMS_SECTIONS:
+    for section in params_sections(base):
         name = OmegaConf.select(experiment, f"{section}.name", default=None)
-        if name is not None and name != base[section].name:
-            base[section].params = {}
+        current = OmegaConf.select(base, section)
+        if name is not None and name != current.name:
+            current.params = {}
 
     return base
 
@@ -221,18 +317,35 @@ def merge_experiment(
     experiment = load_yaml(experiment_path)
     if overrides:
         override = parse_overrides(overrides)
-        for section in PARAMS_SECTIONS:
+        for section in params_sections(default_cfg):
             name = OmegaConf.select(override, f"{section}.name", default=None)
             old = OmegaConf.select(experiment, f"{section}.name", default=None)
             if name is not None and name != old and OmegaConf.select(
                 experiment, f"{section}.params", default=None
             ) is not None:
-                experiment[section].params = {}
+                OmegaConf.select(experiment, section).params = {}
         experiment = OmegaConf.merge(experiment, override)
+    # experiment では optimizers の名前を増やせないことを先に案内
+    added = [
+        name for name in (experiment.get("optimizers") or {})
+        if name not in default_cfg.optimizers
+    ]
+    if added:
+        raise ValueError(
+            f"experiment で optimizers の名前 {added} は追加できません. 使う "
+            "Optimizer は default の config の optimizers に書いてください"
+        )
     check_structure(
         OmegaConf.to_container(experiment),
         OmegaConf.to_container(default_cfg)
     )
+
+    # 名前付きの Optimizer を使う default に, optimizer を重ねることは不可
+    if default_cfg.optimizers and "optimizer" in experiment:
+        raise ValueError(
+            "default の config は optimizers を使っているので, experiment でも "
+            "optimizer ではなく optimizers.<名前> に書いてください"
+        )
 
     # default に無いキーを experiment で書けないように設定
     base = default_cfg.copy()

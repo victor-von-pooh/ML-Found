@@ -1,7 +1,7 @@
 import csv
 from array import array
 import math
-from typing import Any, Optional
+from typing import Any, Optional, Sequence, Union
 
 import torch
 
@@ -325,12 +325,15 @@ class History:
 
 
 class LrSteps:
-    def __init__(self):
+    def __init__(self, columns: Sequence[str] = ("lr",)):
         # 更新ごとの通しの番号, エポック, 学習率を, 長い学習でも軽くなるように
         # 数の配列で保存
+        # 学習率の列は, 名前付きの Optimizer を使う場合は Optimizer ごと
+        # (lr_<名前>)
+        self.columns = list(columns)
         self.steps = array("q")
         self.epochs = array("q")
-        self.lrs = array("d")
+        self.lrs = {column: array("d") for column in self.columns}
 
     def __len__(self) -> int:
         """
@@ -349,7 +352,9 @@ class LrSteps:
 
         return count
 
-    def append(self, step: int, epoch: int, lr: float) -> None:
+    def append(
+        self, step: int, epoch: int, lr: Union[float, Sequence[float]]
+    ) -> None:
         """
         1 回の更新の学習率を加える関数
 
@@ -359,16 +364,23 @@ class LrSteps:
             通しの更新の番号
         epoch: int
             更新したエポック
-        lr: float
-            その更新に使った学習率
+        lr: Union[float, Sequence[float]]
+            その更新に使った学習率, 列が複数の場合は列の順の値
 
         Returns
         ----------
         None
         """
+        values = list(lr) if isinstance(lr, (list, tuple)) else [lr]
+        if len(values) != len(self.columns):
+            raise ValueError(
+                f"学習率の数 ({len(values)}) が列の数 ({len(self.columns)}) と"
+                "違います"
+            )
         self.steps.append(step)
         self.epochs.append(epoch)
-        self.lrs.append(lr)
+        for column, value in zip(self.columns, values):
+            self.lrs[column].append(float(value))
 
     def drop_from_epoch(self, epoch: int) -> None:
         """
@@ -388,7 +400,10 @@ class LrSteps:
         ]
         self.steps = array("q", (self.steps[index] for index in keep))
         self.epochs = array("q", (self.epochs[index] for index in keep))
-        self.lrs = array("d", (self.lrs[index] for index in keep))
+        self.lrs = {
+            column: array("d", (values[index] for index in keep))
+            for column, values in self.lrs.items()
+        }
 
     def records(self) -> list[dict]:
         """
@@ -401,14 +416,16 @@ class LrSteps:
         Returns
         ----------
         records: list[dict]
-            更新ごとの step, epoch, lr
+            更新ごとの step, epoch と, 学習率の列
         """
-        records = [
-            {"step": step, "epoch": epoch, "lr": lr}
-            for step, epoch, lr in zip(
-                self.steps, self.epochs, self.lrs, strict=True
-            )
-        ]
+        records = []
+        for index, (step, epoch) in enumerate(
+            zip(self.steps, self.epochs, strict=True)
+        ):
+            record: dict[str, Any] = {"step": step, "epoch": epoch}
+            for column in self.columns:
+                record[column] = self.lrs[column][index]
+            records.append(record)
 
         return records
 
@@ -428,9 +445,13 @@ class LrSteps:
         # 1 回の更新を 1 行にして書き出し
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["step", "epoch", "lr"])
+            writer.writerow(["step", "epoch"] + self.columns)
             writer.writerows(
-                zip(self.steps, self.epochs, self.lrs, strict=True)
+                zip(
+                    self.steps, self.epochs,
+                    *(self.lrs[column] for column in self.columns),
+                    strict=True
+                )
             )
 
     def state_dict(self) -> dict:
@@ -444,14 +465,18 @@ class LrSteps:
         Returns
         ----------
         state: dict
-            番号, エポック, 学習率のテンソル (保存と読み込みを速くする形)
+            番号, エポック, 学習率の列ごとのテンソル (保存と読み込みを速く
+            する形)
         """
         # 後から書き換わらないように複製してテンソルに変換
         state = {
             "step": torch.tensor(self.steps.tolist(), dtype=torch.int64),
-            "epoch": torch.tensor(self.epochs.tolist(), dtype=torch.int64),
-            "lr": torch.tensor(self.lrs.tolist(), dtype=torch.float64)
+            "epoch": torch.tensor(self.epochs.tolist(), dtype=torch.int64)
         }
+        for column in self.columns:
+            state[column] = torch.tensor(
+                self.lrs[column].tolist(), dtype=torch.float64
+            )
 
         return state
 
@@ -468,7 +493,17 @@ class LrSteps:
         ----------
         None
         """
+        # 学習率の列が今の設定と違う場合 (Optimizer の名前を変えたなど) はエラー
+        missing = [column for column in self.columns if column not in state]
+        if missing:
+            raise ValueError(
+                f"再開元の更新ごとの学習率に {missing} の記録がありません"
+            )
+
         # 記録の置き換え
         self.steps = array("q", state["step"].tolist())
         self.epochs = array("q", state["epoch"].tolist())
-        self.lrs = array("d", state["lr"].tolist())
+        self.lrs = {
+            column: array("d", state[column].tolist())
+            for column in self.columns
+        }

@@ -36,30 +36,11 @@ Python のコードからは, `Trainer.add_callback` で登録した関数がエ
 
 - 1 エポックが短く毎エポック改善する学習 (フルバッチなど) の, チェックポイントの保存の時間. 記録を列ごとの数の配列で持つようにして, 5000 エポックのフルバッチ学習で 41 秒が 13 秒になった (保存しない場合は 4 秒). 残りは `best.pt` と `last.pt` を毎エポック書く分で, `every_n_epochs` と `best_weights_only: true` で減らせる. 記録をチェックポイントに入れず `history.csv` に追記する形は, 再開の扱いが変わるので見送り
 
-### 5. 複数の Optimizer を config に名前付きで書く (方針を決めた, 未実装)
+### 5. 複数の Optimizer を config に名前付きで書く (対応済み)
 
-GAN (生成器と識別器), 強化学習の Actor-Critic など, 別々の損失で別々のタイミングで更新する学習のため. 今は 2 つ目以降の Optimizer を利用者が作り, `manual_optimization` と `extra_state_dict`, `load_extra_state_dict` の上書きで更新, 保存, 再開を書く必要があり, config の確認とダッシュボードのフォームの対象にもならない.
+`optimizers` に名前付きで Optimizer を書けるようにした (README の「複数の Optimizer」). 名前ごとに `name`, `params`, 受け持つ部分 `modules`, `scheduler` を書き, `step` は名前ごとの損失を返す. ML-Found が損失ごとに受け持つパラメータの勾配を求め, クリップして config の順に更新し, 状態の保存と再開, 登録簿による確認 (範囲, typo, 作れるか), 名前ごとの損失, 学習率, 勾配のノルムの記録を行う. 一番上の `scheduler` との併用, Scheduler ごとに違う `interval`, closure が必要な Optimizer と勾配を使わない Optimizer, `Trainer` に渡す自分で作った Optimizer と Scheduler, `resume_scheduler: config` には対応しない.
 
-```yaml
-optimizers:
-  discriminator:
-    name: Adam
-    params: {lr: 0.0002, betas: [0.5, 0.999]}
-    modules: [discriminator]      # 受け持つ部分 (model の属性の名前)
-  generator:
-    name: Adam
-    params: {lr: 0.0002, betas: [0.5, 0.999]}
-    modules: [generator]
-    scheduler: {name: StepLR, params: {step_size: 10}}   # Optimizer ごとに付けられる
-```
-
-- 今の `optimizer:` (1 つ) はそのまま使える. `optimizer:` と `optimizers:` の両方を書いた場合はエラー
-- 学習するパラメータが, どの Optimizer にも入っていない場合と, 2 つ以上に入っている場合は, 学習の前にエラー
-- `step` が Optimizer の名前ごとの損失を返し (戻り値の形, `loss` と `train/loss` の扱い, 監視する指標との関係は実装の前に決める), ML-Found が config に書いた順に逆伝播と更新を行う. 順番が込み入る場合 (識別器を更新した後に生成器の損失を計算し直すなど) は, `manual_optimization` で名前から Optimizer を取り出して更新する
-- 全ての Optimizer と Scheduler の状態を ML-Found がチェックポイントに保存し, 再開する
-- 決めること: `optimizers:` と一番上の `scheduler:` を両方書いた場合の扱いと, Optimizer ごとの `scheduler:` で `interval` と warmup を使えるか. 勾配の切り詰め (`trainer.grad_clip_norm` を Optimizer ごとのパラメータに使うか, Optimizer ごとに書くか) と `train/grad_norm` の記録. 学習率の列の名前 (今は `history.csv` と `lr_steps.csv` の `lr`. `lr/<名前>` は `train/loss` のような区分と紛らわしい)
-- 登録簿による確認 (範囲, typo, 作れるか) は Optimizer ごとに行う
-- ダッシュボード (別のリポジトリ) で, 起動のフォーム, モデルのタブ, 学習率のグラフを Optimizer ごとに出せるように, `run.json` などに名前ごとの情報を書き出す
+残り: ダッシュボードで名前ごとに扱うための情報 (Optimizer の名前と受け持つ部分など) の `run.json` への書き出し. 今はダッシュボードが `train.log` の `Optimizer:` と `Scheduler:` の行, `history.csv` と `lr_steps.csv` の `lr_<名前>` の列から読む
 
 ### 6. 同じ Trainer で fit を呼び直したら続きとして扱う (対応済み)
 

@@ -58,7 +58,20 @@ def normalize_optimizers(cfg: DictConfig) -> None:
     None
     """
     # 名前付きの Optimizer ごとに, 既定値に重ねて存在しないキーを禁止
+    # 名前は記録の列 (lr_<名前>) と項目の場所 (optimizers.<名前>) に使うので,
+    # . と / を含まない文字列に限定
+    if not isinstance(cfg.optimizers, DictConfig):
+        raise ValueError(
+            "optimizers は Optimizer の名前ごとの設定の辞書にしてください"
+        )
     for name in list(cfg.optimizers.keys()):
+        if not isinstance(name, str) or not name or any(
+            char in name for char in "./ "
+        ):
+            raise ValueError(
+                f"optimizers の名前 {name!r} は . / と空白を含まない文字列に"
+                "してください"
+            )
         entry = cfg.optimizers[name]
         if not isinstance(entry, DictConfig):
             raise ValueError(
@@ -166,7 +179,7 @@ def build_default(default_path: str) -> DictConfig:
     # プロジェクトの default のマージと, 名前付きの Optimizer の形の確認
     try:
         default_cfg = OmegaConf.merge(schema, raw)
-    except OmegaConfBaseException as e:
+    except (OmegaConfBaseException, TypeError) as e:
         raise ValueError(f"default の config が正しくありません: {e}") from e
     normalize_optimizers(default_cfg)
     default_cfg = unlock_params(default_cfg)
@@ -312,6 +325,16 @@ def merge_experiment(
             ) is not None:
                 OmegaConf.select(experiment, section).params = {}
         experiment = OmegaConf.merge(experiment, override)
+    # experiment では optimizers の名前を増やせないことを先に案内
+    added = [
+        name for name in (experiment.get("optimizers") or {})
+        if name not in default_cfg.optimizers
+    ]
+    if added:
+        raise ValueError(
+            f"experiment で optimizers の名前 {added} は追加できません. 使う "
+            "Optimizer は default の config の optimizers に書いてください"
+        )
     check_structure(
         OmegaConf.to_container(experiment),
         OmegaConf.to_container(default_cfg)

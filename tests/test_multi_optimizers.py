@@ -3,13 +3,12 @@ from pathlib import Path
 
 import pytest
 import torch
-from torch import nn
+from torch import nn, optim
 
 from ml_found.config.loader import load_config
 from ml_found.experiment.setup import Experiment, start_experiment
 from ml_found.training.multi import split_parameters
 from ml_found.training.trainer import Trainer
-
 from test_trainer import make_loader
 
 # 2 つの部分を名前付きの Optimizer で学習する config
@@ -26,17 +25,13 @@ NAMED = (
 )
 
 
+# 2 つの線形層を順につなぐモデル
 class TwoParts(nn.Module):
-    """
-    2 つの線形層を順につなぐモデル
-
-    Parameters
-    ----------
-    None
-    """
-
     def __init__(self):
-        super().__init__()
+        # 親クラスのコンストラクタを呼び出す
+        super(TwoParts, self).__init__()
+
+        # 名前付きの Optimizer がそれぞれ受け持つ 2 つの層を保存
         self.first = nn.Linear(1, 1)
         self.second = nn.Linear(1, 1)
 
@@ -54,6 +49,7 @@ class TwoParts(nn.Module):
         y: torch.Tensor
             出力
         """
+        # 1 層目, 2 層目の順に通す
         y = self.second(self.first(x))
 
         return y
@@ -61,7 +57,7 @@ class TwoParts(nn.Module):
 
 def named_step(model: nn.Module, batch: tuple, phase: str) -> dict:
     """
-    名前ごとの損失を返す step
+    名前ごとの損失を返す step の関数
 
     first は 1 層目の出力を y に近づけ, second は全体の出力を y に近づける
 
@@ -79,6 +75,7 @@ def named_step(model: nn.Module, batch: tuple, phase: str) -> dict:
     outputs: dict
         名前ごとの損失と平均絶対誤差
     """
+    # 1 層目と全体の出力から, 名前ごとの損失を計算
     x, y = batch
     hidden = model.first(x)
     pred = model.second(hidden)
@@ -139,6 +136,7 @@ def read_rows(path: Path) -> list[dict]:
     rows: list[dict]
         行ごとの辞書
     """
+    # 見出しを使って辞書の一覧に変換
     with path.open(encoding="utf-8") as file:
         rows = list(csv.DictReader(file))
 
@@ -187,7 +185,7 @@ def test_named_optimizers_update_own_parts(tmp_path: Path) -> None:
             trainer.model.first.state_dict()["bias"],
             parameter.detach() - 0.1 * grad
         )
-    adam = torch.optim.Adam(expected.second.parameters(), lr=0.01)
+    adam = optim.Adam(expected.second.parameters(), lr=0.01)
     for parameter, grad in zip(expected.second.parameters(), second_grads):
         parameter.grad = grad
     adam.step()
@@ -238,7 +236,7 @@ def test_named_records_losses_and_lrs(tmp_path: Path) -> None:
     assert loss == pytest.approx(parts)
     assert float(rows[0]["lr_first"]) == pytest.approx(0.1)
 
-    # 更新ごとの学習率は名前ごとの列, second だけ下がる
+    # 更新ごとの学習率は名前ごとの列 (second の学習率だけが低下)
     steps = read_rows(experiment.run_dir / "lr_steps.csv")
     assert list(steps[0].keys()) == ["step", "epoch", "lr_first", "lr_second"]
     assert float(steps[-1]["lr_first"]) == pytest.approx(0.1)
@@ -259,7 +257,7 @@ def test_named_resume_matches_uninterrupted(tmp_path: Path) -> None:
     ----------
     None
     """
-    # Scheduler は first に付ける
+    # first にだけ付ける Scheduler
     scheduler = (
         "    scheduler:\n      name: StepLR\n"
         "      params: {step_size: 1, gamma: 0.5}\n"
@@ -286,6 +284,7 @@ def test_named_resume_matches_uninterrupted(tmp_path: Path) -> None:
         run_dir: Path
             実験のディレクトリ
         """
+        # default を書いて実験を開始し, 同じ初期値のモデルで学習
         path.mkdir(parents=True, exist_ok=True)
         default_path = path / "default.yaml"
         default_path.write_text(
@@ -349,12 +348,14 @@ def test_named_config_errors(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="ありません"):
         split_parameters(TwoParts(), {"first": ["missing"]})
     with pytest.raises(ValueError, match="同じパラメータ"):
-        split_parameters(TwoParts(), {"a": ["first"], "b": ["", "first"]})
+        split_parameters(
+            TwoParts(), {"a": ["first"], "b": ["second", "first"]}
+        )
 
     # 名前の違う損失
     def wrong_step(model: nn.Module, batch: tuple, phase: str) -> dict:
         """
-        名前を書き間違えた損失を返す step
+        名前を書き間違えた損失を返す step の関数
 
         Parameters
         ----------
@@ -370,6 +371,7 @@ def test_named_config_errors(tmp_path: Path) -> None:
         outputs: dict
             名前を書き間違えた損失
         """
+        # second の損失を除いた辞書に置き換え
         outputs = named_step(model, batch, phase)
         outputs["loss"] = {"first": outputs["loss"]["first"]}
 
@@ -408,3 +410,124 @@ def test_named_both_styles_error(tmp_path: Path) -> None:
     experiment_path.write_text("optimizer:\n  name: SGD\n", encoding="utf-8")
     with pytest.raises(ValueError, match="optimizers.<名前>"):
         load_config(str(default_path), str(experiment_path))
+
+
+def test_named_freeze_and_unfreeze(tmp_path: Path) -> None:
+    """
+    学習の途中で凍結したパラメータは更新せず, 最初に凍結していて後で凍結を
+    解いたパラメータは更新することを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # second の重みは最初は凍結 (学習後の重みを比べるのでベストに戻さない)
+    experiment = make_named_experiment(
+        tmp_path, "trainer:\n  epochs: 2\n  select_best: false\n"
+    )
+    model = TwoParts()
+    model.second.weight.requires_grad_(False)
+    trainer = Trainer(model, experiment, named_step)
+    assert trainer.scheduler is not None
+    assert trainer.scheduler["first"] is None
+
+    # エポック 1 の後に, first の重みを凍結し second の重みの凍結を解く
+    def swap(result: dict) -> None:
+        """
+        エポック 1 の後に凍結するパラメータを入れ替える関数
+
+        Parameters
+        ----------
+        result: dict
+            エポックの結果
+
+        Returns
+        ----------
+        None
+        """
+        if result["epoch"] == 1:
+            model.first.weight.requires_grad_(False)
+            model.second.weight.requires_grad_(True)
+            frozen.update(
+                first=model.first.weight.detach().clone(),
+                second=model.second.weight.detach().clone()
+            )
+
+    frozen: dict = {}
+    trainer.add_callback(swap)
+    trainer.fit(make_loader())
+
+    # 凍結した first の重みは変わらず, 凍結を解いた second の重みは変化
+    assert torch.equal(model.first.weight, frozen["first"])
+    assert not torch.equal(model.second.weight, frozen["second"])
+
+
+def test_named_resume_auto_mismatch(tmp_path: Path) -> None:
+    """
+    auto で補った Scheduler の引数が再開元と違う場合は, 名前付きの
+    Optimizer でもエラーにすることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # first に T_max: auto の Scheduler を付けて 2 エポック学習
+    scheduler = (
+        "    scheduler:\n      name: CosineAnnealingLR\n"
+        "      params: {T_max: auto}\n"
+    )
+    text = NAMED.replace(
+        "    modules: [first]\n", "    modules: [first]\n" + scheduler
+    )
+
+    def start(path: Path, extra: str) -> Experiment:
+        """
+        名前付きの Optimizer と Scheduler の実験を開始する関数
+
+        Parameters
+        ----------
+        path: Path
+            一時ディレクトリ
+        extra: str
+            default に加える YAML の内容
+
+        Returns
+        ----------
+        experiment: Experiment
+            開始した実験
+        """
+        # default を書いて実験を開始
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "default.yaml").write_text(
+            "experiment:\n  name: test\n  device: cpu\n" + text + extra,
+            encoding="utf-8"
+        )
+        (path / "experiment.yaml").write_text("", encoding="utf-8")
+        cfg, diff = load_config(
+            str(path / "default.yaml"), str(path / "experiment.yaml")
+        )
+        cfg.trainer.progress_bar = False
+        experiment = start_experiment(cfg, diff, str(path))
+
+        return experiment
+
+    first = start(tmp_path / "first", "trainer:\n  epochs: 2\n")
+    Trainer(TwoParts(), first, named_step).fit(make_loader())
+
+    # エポック数を変えて再開すると, 補った T_max が再開元と違うのでエラー
+    resumed = start(
+        tmp_path / "resumed",
+        f"trainer:\n  epochs: 5\n  resume_from: {first.run_dir / 'last.pt'}\n"
+    )
+    with pytest.raises(ValueError, match="T_max"):
+        Trainer(TwoParts(), resumed, named_step).fit(make_loader())

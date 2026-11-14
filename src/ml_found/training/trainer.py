@@ -411,6 +411,7 @@ class Trainer:
         self.named = uses_named_optimizers(experiment.cfg)
         self.auto_values: dict[str, int] = {}
         self.warmup_from_ratio = False
+        self.warmup_ratio_labels: set[str] = set()
         # 予定の総ステップ数 (OneCycleLR の総ステップ数との食い違いの確認に使用)
         self.planned_total_steps: Optional[int] = None
         if self.named:
@@ -418,13 +419,12 @@ class Trainer:
         else:
             self.build_single_parts(optimizer, scheduler)
 
-        # Scheduler との組み合わせの確認
+        # Scheduler と間隔の組み合わせの確認 (Scheduler が無い場合は間隔だけ)
         for _, scheduler_entry, _ in self.scheduler_entries():
-            if scheduler_entry is not None:
-                check_scheduler(
-                    scheduler_entry, self.scheduler_interval,
-                    experiment.cfg.trainer.mode
-                )
+            check_scheduler(
+                scheduler_entry, self.scheduler_interval,
+                experiment.cfg.trainer.mode
+            )
 
         # Early Stopping を使う場合は作成
         self.early_stopping = None
@@ -628,9 +628,7 @@ class Trainer:
                     entry.scheduler, optimizers[name], cfg.trainer.mode
                 )
         self.pending_scheduler = bool(self.pending_named)
-        self.scheduler = (
-            NamedSchedulers(schedulers) if intervals else None
-        )
+        self.scheduler = NamedSchedulers(schedulers)
 
         # 学習率を更新する間隔 (全ての Scheduler で同じ) と, 更新ごとの学習率の
         # 記録の列 (lr_<名前>)
@@ -1186,16 +1184,19 @@ class Trainer:
                     f"loss の {name} が勾配を持ちません (パラメータから計算した"
                     "損失を返してください)"
                 )
-            grads[name] = torch.autograd.grad(
-                loss, self.named_params[name],
-                retain_graph=index < len(names) - 1, allow_unused=True
-            )
+            # 学習の途中で凍結したパラメータは, 勾配を求めずに対象外
+            params = [p for p in self.named_params[name] if p.requires_grad]
+            values = torch.autograd.grad(
+                loss, params, retain_graph=index < len(names) - 1,
+                allow_unused=True
+            ) if params else ()
+            grads[name] = dict(zip(map(id, params), values))
 
         # 勾配を書き込み, Optimizer ごとにクリップして更新
         norms = {}
         for name in names:
-            for parameter, grad in zip(self.named_params[name], grads[name]):
-                parameter.grad = grad
+            for parameter in self.named_params[name]:
+                parameter.grad = grads[name].get(id(parameter))
             norm = self.clip_gradients(self.named_params[name])
             if norm is not None:
                 norms[name] = norm
@@ -1749,7 +1750,7 @@ class Trainer:
         ----------
         None
         """
-        # 名前付きの Optimizer で保存した状態は読めない
+        # 名前付きの Optimizer で保存した状態は読み込み不可
         if "optimizers" in (state.get("optimizer") or {}):
             raise ValueError(
                 "再開元は optimizers を使った学習なので, optimizer の学習の"
@@ -1811,7 +1812,7 @@ class Trainer:
         self.optimizer.load_state_dict(state["optimizer"])
 
         # Scheduler は名前ごとに組み立てを比べてから復元
-        if self.scheduler is None:
+        if all(scheduler is None for _, scheduler in self.scheduler.items()):
             if state.get("scheduler") is not None and any(
                 value is not None
                 for value in state["scheduler"].get("schedulers", {}).values()
@@ -1832,7 +1833,58 @@ class Trainer:
                     f"{' + '.join(new) or 'なし'}"
                 )
         self.scheduler.load_state_dict(state["scheduler"])
+        self.check_named_auto_params()
         self.check_total_steps()
+
+    def check_named_auto_params(self) -> None:
+        """
+        名前付きの Optimizer の Scheduler で, auto や割合で補った値が再開元の
+        値と同じかを確かめる関数
+
+        再開元の値のまま学習すると, config.yaml と train.log に残る補った値と
+        実際の値が食い違うのでエラー
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        # 名前ごとに, 補った値と再開元から戻した Scheduler の値を比較
+        cfg = self.experiment.cfg
+        diffs = []
+        for name, scheduler in self.scheduler.items():
+            if scheduler is None:
+                continue
+            inner = scheduler
+            if isinstance(scheduler, optim.lr_scheduler.SequentialLR):
+                inner = scheduler._schedulers[-1]
+            prefix = f"{name}."
+            for key, value in self.auto_values.items():
+                param = key[len(prefix):]
+                if key.startswith(prefix) and getattr(
+                    inner, param, value
+                ) != value:
+                    diffs.append(
+                        f"optimizers.{name}.scheduler の {param} (再開元 "
+                        f"{getattr(inner, param)}, 補った値 {value})"
+                    )
+            warmup = cfg.optimizers[name].scheduler.get("warmup_steps")
+            if name in self.warmup_ratio_labels and isinstance(
+                scheduler, optim.lr_scheduler.SequentialLR
+            ) and scheduler._milestones[0] != warmup:
+                diffs.append(
+                    f"optimizers.{name}.scheduler の warmup_steps (再開元 "
+                    f"{scheduler._milestones[0]}, 補った値 {warmup})"
+                )
+        if diffs:
+            raise ValueError(
+                "auto や warmup_ratio で補った Scheduler の引数が再開元と"
+                f"違います: {', '.join(diffs)}. optimizers ではエポック数などを"
+                "変えて再開できないので, 再開元と同じ設定にしてください"
+            )
 
     def warn_select_best_change(self, state: dict) -> None:
         """
@@ -2612,6 +2664,7 @@ class Trainer:
             scheduler_cfg.warmup_ratio = None
             filled.append(f"warmup_steps={warmup}")
             self.warmup_from_ratio = True
+            self.warmup_ratio_labels.add(label)
         warmup = int(scheduler_cfg.get("warmup_steps") or 0)
 
         # OneCycleLR の引数と, auto と書いた引数 (warmup の後の残りの回数)
@@ -2825,16 +2878,24 @@ class Trainer:
         # (続きの学習では warmup を終えているので確認不要)
         for label, scheduler, scheduler_cfg in self.scheduler_entries():
             warmup = scheduler_cfg.get("warmup_steps")
-            prefix = f"optimizers.{label}." if label else ""
+            section = (
+                f"optimizers.{label}.scheduler" if label else "scheduler"
+            )
+            subject = (
+                f"{section}.warmup_steps" if label else "warmup"
+            )
             message = None
             if not continuing and warmup and warmup >= total:
                 message = (
-                    f"{prefix}warmup ({warmup} 回) が学習全体のステップ数 "
+                    f"{subject} ({warmup} 回) が学習全体のステップ数 "
                     f"({total}) 以上なので, 後ろの Scheduler に切り替わりません"
                 )
-            elif not continuing and warmup == 0 and self.warmup_from_ratio:
+            elif (
+                not continuing and warmup == 0
+                and label in self.warmup_ratio_labels
+            ):
                 message = (
-                    f"{prefix}scheduler.warmup_ratio が小さく, warmup は 0 回に"
+                    f"{section}.warmup_ratio が小さく, warmup は 0 回に"
                     "なりました"
                 )
             if message is not None:
@@ -2899,9 +2960,13 @@ class Trainer:
             f"{prefix}{type(scheduler).__name__} の総ステップ数 ({total}) と, "
             f"trainer.epochs と学習用データのバッチ数から求めた予定の総ステップ数 "
             f"({planned}) が違います. 再開した場合は再開元の総ステップ数が使われ"
-            "ます (trainer.resume_scheduler: config で config の値で作り直せ"
-            "ます)"
+            "ます"
         )
+        if not self.named:
+            message += (
+                " (trainer.resume_scheduler: config で config の値で作り直せ"
+                "ます)"
+            )
         if self.loop_started:
             message += (
                 ". 同じ Trainer で fit を呼び直した場合は, 前の fit の分も含めた"

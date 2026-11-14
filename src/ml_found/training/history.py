@@ -371,7 +371,7 @@ class LrSteps:
         ----------
         None
         """
-        values = [lr] if isinstance(lr, (int, float)) else list(lr)
+        values = list(lr) if isinstance(lr, (list, tuple)) else [lr]
         if len(values) != len(self.columns):
             raise ValueError(
                 f"学習率の数 ({len(values)}) が列の数 ({len(self.columns)}) と"

@@ -5,21 +5,10 @@ from torch import nn, optim
 from ml_found.training.optim import step_scheduler
 
 
+# config の optimizers に名前付きで書いた複数の Optimizer を, 1 つの Optimizer
+# のように扱う入れ物 (param_groups, zero_grad, step, state_dict,
+# load_state_dict が使え, 名前ごとの Optimizer は [名前] で取り出し)
 class NamedOptimizers:
-    """
-    config の optimizers に名前付きで書いた複数の Optimizer を, 1 つの
-    Optimizer のように扱う入れ物
-
-    Trainer の中の Optimizer と同じ使い方 (param_groups, zero_grad, step,
-    state_dict, load_state_dict) ができる. 名前ごとの Optimizer は
-    optimizers[名前] で取り出す
-
-    Parameters
-    ----------
-    optimizers: dict[str, optim.Optimizer]
-        名前と Optimizer (config に書いた順)
-    """
-
     def __init__(self, optimizers: dict[str, optim.Optimizer]):
         # 名前と Optimizer を書いた順に保存
         self.optimizers = dict(optimizers)
@@ -74,7 +63,7 @@ class NamedOptimizers:
         ----------
         None
         """
-        # closure は Optimizer ごとに損失が違うので受け付けない
+        # closure は Optimizer ごとに損失が違うので受け付けの対象外
         if closure is not None:
             raise ValueError("optimizers では closure を使えません")
         for optimizer in self.optimizers.values():
@@ -151,7 +140,9 @@ class NamedOptimizers:
         names: Iterator[str]
             Optimizer の名前
         """
-        return iter(self.optimizers)
+        names = iter(self.optimizers)
+
+        return names
 
     def items(self) -> list[tuple[str, optim.Optimizer]]:
         """
@@ -191,20 +182,10 @@ class NamedOptimizers:
         return text
 
 
+# 名前付きの Optimizer ごとの Scheduler を, 1 つの Scheduler のように扱う
+# 入れ物 (Scheduler を付けない名前は None. 学習率を更新する間隔は全ての
+# Scheduler で同じことを config の確認で保証)
 class NamedSchedulers:
-    """
-    名前付きの Optimizer ごとの Scheduler を, 1 つの Scheduler のように扱う
-    入れ物
-
-    Scheduler を付けない Optimizer の名前は None を持つ. 学習率を更新する
-    間隔は全ての Scheduler で同じ (config の確認で保証)
-
-    Parameters
-    ----------
-    schedulers: dict[str, Optional[optim.lr_scheduler.LRScheduler]]
-        Optimizer の名前と Scheduler (付けない場合は None)
-    """
-
     def __init__(
         self,
         schedulers: dict[str, Optional[optim.lr_scheduler.LRScheduler]]
@@ -331,7 +312,7 @@ def check_named_state(state: Any, key: str, expected: dict) -> dict:
     states: dict
         名前ごとの状態
     """
-    # 1 つの Optimizer の状態 (optimizer の設定で保存したもの) は読めない
+    # 1 つの Optimizer の状態 (optimizer の設定で保存したもの) は読み込み不可
     if not isinstance(state, dict) or key not in state:
         raise ValueError(
             "再開元は optimizers を使わない (Optimizer が 1 つの) 学習なので, "
@@ -353,8 +334,10 @@ def split_parameters(
     """
     モデルの学習するパラメータを, 名前付きの Optimizer ごとに分ける関数
 
-    学習するパラメータ (requires_grad) は, ちょうど 1 つの Optimizer が
-    受け持つ必要がある. どれにも入らないものと, 2 つ以上に入るものはエラー
+    パラメータは 2 つ以上の Optimizer に入れない. 学習するパラメータ
+    (requires_grad) は, どれかの Optimizer に入れる (凍結したものは
+    どれにも入らなくてよい). 受け持つ部分の凍結したパラメータも受け持つ
+    ので, 学習の途中で凍結を解くと更新される
 
     Parameters
     ----------
@@ -367,9 +350,9 @@ def split_parameters(
     Returns
     ----------
     params: dict[str, list[nn.Parameter]]
-        Optimizer の名前ごとのパラメータ (学習するものだけ)
+        Optimizer の名前ごとのパラメータ (凍結したものも含む)
     """
-    # 名前で部分を探し, その中の学習するパラメータを集める
+    # 名前で部分を探し, その中の学習するパラメータの収集
     owners: dict[int, str] = {}
     params: dict[str, list[nn.Parameter]] = {}
     for name, paths in modules.items():
@@ -381,9 +364,8 @@ def split_parameters(
                 raise ValueError(
                     f"optimizers.{name}.modules の {path} がモデルにありません"
                 ) from error
+            # 凍結したパラメータも受け持ち (後で凍結を解いた場合に更新)
             for parameter in part.parameters():
-                if not parameter.requires_grad:
-                    continue
                 owner = owners.get(id(parameter))
                 if owner == name:
                     continue
@@ -396,8 +378,7 @@ def split_parameters(
                 params[name].append(parameter)
         if not params[name]:
             raise ValueError(
-                f"optimizers.{name} が受け持つ学習するパラメータがありません: "
-                f"{paths}"
+                f"optimizers.{name} が受け持つパラメータがありません: {paths}"
             )
 
     # どの Optimizer にも入らない学習するパラメータはエラー

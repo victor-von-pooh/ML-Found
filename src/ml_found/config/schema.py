@@ -153,7 +153,7 @@ class Config:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
 
     # 複数の Optimizer を名前付きで使う場合 (GAN など) の, 名前ごとの設定
-    # 空でない場合は optimizer と scheduler の代わりに使う
+    # 空でない場合は optimizer と scheduler の代わり
     # (中身は NamedOptimizerConfig の形に揃えて確認)
     optimizers: dict[str, Any] = field(default_factory=dict)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)

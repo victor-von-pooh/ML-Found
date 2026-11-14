@@ -38,7 +38,9 @@ Python のコードからは, `Trainer.add_callback` で登録した関数がエ
 
 ### 5. 複数の Optimizer を config に名前付きで書く (対応済み)
 
-`optimizers` に名前付きで Optimizer を書けるようにした (README の「複数の Optimizer」). 名前ごとに `name`, `params`, 受け持つ部分 `modules`, `scheduler` を書き, `step` は名前ごとの損失を返す. ML-Found が損失ごとに受け持つパラメータの勾配を求め, クリップして config の順に更新し, 状態の保存と再開, 登録簿による確認 (範囲, typo, 作れるか), 名前ごとの損失, 学習率, 勾配のノルムの記録を行う. 一番上の `scheduler` との併用, Scheduler ごとに違う `interval`, closure が必要な Optimizer, `resume_scheduler: config` には対応しない.
+`optimizers` に名前付きで Optimizer を書けるようにした (README の「複数の Optimizer」). 名前ごとに `name`, `params`, 受け持つ部分 `modules`, `scheduler` を書き, `step` は名前ごとの損失を返す. ML-Found が損失ごとに受け持つパラメータの勾配を求め, クリップして config の順に更新し, 状態の保存と再開, 登録簿による確認 (範囲, typo, 作れるか), 名前ごとの損失, 学習率, 勾配のノルムの記録を行う. 一番上の `scheduler` との併用, Scheduler ごとに違う `interval`, closure が必要な Optimizer と勾配を使わない Optimizer, `Trainer` に渡す自分で作った Optimizer と Scheduler, `resume_scheduler: config` には対応しない.
+
+残り: ダッシュボードで名前ごとに扱うための情報 (Optimizer の名前と受け持つ部分など) の `run.json` への書き出し. 今はダッシュボードが `train.log` の `Optimizer:` と `Scheduler:` の行, `history.csv` と `lr_steps.csv` の `lr_<名前>` の列から読む
 
 ### 6. 同じ Trainer で fit を呼び直したら続きとして扱う (対応済み)
 

@@ -329,9 +329,11 @@ def named_views(cfg: DictConfig) -> list[tuple[str, DictConfig]]:
         view = OmegaConf.create({
             "optimizer": {
                 "name": entry.name,
-                "params": OmegaConf.to_container(entry.params)
+                "params": OmegaConf.to_container(entry.params, resolve=True)
             },
-            "scheduler": OmegaConf.to_container(entry.scheduler),
+            "scheduler": OmegaConf.to_container(
+                entry.scheduler, resolve=True
+            ),
             "trainer": OmegaConf.to_container(cfg.trainer)
         })
         views.append((str(name), view))
@@ -352,11 +354,14 @@ def check_named_optimizers(cfg: DictConfig) -> None:
     ----------
     None
     """
-    # 一番上の scheduler は使わず, Optimizer ごとの scheduler に書く
-    top = cfg.scheduler
-    if top.name is not None or top.get("warmup_steps") is not None or (
-        top.get("warmup_ratio") is not None
-    ):
+    # Scheduler は一番上の scheduler ではなく, Optimizer ごとの scheduler に記述
+    # (既定値から変えた項目があればエラー)
+    top = OmegaConf.to_container(cfg.scheduler)
+    if top != {
+        "name": None, "params": {}, "interval": "epoch",
+        "warmup_steps": None, "warmup_ratio": None,
+        "warmup_start_factor": 0.01
+    }:
         raise ValueError(
             "optimizers を使う場合は, Scheduler と warmup を一番上の scheduler "
             "ではなく optimizers.<名前>.scheduler に書いてください"
@@ -376,7 +381,8 @@ def check_named_optimizers(cfg: DictConfig) -> None:
 
         # 損失ごとに勾配を求めて更新するので, closure が必要なものと
         # 勾配を使わないものは不可
-        optimizer_cls = resolve_optimizer_class(entry.name)
+        with named_errors(str(name)):
+            optimizer_cls = resolve_optimizer_class(entry.name)
         if class_requires_closure(optimizer_cls) or not class_uses_gradients(
             optimizer_cls
         ):
@@ -812,7 +818,7 @@ def try_build_optim(cfg: DictConfig, device: torch.device) -> None:
 def named_errors(name: str) -> Iterator[None]:
     """
     名前付きの Optimizer の確認で出たエラーに, どの Optimizer かを付ける
-    文脈
+    文脈を作る関数 (with で使う)
 
     Parameters
     ----------
@@ -821,7 +827,8 @@ def named_errors(name: str) -> Iterator[None]:
 
     Returns
     ----------
-    None
+    context: Iterator[None]
+        with で使う文脈
     """
     # ValueError だけ, 名前を付けて同じ種類で投げ直し
     try:

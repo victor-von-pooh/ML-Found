@@ -346,6 +346,23 @@ trainer:
 - `persistent_workers=True` の DataLoader では, ワーカーの乱数の種を最初の 1 回だけ引くので, 再開した学習は通しで学習した場合と一致しない (警告が出る). 一致させたい場合は `num_workers: 0` にする
 - 存在しない `resume_from` は, 出力先を作る前にエラーになる
 
+同じ `Trainer` で `fit` を呼び直すと, 前の `fit` の続きとして, 最後に終えたエポックの次から `trainer.epochs` の分だけ学習する (3 エポックの後なら 4 から 6). 記録と `last.pt` は同じ実験のディレクトリに続けて書く.
+
+```python
+trainer = Trainer(model, experiment, step)
+trainer.fit(train_loader, valid_loader)   # エポック 1 から 3
+trainer.fit(train_loader, valid_loader)   # エポック 4 から 6 (続き)
+```
+
+- モデルの重みは, 前の `fit` の最後のエポックのものから続ける (学習の後にベストモデルや `eval_model` の重みに置き換えていても, 置き換える前に戻す). 前の `fit` がエポックの途中でエラーか割り込み (Ctrl-C) で止まった場合は, エポックの途中で止める場合 (「学習の外からの確認と中断」) と同じく, そのエポックを捨てて最後に終えたエポックの状態に戻してから続ける. Optimizer, Scheduler, 更新回数, 乱数, ベストモデルもそのまま続く. 置き換える前の重みは, 呼び直しに備えて `fit` の後も cpu に持つ
+- Early Stopping は, 呼び直すたびに止めた印と我慢の回数を戻す (前の `fit` で止めていても学習する)
+- `resume_from` は最初の `fit` だけで使う
+- 監視する指標は前の `fit` と同じにする (検証用データを渡すかどうかを変えて指標が変わる場合はエラー)
+- `auto` で補った Scheduler の引数 (`T_max` など) は最初の `fit` の長さなので, 続きの学習では予定を超えて進む (警告が出る). `OneCycleLR` は総ステップ数を超えられないので, 学習用データのバッチ数が分かる場合は, 前の `fit` までを含めた予定の総ステップ数が超える時点で, 始める前にエラーになる
+- `run.json` の開始の時刻, 終えたエポック数, ベストモデルは前の `fit` から引き継ぎ, 所要時間 (`duration_sec`) は全ての `fit` の合計. 前の `fit` で置いた `STOP` のファイルは消す
+- 学習の前の確認 (`OneCycleLR` の総ステップ数など) でエラーになった場合は, モデルの重みなどを変えない. 前の `fit` が学習を始める前に止まった場合は, 続きではなく最初の `fit` として扱う (`resume_from` も使う)
+- Optimizer を差し替えたい場合 (一部を凍結した後に全体を学習するなど) は, 新しい `Trainer` を作る
+
 ### 学習後のモデル
 
 `fit` の後の `trainer.model` はベストモデルの重みになっている (`trainer.restore_best: true` かつ `select_best: true` の場合). `eval_model` を上書きした場合は, そのモデルの重み (EMA の重みなど) になる.
@@ -379,7 +396,7 @@ ML-Found が使う項目と既定値.
 | `scheduler.warmup_steps` | `null` | 学習の始めに学習率を線形に上げる回数 (`interval` の単位) |
 | `scheduler.warmup_ratio` | `null` | warmup の回数を学習全体のステップ数に対する割合で書く (学習を始めるときに `warmup_steps` に直す) |
 | `scheduler.warmup_start_factor` | `0.01` | warmup の最初の学習率の倍率 |
-| `trainer.epochs` | `100` | エポック数 |
+| `trainer.epochs` | `100` | エポック数 (同じ `Trainer` で `fit` を呼び直した場合は, 1 回の `fit` で追加するエポック数) |
 | `trainer.monitor` | `null` | ベストモデルの判定に使う指標, `null` の場合は `valid/loss`, 検証しない場合は `train/loss` |
 | `trainer.mode` | `min` | 指標は小さい方と大きい方のどちらが良いか |
 | `trainer.monitor_tiebreak` | `null` | 監視する指標が最良値と同じ値 (相対誤差 1e-6 以内) か, 最良値より悪くないが `min_delta` 未満の改善の場合に比べる指標 (例: `valid/loss`), `null` の場合は同じ値を改善とみなさない |
@@ -437,8 +454,8 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | `best.pt` | ベストモデルのチェックポイント (`best_weights_only: true` の場合は重みだけ. `select_best: false` の場合は作らない) |
 | `last.pt` | 最後のエポックのチェックポイント, ベストモデルの重みも含む (`last_with_best: false` の場合は含まない). 再開に使う |
 | `final_model.pt` | ベストモデルの重みだけ (`restore_best: false` か `select_best: false` の場合は最後のエポックの重み. `eval_model` を上書きした場合はそのモデルの重み), cpu のテンソル |
-| `run.json` | 実験の状態 (`running`, `completed`, `stopped`, `failed`), 開始, 更新, 終了の時刻 (タイムゾーン付き) と所要時間 (`duration_sec`), 予定と終えたエポック数, 再開した最初のエポック, 監視する指標とその向き (`mode`), ベストモデルを選ぶか (`select_best`. `false` の場合はベストのエポックと値が `null`), ベストのエポックと値, Early Stopping で止めたエポック, `final_model.pt` の重み (`best`, `last`, エポックの途中で止めて戻せなかった場合 (`eval_model` を上書きし, そのモデルの状態を `extra_state_dict` で保存していない場合を含む) は `partial`), 乱数シード, デバイス, プロセスの ID とホスト名, エラーの内容, 形式の版. 学習を始めたときに作り, エポックごと (1 秒以上の間隔. 間隔の中の更新は次の進み具合の書き込みと一緒に書く), 再開したときと終了時に更新. `Trainer` の作成で失敗した場合も `failed` (キーボードの割り込みは `stopped`) で書く |
-| `progress.json` | 学習中だけ置かれる, 今のフェーズ (`train`, `train_eval`, `valid`), エポックと予定のエポック数, エポックの中で終えたバッチの数と総数, 経過時間, 更新時刻 (`updated_at`). 1 秒以上の間隔で上書きする (1 エポックが短い学習の邪魔にならないように, フェーズの始めと終わりも間隔を守る). 学習を終えると消す |
+| `run.json` | 実験の状態 (`running`, `completed`, `stopped`, `failed`), 開始, 更新, 終了の時刻 (タイムゾーン付き) と所要時間 (`duration_sec`), 予定と終えたエポック数 (`fit` を呼び直した場合は前の `fit` までを含めた数), 再開した最初のエポック (`fit` を呼び直した場合は続きの最初のエポック), 監視する指標とその向き (`mode`), ベストモデルを選ぶか (`select_best`. `false` の場合はベストのエポックと値が `null`), ベストのエポックと値, Early Stopping で止めたエポック, `final_model.pt` の重み (`best`, `last`, エポックの途中で止めて戻せなかった場合 (`eval_model` を上書きし, そのモデルの状態を `extra_state_dict` で保存していない場合を含む) は `partial`), 乱数シード, デバイス, プロセスの ID とホスト名, エラーの内容, 形式の版. 学習を始めたときに作り, エポックごと (1 秒以上の間隔. 間隔の中の更新は次の進み具合の書き込みと一緒に書く), 再開したときと終了時に更新. `Trainer` の作成で失敗した場合も `failed` (キーボードの割り込みは `stopped`) で書く |
+| `progress.json` | 学習中だけ置かれる, 今のフェーズ (`train`, `train_eval`, `valid`), エポックと予定のエポック数 (`fit` を呼び直した場合は前の `fit` までを含めた数), エポックの中で終えたバッチの数と総数, 経過時間, 更新時刻 (`updated_at`). 1 秒以上の間隔で上書きする (1 エポックが短い学習の邪魔にならないように, フェーズの始めと終わりも間隔を守る). 学習を終えると消す |
 
 ### エポックごとの結果を受け取る
 
@@ -467,14 +484,14 @@ history = trainer.fit(train_loader, valid_loader)
 
 `run.json` と `progress.json` は, 書きかけを読まないように一時ファイルに書いてから置き換える. ディスクまで書き出す (fsync) のは `run.json` の開始と終了のときだけ. ダッシュボードや別の端末のスクリプトから, 学習中の状態と進み具合を読める. 書き込めない場合 (ディスクの不足など) は `train.log` に警告を 1 回残し, 学習は続ける. 状態は `Trainer.fit` が書くので, `fit` を使わずに `train_epochs` などを直接呼んだ場合や, `train_epochs` を上書きした場合は残らない.
 
-学習中の実験のディレクトリに `STOP` という名前のファイルを置くと (中身が `now` 以外の場合), そのエポックを終えたところで学習を止める. 結果 (`final_model.pt` など) を保存し, 状態を `stopped` にする. `checkpoint.save_last` が true の場合は, 保存の間隔に関係なく `last.pt` も保存するので, そこから再開できる. 1 エポックが長い学習ですぐに止めたい場合は, 下のように `STOP` に `now` と書く. 予定の最後のエポックで置いた場合と, Early Stopping と同じエポックで止まった場合は `completed` になる. `STOP` は学習を止めた後も残るので, 同じ出力先で `fit` をやり直す場合は消しておく.
+学習中の実験のディレクトリに `STOP` という名前のファイルを置くと (中身が `now` 以外の場合), そのエポックを終えたところで学習を止める. 結果 (`final_model.pt` など) を保存し, 状態を `stopped` にする. `checkpoint.save_last` が true の場合は, 保存の間隔に関係なく `last.pt` も保存するので, そこから再開できる. 1 エポックが長い学習ですぐに止めたい場合は, 下のように `STOP` に `now` と書く. 予定の最後のエポックで置いた場合と, Early Stopping と同じエポックで止まった場合は `completed` になる. `STOP` は学習を止めた後も残るので, 同じ出力先で `fit` をやり直す場合は消しておく (同じ `Trainer` で `fit` を呼び直す場合は, ML-Found が消す).
 
 `STOP` に `now` と書くと, エポックの途中でも止める (バッチを終えるたびに, 前に確かめてから 1 秒以上空いていれば確かめる). 途中のエポックは捨てて記録に加えず, 最後に終えたエポックの状態に戻す. そのエポックの最後のフェーズ (検証, 検証しない場合は `eval_train` の評価し直しか学習) の最後のバッチで気付いた場合は, 中身の無い `STOP` と同じくエポックの区切りで止める.
 
-- 前のエポックの `last.pt` (学習を始めたエポックなら始めた時点) から, モデル, Optimizer, Scheduler, 更新回数 (`global_step`), 乱数, 継承したクラスが加えた状態 (`extra_state_dict`) をメモリの上でも戻す. `last.pt` は, この `fit` で前のエポックに保存したもの (エポックと更新回数が合うもの) だけを使う. ただし学習の後に, 設定に応じてモデルの重みはベストモデルや `eval_model` の重みに置き換わる. 同じ `Trainer` で `fit` を呼び直す使い方 (記録の続き方など) は決めていないので, 続きを学習する場合は `last.pt` から再開する
+- 前のエポックの `last.pt` (学習を始めたエポックなら始めた時点) から, モデル, Optimizer, Scheduler, 更新回数 (`global_step`), 乱数, 継承したクラスが加えた状態 (`extra_state_dict`) をメモリの上でも戻す. `last.pt` は, この `fit` で前のエポックに保存したもの (エポックと更新回数が合うもの) だけを使う. ただし学習の後に, 設定に応じてモデルの重みはベストモデルや `eval_model` の重みに置き換わる. 続きを学習する場合は, 同じ `Trainer` で `fit` を呼び直すか (「学習の再開」), `last.pt` から再開する
 - `final_model.pt` は, `restore_best` と `select_best` でベストモデルがあればその重み. そうでなければ戻した重み. `every_n_epochs` などで前のエポックの `last.pt` が無い場合と, `eval_model` を上書きしてそのモデルの状態を `extra_state_dict` で保存していない場合 (戻した後もそのモデルの重みが変わらない場合) は, 途中までの重みが残り, 警告が出て `run.json` の `final_weights` が `partial` になる
 - `last.pt` は書かないので, 再開は最後に保存した `last.pt` から. `every_n_epochs` が 2 以上だと, 再開できる `last.pt` が無いこともある
-- 状態は予定の最後のエポックでも `stopped` になる. 1 エポック目の途中で止めると記録は 0 件になる
+- 状態は予定の最後のエポックでも `stopped` になる. 最初の `fit` の 1 エポック目の途中で止めると記録は 0 件になる
 - `train_epochs` を上書きしたクラスでは, エポックの途中で止めるための例外が `fit` まで抜けて `failed` になるので, `now` は使わない
 
 ```bash

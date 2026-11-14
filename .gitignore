@@ -11,3 +11,6 @@ venv/
 outputs/
 
 .DS_Store
+
+# 手元の uv の lock (依存は pyproject.toml で決め, 使う側のリポジトリが lock を持つ)
+uv.lock

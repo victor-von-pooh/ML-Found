@@ -27,7 +27,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 │   │   ├── train.yaml          # 必須. 基準の config
 │   │   └── <名前>.yaml         # 任意. スクリプトごとの基準の config
 │   └── experiment/
-│       ├── train.yaml          # 既定の experiment の config (差分が無くても置く)
+│       ├── train.yaml          # 必須. 既定の experiment の config (差分が無くても置く. `--experiment` を省くと使う)
 │       └── ...                 # 任意. 差分の config (下の階層にも置ける)
 ├── train.py                    # 学習のスクリプト (複数あってよい)
 └── outputs/                    # 実験のディレクトリ (experiment.output_dir)
@@ -35,11 +35,13 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 
 - **見分け方**: `configs/default/train.yaml` を持つディレクトリをプロジェクトとする
 - **config の重ね方**: default に experiment を重ね, その上に「項目=値」の上書きを重ねる. experiment と上書きには, default にある項目だけを書ける. ただし Optimizer と Scheduler の引数 (`optimizer.params`, `scheduler.params`, `optimizers.<名前>.params`, `optimizers.<名前>.scheduler.params`) は, クラスを変えると必要な引数も変わるので, 自由に足せる
-- **スクリプトの引数**: 学習のスクリプトは `load_project_config` で config を作り, `start_experiment` に渡す. そのため, どのスクリプトも次の形で起動できる. 相対パスはプロジェクトのディレクトリから辿る
+- **スクリプトの引数**: 学習のスクリプトは `load_project_config` で config を作り, `start_experiment` に渡す. そのため, どのスクリプトも次の形で起動できる. 起動する場所はどこでもよい
 
   ```bash
   python <スクリプト> [--experiment <experiment の config>] [項目=値 ...]
   ```
+
+  `--experiment` の相対パスは, プロジェクトのディレクトリから辿り, 無い場合は実行した場所から辿る
 
 - **スクリプトが複数ある場合**: 別の default を使うスクリプトは, `train_<名前>.py` に `configs/default/<名前>.yaml` と `configs/experiment/<名前>.yaml` を使わせる (`load_project_config` の `default` と `experiment` に渡す) のを推奨の名付けとする. スクリプトの外からスクリプトの default を選ぶ側 (ML-Dashboard) は, 次の順に選ぶ
     1. スクリプトの本文に `configs/default/<名前>.yaml` が 1 種類だけ書かれていれば, それ (本文は文字を探すだけで, 実行しない)
@@ -53,7 +55,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 
 1 回の学習で, `<output_dir>/<experiment.name>/<日付>/<時刻>/` を作る.
 `experiment.output_dir` が相対パスならプロジェクトのディレクトリから辿り, 絶対パスならプロジェクトの外にもなる.
-`<日付>` は `YYYY-MM-DD`, `<時刻>` は `HH-MM-SS` で, 同じ秒に始めた実験は `HH-MM-SS_1` のように番号を付ける.
+`<日付>` は `YYYY-MM-DD`, `<時刻>` は `HH-MM-SS` (どちらも学習したホストの地方時) で, 同じ秒に始めた実験は `HH-MM-SS_1` のように番号を付ける.
 
 ### ファイル
 
@@ -62,12 +64,12 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | ファイル | いつあるか | 中身 |
 | --- | --- | --- |
 | `config.yaml` | `start_experiment` の後 | 学習に使った config 全体. Scheduler の引数の `auto` などは, 学習を始めるときに補った値で 1 回書き換える |
-| `diff.yaml` | `start_experiment` の後 | default から変えた項目. `trainer.epochs` のように `.` でつないだ名前ごとに, default の値 (`default`) と変えた後の値 (`experiment`. 上書きも含む). 片方にしか無い項目 (足した Optimizer の引数など) の値は `<未定義>` |
+| `diff.yaml` | `start_experiment` の後 | default から変えた項目. `trainer.epochs` のように `.` でつないだ名前ごとに, default の値 (`default`) と変えた後の値 (`experiment`. 上書きも含む). 片方にしか無い項目 (足した Optimizer の引数など) の値は, 無いことを表す印の文字 `<未定義>` |
 | `source.yaml` | `start_experiment` の後 | 起動のしかた (下の「source.yaml」) |
 | `train.log` | `start_experiment` の後 | 人が読むログ. 形は決めない. 学習中と失敗した実験の指標は, ここからしか分からない |
 | `run.json` | `fit` を始めたとき. `Trainer` の作成や `fit` の外のエラーで止まった場合も書く | 実験の状態 (下の「run.json」). ノートブックの中のエラー, `sys.exit()`, メインでないスレッドのエラーで止まった場合は無いことがある |
 | `progress.json` | 学習中だけ | 進み具合 (下の「progress.json」). 学習を終えると消す |
-| `model_summary.csv` | エポックのループに入る直前 (設定の確認と再開の復元の後) | パラメータとバッファの一覧. 列は `name`, `kind` (`parameter` か `buffer`), `module`, `shape`, `dtype`, `numel`, `requires_grad`, `same_as`. それより前に止まった実験には無い |
+| `model_summary.csv` | エポックのループに入る直前 (設定の確認と再開の復元の後) | パラメータとバッファの一覧 (下の「model_summary.csv」). それより前に止まった実験には無い |
 | `history.csv` | fit を終えたとき (記録が 0 件でも見出しは書く) | エポックごとの記録 (下の「history.csv」) |
 | `final_model.pt` | fit を終えたとき | 最終の重み (`state_dict`, cpu のテンソル) |
 | `<指標>_curve.png`, `lr_curve.png`, `lr_<名前>_curve.png` | fit を終えたとき (記録が 1 件以上) | 学習曲線 |
@@ -109,7 +111,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `final_weights` | 文字か null | `final_model.pt` の重み (`best`, `last`, `partial`) |
 | `seed` | 整数か null | 乱数のシード |
 | `device` | 文字 | 学習したデバイス |
-| `optimizers` | リストか null | Optimizer ごとの `name`, `optimizer`, `modules`, `scheduler` |
+| `optimizers` | リストか null | Optimizer ごとの辞書. `name` (名前付きの Optimizer の名前, 1 つの場合は null), `optimizer` (クラスの名前), `modules` (受け持つ部分の名前のリスト, 1 つの場合は null), `scheduler` (クラスの名前, 使わない場合は null). `Trainer` を作れなかった場合は null |
 | `error` | 文字か null | 止まった原因のエラー |
 
 - `running` のまま残った実験は, 主にプロセスが強制終了されたもの (`fit` を使わずに学習した場合も残る). 同じホストなら `pid` で, 別のホストからは `progress.json` の `updated_at` で見分ける
@@ -123,6 +125,19 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `batch`, `total_batches` | 整数, 整数か null | エポックの中で終えたバッチの数と総数 (分からない場合は null) |
 | `elapsed_sec` | 数 | 経過時間 (秒) |
 | `updated_at` | 文字 | 更新した時刻 (タイムゾーン付きの ISO 8601). 1 秒以上の間隔で上書きする |
+
+### model_summary.csv
+
+| 列 | 中身 |
+| --- | --- |
+| `name` | パラメータかバッファの名前 (`state_dict` のキー) |
+| `kind` | `parameter` か `buffer` |
+| `module` | 持っている層のクラスの名前 |
+| `shape` | 形. 次元を `x` でつなぐ (`16x4`. 0 次元は空) |
+| `dtype` | 型 (`float32` など. `torch.` を除いたもの) |
+| `numel` | 要素数 |
+| `requires_grad` | 学習するか (`True` か `False`) |
+| `same_as` | 同じ重みを共有している場合は最初の名前. 共有していなければ空 |
 
 ### history.csv
 

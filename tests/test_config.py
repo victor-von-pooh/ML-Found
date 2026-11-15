@@ -368,7 +368,9 @@ def test_overrides(default_path: str, tmp_path: Path) -> None:
     assert diff["trainer.epochs"]["experiment"] == 10
 
     # default に無い項目と, = の無いものはエラー
-    with pytest.raises(ValueError, match="model.dropout"):
+    with pytest.raises(
+        ValueError, match="experiment か上書き.*model.dropout"
+    ):
         load_config(default_path, experiment, ["model.dropout=0.1"])
     with pytest.raises(ValueError, match="項目=値"):
         load_config(default_path, experiment, ["trainer.epochs"])

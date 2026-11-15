@@ -189,7 +189,8 @@ def build_default(default_path: str) -> DictConfig:
 
 
 def check_structure(
-    experiment: Any, default: Any, prefix: str = ""
+    experiment: Any, default: Any, prefix: str = "",
+    where: str = "experiment"
 ) -> None:
     """
     experiment が default に無い項目を追加していないかを確かめる関数
@@ -202,6 +203,8 @@ def check_structure(
         同じ位置の default の値
     prefix: str = ""
         親のキー
+    where: str = "experiment"
+        誤りの文で項目を書いた場所として示す名前
 
     Returns
     ----------
@@ -220,7 +223,7 @@ def check_structure(
     # 辞書と辞書以外を入れ替えると項目の追加や削除になるのでエラー
     if isinstance(experiment, dict) != isinstance(default, dict):
         raise ValueError(
-            f"experiment で {prefix} の構造は変えられません: "
+            f"{where} で {prefix} の構造は変えられません: "
             f"default は {default}, experiment は {experiment}"
         )
 
@@ -230,9 +233,9 @@ def check_structure(
             child_key = f"{prefix}.{key}" if prefix else str(key)
             if key not in default:
                 raise ValueError(
-                    f"experiment に default に無い項目があります: {child_key}"
+                    f"{where} に default に無い項目があります: {child_key}"
                 )
-            check_structure(value, default[key], child_key)
+            check_structure(value, default[key], child_key, where)
 
 
 def reset_params(base: DictConfig, experiment: DictConfig) -> DictConfig:
@@ -336,9 +339,11 @@ def merge_experiment(
             f"experiment で optimizers の名前 {added} は追加できません. 使う "
             "Optimizer は default の config の optimizers に書いてください"
         )
+    # 上書きを重ねた場合は, どちらに書いた項目かを誤りの文で区別しない
+    where = "experiment か上書き (項目=値)" if overrides else "experiment"
     check_structure(
         OmegaConf.to_container(experiment),
-        OmegaConf.to_container(default_cfg)
+        OmegaConf.to_container(default_cfg), where=where
     )
 
     # 名前付きの Optimizer を使う default に, optimizer を重ねることは不可

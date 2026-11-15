@@ -11,7 +11,7 @@ PyTorch のモデルを config から自動で学習させる基盤モジュー�
 
 ### 全体の中での役割
 
-ML-Found は単体でも使えるライブラリだが, 「機械学習を全て GUI 上で行う」アプリ (問題の設定, データの分析, モデルの作成・選定, モデルの学習・評価, 推論の段階に分けて作ることを目指している) の中では, 「モデルの学習・評価」の段階のうち学習を受け持つライブラリでもある (画面は ML-Dashboard. ML-Found が行う評価は, 学習中の検証用データでの評価まで).
+ML-Found は単体でも使えるライブラリだが, 「機械学習を全て GUI 上で行う」アプリ (問題の設定, データの分析, モデルの作成・選定, モデルの学習・評価, 推論の段階に分けて作ることを目指している) の中では, 「モデルの学習・評価」の段階のうち学習を受け持つライブラリでもある (画面は [ML-Dashboard](https://github.com/victor-von-pooh/ML-Dashboard). 単体で使う場合は関係しない. ML-Found が行う評価は, 学習中の検証用データでの評価まで).
 プロジェクトの形 (下の「プロジェクトの構成」) と, 実験ごとに残すディレクトリの形は ML-Found が決める. ML-Dashboard は実験のディレクトリに残るファイルを読み, config の確認と学習の起動には ML-Found のコードを使う.
 今はプロジェクトのスクリプトを人が書くが, 将来は問題の設定の段階が作ったスクリプトを同じ形のプロジェクトとして動かすことを想定している.
 
@@ -26,17 +26,23 @@ ML-Found は単体でも使えるライブラリだが, 「機械学習を全て
 
 ## 導入
 
-ML-Found を取り込みたいプロジェクトで, submodule として追加してからインストールする.
+ML-Found を取り込みたいプロジェクト (git のリポジトリ) で, submodule として追加してから, プロジェクトの仮想環境にインストールする.
 
 ```bash
+cd NewProject
+git init                      # まだ git のリポジトリでない場合
+python -m venv .venv
+source .venv/bin/activate
 git submodule add https://github.com/victor-von-pooh/ML-Found.git ML-Found
 pip install -e ./ML-Found
 ```
 
 - Python 3.10 以上が必要
+- PyTorch は, 先に [PyTorch の手順](https://pytorch.org/get-started/locally/) で環境 (CPU, CUDA) に合わせて入れておくと, 大きな版を入れ直さずに済む (入れていない場合は `pip` が既定の版を入れる. Linux では CUDA 付きの大きな版)
+- submodule にしない場合は `pip install "ml-found @ git+https://github.com/victor-von-pooh/ML-Found.git"` でも入る (PyPI には公開していない)
 - 依存ライブラリは `torch`, `omegaconf`, `numpy`, `tqdm`, `matplotlib` で, インストール時に一緒に入る
 - `-e` を付けてインストールすると, 実験ごとに ML-Found の commit id も記録される. 付けない場合はバージョン番号だけが記録される
-- `examples/minibatch/` を動かす場合は scikit-learn も必要なので, `pip install -e "./ML-Found[examples]"` でインストールする
+- `examples/minibatch/` を動かす場合は scikit-learn も必要なので, `pip install -e "./ML-Found[examples]"` でインストールする. 例は `python ML-Found/examples/minibatch/train.py` (か `fullbatch`) で動き, 出力は例のディレクトリの `outputs/` にできる (ML-Found の `.gitignore` で除外している)
 
 プロジェクトの `.gitignore` には `outputs/` を加えておく.
 加えないと, 2 回目以降の実験で前回の出力が未コミットの変更として記録される.
@@ -47,6 +53,7 @@ pip install -e ./ML-Found
 
 ```
 NewProject/
+├── .gitignore                  # outputs/ を加える
 ├── ML-Found/                   # git submodule
 ├── configs/
 │   ├── default/train.yaml      # 基準の config
@@ -147,6 +154,7 @@ cfg, diff = load_project_config(str(project_dir))
 experiment = start_experiment(cfg, diff, str(project_dir))
 
 # model, train_loader, valid_loader はプロジェクト側で用意して学習する
+# (データからモデルまで揃った形は examples/minibatch/train.py)
 trainer = Trainer(model, experiment, step)
 history = trainer.fit(train_loader, valid_loader)
 ```
@@ -154,6 +162,7 @@ history = trainer.fit(train_loader, valid_loader)
 `load_project_config(project_dir)` はコマンドライン引数を読み, `--experiment` で experiment の config を, 「項目=値」で値の上書きを受け取る (順番は自由). experiment の相対パスはプロジェクトのディレクトリから辿り, 無い場合は実行した場所から辿る. `--experiment` を省くと `configs/experiment/train.yaml` を使う. ノートブックの中では `sys.argv` を読まず, 引数が無いものとして扱う (引数を渡す場合は `load_project_config(project_dir, ["trainer.epochs=10"])`).
 
 ```bash
+# configs/experiment/examples/my.yaml は自分で作る差分の config の例
 python train.py --experiment configs/experiment/examples/my.yaml trainer.epochs=10 optimizer.params.lr=0.05
 ```
 
@@ -493,7 +502,7 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 
 `train.log` のモデルの構造は `print(model)` の内容なので, 中身を `nn.Module` の子として持たない層 (外部ライブラリの層など) は構造が残らない. そのため, 学習を始めるときにパラメータとバッファの一覧を `model_summary.csv` (名前, `parameter` か `buffer`, 持っている層のクラス名, 形, 型, 要素数, 学習するか, 重みを共有している場合は最初の名前) に保存し, 学習するパラメータ, 学習しないパラメータ, バッファの要素数を `train.log` に書く. `nn.Module` のパラメータやバッファとして持たない値 (外部ライブラリの回路の設定など) は残らないので, 再現に必要な情報は, モデルに `extra_repr` を書いて出すと良い.
 
-`experiment.device: auto` は小さなモデルでも GPU を選ぶ. パラメータが少ないモデルや, 中で cpu を使うモデル (外部ライブラリの計算など) は `cpu` を明示した方が速いことがある.
+`experiment.device: auto` は小さなモデルでも GPU を選ぶ (Apple Silicon の Mac では CPU 版の PyTorch でも `mps`). パラメータが少ないモデルや, 中で cpu を使うモデル (外部ライブラリの計算など) は `cpu` を明示した方が速いことがある.
 
 ## 出力
 

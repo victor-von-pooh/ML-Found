@@ -497,6 +497,7 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | --- | --- |
 | `config.yaml` | 学習に使った config 全体, default として読み込めば同じ条件で学習できる. 再開した実験の場合は `trainer.resume_from` も残っているので, 最初から学習し直す場合は消す |
 | `diff.yaml` | default から変えた項目 |
+| `source.yaml` | 実験の起動のしかた. 実行したスクリプト (`script`), default と experiment の config (`default`, `experiment`), 「項目=値」の上書き (`overrides`). パスはプロジェクトの中ならプロジェクトからの相対パス. `load_config`, `load_project_config`, `load_config_from_args` で作った config を `start_experiment` に渡すと記録され, 別の方法で作った config (写したものを含む) では `default`, `experiment`, `overrides` が `null`. ノートブックの中と `python -c` では `script` が `null`. コマンドラインの他の引数は, 秘密の値を含み得るので記録しない |
 | `train.log` | 差分, 環境の情報, モデルの構造, エポックごとの指標, 結果 |
 | `model_summary.csv` | モデルのパラメータとバッファの一覧 (名前, 種類, 持っている層のクラス名, 形, 型, 要素数, 学習するか, 共有している場合は最初の名前 `same_as`. 要素数の合計では共有したものを 1 回だけ数える) |
 | `git_diff.patch` | 未コミットの変更がある場合のみ, commit id からの差分. 未追跡のファイルも含むが, `.gitignore` で除外したファイルと submodule の中の変更は含まない. バイナリファイルは変更されたことだけが記録される |
@@ -507,7 +508,7 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | `best.pt` | ベストモデルのチェックポイント (`best_weights_only: true` の場合は重みだけ. `select_best: false` の場合は作らない) |
 | `last.pt` | 最後のエポックのチェックポイント, ベストモデルの重みも含む (`last_with_best: false` の場合は含まない). 再開に使う |
 | `final_model.pt` | ベストモデルの重みだけ (`restore_best: false` か `select_best: false` の場合は最後のエポックの重み. `eval_model` を上書きした場合はそのモデルの重み), cpu のテンソル |
-| `run.json` | 実験の状態 (`running`, `completed`, `stopped`, `failed`), 開始, 更新, 終了の時刻 (タイムゾーン付き) と所要時間 (`duration_sec`), 予定と終えたエポック数 (`fit` を呼び直した場合は前の `fit` までを含めた数), 再開した最初のエポック (`fit` を呼び直した場合は続きの最初のエポック), 監視する指標とその向き (`mode`), ベストモデルを選ぶか (`select_best`. `false` の場合はベストのエポックと値が `null`), ベストのエポックと値, Early Stopping で止めたエポック, `final_model.pt` の重み (`best`, `last`, エポックの途中で止めて戻せなかった場合 (`eval_model` を上書きし, そのモデルの状態を `extra_state_dict` で保存していない場合を含む) は `partial`), 乱数シード, デバイス, Optimizer ごとの名前 (名前付きの場合), クラスの名前, 受け持つ部分 (名前付きの場合), Scheduler のクラスの名前 (warmup を付けた場合は `SequentialLR(LinearLR, CosineAnnealingLR)` のように中のクラスも. `fit` を呼ぶまで作らない Scheduler は学習を始めるときに書く) (`optimizers`. `Trainer` の作成で失敗した場合は `null`), プロセスの ID とホスト名, エラーの内容, 形式の版. 学習を始めたときに作り, エポックごと (1 秒以上の間隔. 間隔の中の更新は次の進み具合の書き込みと一緒に書く), 再開したときと終了時に更新. `Trainer` の作成で失敗した場合も `failed` (キーボードの割り込みは `stopped`) で書く |
+| `run.json` | 実験の状態 (`running`, `completed`, `stopped`, `failed`), 開始, 更新, 終了の時刻 (タイムゾーン付き) と所要時間 (`duration_sec`), 予定と終えたエポック数 (`fit` を呼び直した場合は前の `fit` までを含めた数), 再開した最初のエポック (`fit` を呼び直した場合は続きの最初のエポック), 監視する指標とその向き (`mode`), ベストモデルを選ぶか (`select_best`. `false` の場合はベストのエポックと値が `null`), ベストのエポックと値, Early Stopping で止めたエポック, `final_model.pt` の重み (`best`, `last`, エポックの途中で止めて戻せなかった場合 (`eval_model` を上書きし, そのモデルの状態を `extra_state_dict` で保存していない場合を含む) は `partial`), 乱数シード, デバイス, Optimizer ごとの名前 (名前付きの場合), クラスの名前, 受け持つ部分 (名前付きの場合), Scheduler のクラスの名前 (warmup を付けた場合は `SequentialLR(LinearLR, CosineAnnealingLR)` のように中のクラスも. `fit` を呼ぶまで作らない Scheduler は学習を始めるときに書く) (`optimizers`. `Trainer` の作成で失敗した場合は `null`), プロセスの ID とホスト名, エラーの内容, 形式の版. 学習を始めたときに作り, エポックごと (1 秒以上の間隔. 間隔の中の更新は次の進み具合の書き込みと一緒に書く), 再開したときと終了時に更新. `Trainer` の作成で失敗した場合と, `start_experiment` の後に `fit` の外 (データの読み込みやモデルの作成など) で処理されなかったエラーでスクリプトが止まった場合も `failed` (キーボードの割り込みは `stopped`) で書く |
 | `progress.json` | 学習中だけ置かれる, 今のフェーズ (`train`, `train_eval`, `valid`), エポックと予定のエポック数 (`fit` を呼び直した場合は前の `fit` までを含めた数), エポックの中で終えたバッチの数と総数, 経過時間, 更新時刻 (`updated_at`). 1 秒以上の間隔で上書きする (1 エポックが短い学習の邪魔にならないように, フェーズの始めと終わりも間隔を守る). 学習を終えると消す |
 
 ### エポックごとの結果を受け取る
@@ -535,7 +536,7 @@ history = trainer.fit(train_loader, valid_loader)
 
 ### 学習の外からの確認と中断
 
-`run.json` と `progress.json` は, 書きかけを読まないように一時ファイルに書いてから置き換える. ディスクまで書き出す (fsync) のは `run.json` の開始と終了のときだけ. ダッシュボードや別の端末のスクリプトから, 学習中の状態と進み具合を読める. 書き込めない場合 (ディスクの不足など) は `train.log` に警告を 1 回残し, 学習は続ける. 状態は `Trainer.fit` が書くので, `fit` を使わずに `train_epochs` などを直接呼んだ場合や, `train_epochs` を上書きした場合は残らない.
+`run.json` と `progress.json` は, 書きかけを読まないように一時ファイルに書いてから置き換える. ディスクまで書き出す (fsync) のは `run.json` の開始と終了のときだけ. ダッシュボードや別の端末のスクリプトから, 学習中の状態と進み具合を読める. 書き込めない場合 (ディスクの不足など) は `train.log` に警告を 1 回残し, 学習は続ける. 状態は `Trainer.fit` が書くので, `fit` を使わずに `train_epochs` などを直接呼んだ場合は `running` のまま終わりが残らない (下の処理されなかったエラーは記録する).
 
 学習中の実験のディレクトリに `STOP` という名前のファイルを置くと (中身が `now` 以外の場合), そのエポックを終えたところで学習を止める. 結果 (`final_model.pt` など) を保存し, 状態を `stopped` にする. `checkpoint.save_last` が true の場合は, 保存の間隔に関係なく `last.pt` も保存するので, そこから再開できる. 1 エポックが長い学習ですぐに止めたい場合は, 下のように `STOP` に `now` と書く. 予定の最後のエポックで置いた場合と, Early Stopping と同じエポックで止まった場合は `completed` になる. `STOP` は学習を止めた後も残るので, 同じ出力先で `fit` をやり直す場合は消しておく (同じ `Trainer` で `fit` を呼び直す場合は, ML-Found が消す).
 
@@ -552,15 +553,23 @@ touch outputs/wine/2026-11-12/10-00-00/STOP
 echo now > outputs/wine/2026-11-12/10-00-00/STOP   # エポックの途中でも止める
 ```
 
-キーボードの割り込み (Ctrl-C) で止めた場合も `stopped`, エラーで止まった場合は `failed` になる. プロセスが強制終了された場合は `running` のまま残るので, 同じ端末であれば `run.json` の `hostname` と `pid` のプロセスが動いているかで見分ける. 別の端末からは, `progress.json` の `updated_at` が長く更新されていないかで見分ける.
+キーボードの割り込み (Ctrl-C) で止めた場合も `stopped`, エラーで止まった場合は `failed` になる.
+
+`start_experiment` の後に `fit` の外で起きて処理されなかったエラー (データの読み込みの失敗など) も, `train.log` に traceback を残し, `run.json` を `failed` (キーボードの割り込みは `stopped`) で書く. `start_experiment` が `sys.excepthook` を元のものに繋いで置き換えて記録するので, スクリプトを変える必要は無く, エラーの表示と終了コードは変わらない.
+
+- 記録するのは, `run.json` が無い場合 (学習を始める前に止まった場合) と `running` のままの場合 (`fit` を使わずに `train_epochs` などを直接呼んだ場合) だけ. `fit` と `Trainer` の作成が記録したエラーと, `fit` で終えた実験 (学習の後のテストデータの評価で起きたエラーなど) は書き換えない. `train_epochs` を直接呼んだ実験は終わりが記録されないので, 学習を終えた後のエラーでも `failed` になる
+- 同じプロセスで `start_experiment` を何度も呼んだ場合は, 最後に始めた実験に記録する
+- ノートブックと IPython のセルで起きたエラーは, カーネルが動き続けて `sys.excepthook` を通らないので記録しない (`run.json` が無い実験はダッシュボードで未完了に見える). `sys.exit()` での終了と, メインでないスレッドで起きたエラーも記録しない. 後から別のライブラリ (traceback の表示を変えるものなど) が `sys.excepthook` を元のものに繋がずに置き換えた場合も記録しない
+
+プロセスが強制終了された場合は `running` のまま残るので, 同じ端末であれば `run.json` の `hostname` と `pid` のプロセスが動いているかで見分ける. 別の端末からは, `progress.json` の `updated_at` が長く更新されていないかで見分ける.
 
 ## ディレクトリ構成
 
 ```
 ML-Found/
 ├── src/ml_found/
-│   ├── config/             # config の型定義, 読み込み, 差分
-│   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報
+│   ├── config/             # config の型定義, 読み込み, 差分, 起動のしかた
+│   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録
 │   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, チェックポイント, 記録, 実験の状態
 │   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧
 ├── examples/

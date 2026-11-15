@@ -31,7 +31,7 @@ from ml_found.training.optim import (
     needs_data, requires_closure, step_scheduler, to_kwargs,
     uses_named_optimizers
 )
-from ml_found.training.status import STOP_FILE, RunStatus
+from ml_found.training.status import STOP_FILE, RunStatus, record_not_started
 from ml_found.utils.batch import find_batch_size, move_to_device
 from ml_found.utils.model_summary import (
     count_parameters, save_model_summary, summarize_model
@@ -350,16 +350,9 @@ def record_init_error(
             )
         else:
             experiment.logger.exception("Trainer の作成でエラーが起きました")
-        cfg = experiment.cfg
-        status = RunStatus(experiment.run_dir, experiment.logger)
-        status.start(
-            planned_epochs=cfg.trainer.epochs, start_epoch=1,
-            monitor=cfg.trainer.monitor, mode=cfg.trainer.mode,
-            seed=cfg.experiment.seed, device=str(experiment.device)
-        )
-        status.finish(
-            "stopped" if interrupted else "failed",
-            error=f"{type(error).__name__}: {error}"
+        record_not_started(
+            experiment.run_dir, experiment.logger, experiment.cfg,
+            str(experiment.device), error
         )
     except Exception as record_error:
         warnings.warn(

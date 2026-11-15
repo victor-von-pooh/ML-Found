@@ -9,11 +9,13 @@ from omegaconf import DictConfig
 import torch
 
 from ml_found.config.loader import format_diff, save_config
+from ml_found.config.source import save_source
 from ml_found.experiment.env_info import (
     collect_env_info, get_git_diff, log_env_info
 )
 from ml_found.experiment.logger import get_logger
 from ml_found.experiment.seed import EXTRA_RNGS, fix_seed
+from ml_found.experiment.uncaught import watch_uncaught_errors
 from ml_found.training.optim import (
     check_optim_config, class_uses_gradients, resolve_optimizer_class,
     try_build_optim
@@ -306,8 +308,10 @@ def start_experiment(
         datetime.now()
     )
 
-    # 学習に使った config と差分を保存
+    # 学習に使った config と差分, 起動のしかた (スクリプト, config のパス,
+    # 上書き) を保存
     save_config(cfg, diff, str(run_dir))
+    save_source(cfg, str(run_dir), project_root)
 
     # 未コミットの変更がある場合は再現できるように差分を保存
     if git_diff != b"":
@@ -335,5 +339,9 @@ def start_experiment(
         cfg=cfg, project_dir=project_root, run_dir=run_dir, logger=logger,
         device=device
     )
+
+    # fit の外 (データの用意など) で処理されなかったエラーも, ダッシュボード
+    # から分かるように train.log と run.json に記録
+    watch_uncaught_errors(experiment)
 
     return experiment

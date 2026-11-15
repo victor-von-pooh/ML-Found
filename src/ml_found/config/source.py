@@ -173,6 +173,8 @@ def save_source(cfg: DictConfig, run_dir: str, project_dir: Path) -> None:
             for key, value in existing.items():
                 if value is not None or key not in source:
                     source[key] = value
+            # 版は, 今回書く中身の形の版
+            source["format_version"] = SOURCE_FORMAT_VERSION
 
     # 上書きの値の ${...} を補間として扱わないように, 辞書のまま保存
     OmegaConf.save(OmegaConf.create(source), path)

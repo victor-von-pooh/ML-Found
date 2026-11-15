@@ -9,7 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-# 実験の状態を書くファイルの形式の版 (項目を変えた場合に更新)
+# 実験の状態を書くファイルの形式の版 (項目の意味を変えるか消す場合と,
+# 実験のディレクトリの他のファイルの形を変える場合に上げる. docs/FORMAT.md)
 FORMAT_VERSION = 1
 
 # 学習を止めてほしい場合に置くファイルの名前
@@ -445,7 +446,8 @@ def record_not_started(
     status.start(
         planned_epochs=cfg.trainer.epochs, start_epoch=1,
         monitor=cfg.trainer.monitor, mode=cfg.trainer.mode,
-        seed=cfg.experiment.seed, device=device
+        seed=cfg.experiment.seed, device=device,
+        select_best=cfg.trainer.select_best
     )
     status.finish(
         "stopped" if isinstance(error, KeyboardInterrupt) else "failed",

@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import re
 import sys
+from typing import Callable
 
 import pytest
 from omegaconf import OmegaConf
@@ -33,7 +34,7 @@ def documented_keys(section: str) -> set[str]:
     keys: set[str]
         表の 1 列目に `` で囲んで書いた名前
     """
-    # 見出しから次の見出しまでの表の行の 1 列目を読む
+    # 見出しから次の見出しまでの, 表の行の 1 列目の読み込み
     text = FORMAT_DOC.read_text(encoding="utf-8")
     body = text.split(section + "\n", 1)[1].split("\n#", 1)[0]
     keys = set()
@@ -46,7 +47,11 @@ def documented_keys(section: str) -> set[str]:
     return keys
 
 
-def run_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def run_project(
+    project: Path, monkeypatch: pytest.MonkeyPatch,
+    step: Callable = regression_step,
+    extra: str = ""
+) -> Path:
     """
     文書のとおりのプロジェクトを作り, 2 エポックの学習を流す関数
 
@@ -56,6 +61,10 @@ def run_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         プロジェクトのディレクトリ
     monkeypatch: pytest.MonkeyPatch
         sys.argv の差し替えに使う
+    step: Callable = regression_step
+        1 バッチの計算
+    extra: str = ""
+        default に加える YAML の内容
 
     Returns
     ----------
@@ -66,7 +75,8 @@ def run_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (project / "configs" / "default").mkdir(parents=True)
     (project / "configs" / "experiment").mkdir(parents=True)
     (project / "configs" / "default" / "train.yaml").write_text(
-        "experiment:\n  name: contract\n  device: cpu\n  seed: 0\n",
+        "experiment:\n  name: contract\n  device: cpu\n  seed: 0\n"
+        "trainer:\n  epochs: 3\n" + extra,
         encoding="utf-8"
     )
     (project / "configs" / "experiment" / "train.yaml").write_text(
@@ -83,8 +93,11 @@ def run_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delitem(sys.modules, "ipykernel", raising=False)
     cfg, diff = load_project_config(str(project))
     experiment = start_experiment(cfg, diff, str(project))
-    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
-    trainer.fit(make_loader(), make_loader())
+    trainer = Trainer(nn.Linear(1, 1), experiment, step)
+    try:
+        trainer.fit(make_loader(), make_loader())
+    except RuntimeError:
+        pass
 
     return experiment.run_dir
 
@@ -137,7 +150,7 @@ def test_run_directory_matches_format(
     assert status["format_version"] == FORMAT_VERSION == 1
     assert status["status"] == "completed"
 
-    # history.csv は epoch の列と, 接頭辞の付いた指標の列
+    # history.csv は epoch, lr と, 接頭辞の付いた指標の列
     with open(run_dir / "history.csv", encoding="utf-8") as file:
         rows = list(csv.DictReader(file))
     assert [row["epoch"] for row in rows] == ["1", "2"]
@@ -146,6 +159,85 @@ def test_run_directory_matches_format(
             r"(train|valid|train_eval)/", column
         ), column
 
+    # model_summary.csv の列
+    with open(run_dir / "model_summary.csv", encoding="utf-8") as file:
+        header = next(csv.reader(file))
+    assert header == [
+        "name", "kind", "module", "shape", "dtype", "numel",
+        "requires_grad", "same_as"
+    ]
+
     # diff.yaml は . でつないだ名前ごとの, default と変えた後の値
     diff = OmegaConf.to_container(OmegaConf.load(run_dir / "diff.yaml"))
-    assert diff["trainer.epochs"] == {"default": 100, "experiment": 2}
+    assert diff["trainer.epochs"] == {"default": 3, "experiment": 2}
+
+
+def test_failed_run_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    学習の途中のエラーで止まった実験のファイルが, docs/FORMAT.md の
+    「いつあるか」と合うことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        sys.argv の差し替えに使う
+
+    Returns
+    ----------
+    None
+    """
+    # 2 エポック目の学習でエラーを出す 1 バッチの計算
+    calls = {"train": 0}
+
+    def failing_step(model: nn.Module, batch: tuple, phase: str) -> dict:
+        """
+        5 回目の学習のバッチでエラーを出す 1 バッチの計算
+
+        Parameters
+        ----------
+        model: nn.Module
+            学習するモデル
+        batch: tuple
+            x と y
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        outputs: dict
+            平均二乗誤差と平均絶対誤差
+        """
+        # 1 エポックは 4 バッチなので, 2 エポック目の最初のバッチでエラー
+        if phase == "train":
+            calls["train"] += 1
+            if calls["train"] > 4:
+                raise RuntimeError("テストのエラー")
+        outputs = regression_step(model, batch, phase)
+
+        return outputs
+
+    project = tmp_path / "project"
+    run_dir = run_project(
+        project, monkeypatch, failing_step,
+        "  select_best: false\n"
+    )
+
+    # 状態は failed, ベストモデルを選ばない設定のベストは null
+    status = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert status["status"] == "failed"
+    assert status["select_best"] is False
+    assert status["best_epoch"] is None
+    assert status["completed_epochs"] == 1
+
+    # 始めた後のファイルはあり, fit を終えたときに書くファイルは無し
+    for name in (
+        "config.yaml", "diff.yaml", "source.yaml", "train.log",
+        "model_summary.csv"
+    ):
+        assert (run_dir / name).is_file(), name
+    for name in ("history.csv", "final_model.pt", "progress.json"):
+        assert not (run_dir / name).exists(), name

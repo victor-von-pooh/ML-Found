@@ -3361,7 +3361,7 @@ class Trainer:
                 # 外から読める状態の更新
                 self.run_status.update(
                     completed_epochs=len(self.history.records),
-                    best_epoch=self.checkpoint.best_epoch,
+                    best_epoch=self.checkpoint.best_epoch or None,
                     best_value=self.checkpoint.best_value,
                     early_stopped_epoch=epoch if should_stop else None
                 )

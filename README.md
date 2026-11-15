@@ -498,12 +498,13 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 ## 出力
 
 実験ごとに `<output_dir>/<name>/<日付>/<時刻>/` が作られる.
+他のシステム (ML-Dashboard など) と受け渡すプロジェクトと実験のディレクトリの形と, その版の決まりは [docs/FORMAT.md](docs/FORMAT.md) にまとめた.
 
 | ファイル | 内容 |
 | --- | --- |
 | `config.yaml` | 学習に使った config 全体, default として読み込めば同じ条件で学習できる. 再開した実験の場合は `trainer.resume_from` も残っているので, 最初から学習し直す場合は消す |
 | `diff.yaml` | default から変えた項目 |
-| `source.yaml` | 実験の起動のしかた. 実行したスクリプト (`script`), default と experiment の config (`default`, `experiment`), 「項目=値」の上書き (`overrides`). パスはプロジェクトの中ならプロジェクトからの相対パス. `load_config`, `load_project_config`, `load_config_from_args` で作った config を `start_experiment` に渡すと記録され, 別の方法で作った config (写したものを含む) では `default`, `experiment`, `overrides` が `null`. ノートブックの中と `python -c` では `script` が `null`. コマンドラインの他の引数は, 秘密の値を含み得るので記録しない |
+| `source.yaml` | 実験の起動のしかた. 形式の版 (`format_version`), 実行したスクリプト (`script`), default と experiment の config (`default`, `experiment`), 「項目=値」の上書き (`overrides`). パスはプロジェクトの中ならプロジェクトからの相対パス. `load_config`, `load_project_config`, `load_config_from_args` で作った config を `start_experiment` に渡すと記録され, 別の方法で作った config (写したものを含む) では `default`, `experiment`, `overrides` が `null`. ノートブックの中と `python -c` では `script` が `null`. コマンドラインの他の引数は, 秘密の値を含み得るので記録しない |
 | `train.log` | 差分, 環境の情報, モデルの構造, エポックごとの指標, 結果 |
 | `model_summary.csv` | モデルのパラメータとバッファの一覧 (名前, 種類, 持っている層のクラス名, 形, 型, 要素数, 学習するか, 共有している場合は最初の名前 `same_as`. 要素数の合計では共有したものを 1 回だけ数える) |
 | `git_diff.patch` | 未コミットの変更がある場合のみ, commit id からの差分. 未追跡のファイルも含むが, `.gitignore` で除外したファイルと submodule の中の変更は含まない. バイナリファイルは変更されたことだけが記録される |

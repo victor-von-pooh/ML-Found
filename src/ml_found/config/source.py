@@ -8,6 +8,9 @@ from omegaconf import DictConfig, OmegaConf
 # 実験の起動のしかたを書くファイルの名前
 SOURCE_FILE = "source.yaml"
 
+# source.yaml の形式の版 (項目の意味を変えるか消す場合に上げる)
+SOURCE_FORMAT_VERSION = 1
+
 # 読み込んだ config ごとの, default と experiment の絶対パスと上書き
 # (config の id をキーにし, config が消えたら一緒に削除.
 # DictConfig のハッシュは中身から求めるので, 中身を変えても引けるように id を使用)
@@ -119,12 +122,14 @@ def build_source(cfg: DictConfig, project_dir: Path) -> dict:
     Returns
     ----------
     source: dict
-        script, default, experiment, overrides. load_config などを使わずに
-        作った config では, script 以外は None
+        format_version, script, default, experiment, overrides.
+        load_config などを使わずに作った config では, format_version と
+        script 以外は None
     """
     # 読み込み関数が覚えた情報を, プロジェクトからの相対パスに変換
     remembered = SOURCES.get(id(cfg))
     source: dict[str, Any] = {
+        "format_version": SOURCE_FORMAT_VERSION,
         "script": script_path(project_dir),
         "default": None,
         "experiment": None,

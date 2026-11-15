@@ -95,6 +95,7 @@ def test_source_from_project_config(
 
     source = read_source(experiment.run_dir)
     assert source == {
+        "format_version": 1,
         "script": "train.py",
         "default": "configs/default/train.yaml",
         "experiment": "configs/experiment/short.yaml",
@@ -152,8 +153,8 @@ def test_source_unknown_and_outside(
     copied = OmegaConf.merge(cfg)
     experiment = start_experiment(copied, diff, str(project))
     assert read_source(experiment.run_dir) == {
-        "script": None, "default": None, "experiment": None,
-        "overrides": None
+        "format_version": 1, "script": None, "default": None,
+        "experiment": None, "overrides": None
     }
 
 
@@ -180,7 +181,8 @@ def test_source_keeps_existing(tmp_path: Path) -> None:
     cfg = OmegaConf.create({"trainer": {"epochs": 3}})
     save_source(cfg, str(tmp_path), tmp_path)
     assert read_source(tmp_path) == {
-        "script": "train.py", "default": "configs/default/train.yaml",
+        "format_version": 1, "script": "train.py",
+        "default": "configs/default/train.yaml",
         "experiment": None, "overrides": ["trainer.epochs=3"]
     }
 

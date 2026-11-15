@@ -89,10 +89,15 @@ def script_path(project_dir: Path) -> Optional[str]:
         python -c のようにファイルが無い場合は None
     """
     # ノートブックの sys.argv[0] はカーネルのものなので対象外
-    # 引数の残り (sys.argv[1:]) は秘密の値を含み得るので読まない
+    # 引数の残り (sys.argv[1:]) は秘密の値を含み得るので不使用
+    # 実行したファイルが sys.argv[0] と同じ名前の __main__ なら, 途中で
+    # 作業のディレクトリを変えても正しい __main__ の絶対パスを使用
     if "ipykernel" in sys.modules or not sys.argv:
         return None
     path = Path(sys.argv[0])
+    main_file = getattr(sys.modules.get("__main__"), "__file__", None)
+    if isinstance(main_file, str) and Path(main_file).name == path.name:
+        path = Path(main_file)
     if not path.is_file():
         return None
     script = relative_to_project(path.resolve(), project_dir)

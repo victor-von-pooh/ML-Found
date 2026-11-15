@@ -364,3 +364,133 @@ class RunStatus:
         requested = text.strip().lower() == STOP_NOW
 
         return requested
+
+
+def error_text(error: BaseException) -> str:
+    """
+    run.json の error に書くエラーの内容を作る関数
+
+    Parameters
+    ----------
+    error: BaseException
+        起きたエラー
+
+    Returns
+    ----------
+    text: str
+        「型の名前: メッセージ」, キーボードの割り込みは fit と同じく型の名前だけ
+    """
+    if isinstance(error, KeyboardInterrupt):
+        text = "KeyboardInterrupt"
+        return text
+    text = f"{type(error).__name__}: {error}"
+
+    return text
+
+
+def read_run_status(run_dir: Path) -> Optional[dict]:
+    """
+    実験のディレクトリの run.json を読む関数
+
+    Parameters
+    ----------
+    run_dir: Path
+        実験のディレクトリ
+
+    Returns
+    ----------
+    data: Optional[dict]
+        run.json の内容, 無いか読めない場合は None
+    """
+    # run.json は置き換えで書くので, 読めない場合は書かれていないものとして扱い
+    try:
+        text = (Path(run_dir) / "run.json").read_text(encoding="utf-8")
+        data = json.loads(text)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    return data
+
+
+def record_not_started(
+    run_dir: Path, logger: Optional[logging.Logger], cfg: Any, device: str,
+    error: BaseException
+) -> None:
+    """
+    学習を始める前に止まった実験の状態を run.json に書く関数
+
+    Trainer の作成のエラーと, fit の外で処理されなかったエラーで使う
+
+    Parameters
+    ----------
+    run_dir: Path
+        実験のディレクトリ
+    logger: Optional[logging.Logger]
+        書き込みの失敗を警告するロガー
+    cfg: Any
+        学習に使う config
+    device: str
+        学習に使うデバイス
+    error: BaseException
+        起きたエラー, キーボードの割り込みは止めたものとして記録
+
+    Returns
+    ----------
+    None
+    """
+    # 学習を始めた場合と同じ項目を書き, すぐに終わった状態に変更
+    status = RunStatus(run_dir, logger)
+    status.start(
+        planned_epochs=cfg.trainer.epochs, start_epoch=1,
+        monitor=cfg.trainer.monitor, mode=cfg.trainer.mode,
+        seed=cfg.experiment.seed, device=device
+    )
+    status.finish(
+        "stopped" if isinstance(error, KeyboardInterrupt) else "failed",
+        error=error_text(error)
+    )
+
+
+def record_unfinished(
+    run_dir: Path, data: dict, error: BaseException
+) -> None:
+    """
+    running のまま残った run.json を, エラーで止まった状態に書き換える関数
+
+    fit を使わずに train_epochs などを直接呼んで止まった場合に使う
+
+    Parameters
+    ----------
+    run_dir: Path
+        実験のディレクトリ
+    data: dict
+        今の run.json の内容
+    error: BaseException
+        起きたエラー, キーボードの割り込みは止めたものとして記録
+
+    Returns
+    ----------
+    None
+    """
+    # 所要時間は開始時刻から求め, 読めない場合は分からないものとして扱い
+    finished = datetime.now().astimezone()
+    try:
+        started = datetime.fromisoformat(data["started_at"])
+        duration = round((finished - started).total_seconds(), 3)
+    except (KeyError, TypeError, ValueError):
+        duration = data.get("duration_sec")
+
+    # 終わった状態をディスクまで書き出し, 進み具合のファイルを削除
+    finished_at = finished.isoformat(timespec="seconds")
+    data.update(
+        status="stopped" if isinstance(error, KeyboardInterrupt) else "failed",
+        updated_at=finished_at, finished_at=finished_at,
+        duration_sec=duration, error=error_text(error)
+    )
+    write_json(Path(run_dir) / "run.json", data, sync=True)
+    try:
+        (Path(run_dir) / "progress.json").unlink(missing_ok=True)
+    except OSError:
+        pass

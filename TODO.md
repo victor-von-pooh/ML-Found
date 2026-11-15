@@ -47,3 +47,8 @@ Python のコードからは, `Trainer.add_callback` で登録した関数がエ
 呼び直した `fit` は, 最後に終えたエポックの次から `trainer.epochs` の分だけ学習し, 記録を同じ実験に続ける. 重みは前の `fit` の最後のエポックのもの (ベストモデルなどに置き換える前) から続け, Early Stopping は止めた印と我慢の回数を戻す. `resume_from` は最初の `fit` だけで使う. `auto` で補った Scheduler の長さは延ばさず警告し, `OneCycleLR` で総ステップ数を超える場合はエラーにする. Optimizer を差し替えたい場合は新しい Trainer を作る.
 
 なお, warmup 以外で複数の Scheduler を組み合わせる設定 (`SequentialLR` を config に書く形) は, warmup と 1 つの Scheduler で実用の大半に足りるため, 対応しない.
+
+### 7. 実験の起動のしかたと, fit の外のエラーの記録 (対応済み)
+
+`start_experiment` は, 実行したスクリプト, default と experiment の config のパス, 「項目=値」の上書きを `source.yaml` に書く. 読み込み関数 (`load_config` など) が返した config に結び付けて覚えるので, 学習スクリプトは変えなくてよい. コマンドラインの引数の全体は, 秘密の値を含み得るので記録しない.
+`start_experiment` の後に `fit` の外で処理されなかったエラー (データの読み込みやモデルの作成の失敗) も, `sys.excepthook` で `train.log` と `run.json` (`failed`, キーボードの割り込みは `stopped`) に記録し, ダッシュボードで未完了のまま残らないようにした. ノートブックのセルのエラーは記録しない.

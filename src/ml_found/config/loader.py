@@ -7,6 +7,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from omegaconf.errors import OmegaConfBaseException
 
 from ml_found.config.schema import Config, NamedOptimizerConfig
+from ml_found.config.source import remember_source
 
 # 差分で, 片方にしか存在しない項目の値として使う印
 ABSENT = "<未定義>"
@@ -493,6 +494,10 @@ def load_config(
 
     # default から変わった項目を取得
     diff = get_diff(default_cfg, cfg)
+
+    # 実験の出力先に起動のしかた (source.yaml) を残せるように, 使ったファイル
+    # と上書きを config に結び付けて記憶
+    remember_source(cfg, default_path, experiment_path, overrides)
 
     return cfg, diff
 

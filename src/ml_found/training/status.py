@@ -273,7 +273,8 @@ class RunStatus:
 
     def progress(
         self, phase: str, epoch: int, total_epochs: int, batch: int,
-        total_batches: Optional[int], force: bool = False
+        total_batches: Optional[int], force: bool = False,
+        stage: str = "batches"
     ) -> None:
         """
         学習の進み具合を一定の間隔で progress.json に書く関数
@@ -292,6 +293,9 @@ class RunStatus:
             1 エポックのバッチの数, 分からない場合は None
         force: bool = False
             間隔に関係なく書く場合は True
+        stage: str = "batches"
+            フェーズの中の段階. batches (バッチを回している) か epoch_end
+            (エポックの終わりの処理. FID など高価な評価が入りうる)
 
         Returns
         ----------
@@ -309,6 +313,7 @@ class RunStatus:
             "total_epochs": total_epochs,
             "batch": batch,
             "total_batches": total_batches,
+            "stage": stage,
             "elapsed_sec": round(now - self.started, 3),
             "updated_at": now_iso()
         }

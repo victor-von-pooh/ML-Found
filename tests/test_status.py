@@ -1,4 +1,5 @@
 import json
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +128,88 @@ def test_progress_while_training(tmp_path: Path) -> None:
     assert progress["total_epochs"] == 2
     assert progress["batch"] == 2
     assert progress["total_batches"] == 4
+    assert progress["stage"] == "batches"
+
+
+class EpochEndTrainer(Trainer):
+    """
+    エポックの終わりの処理の間に, progress.json を読んで残す Trainer
+    """
+
+    def on_epoch_end(self, phase: str) -> dict:
+        """
+        その時点の進み具合を記録する関数
+
+        Parameters
+        ----------
+        phase: str
+            train または valid
+
+        Returns
+        ----------
+        metrics: dict
+            空 (指標は足さない)
+        """
+        # 処理の間の段階の記録
+        self.seen_stages.append(read_json(
+            self.experiment.run_dir / "progress.json"
+        ))
+        metrics: dict = {}
+
+        return metrics
+
+
+def record_stage(trainer: EpochEndTrainer, info: dict) -> None:
+    """
+    エポックの終わりの callback で, その時点の進み具合を記録する関数
+
+    Parameters
+    ----------
+    trainer: EpochEndTrainer
+        記録する Trainer
+    info: dict
+        エポックの結果 (使わない)
+
+    Returns
+    ----------
+    None
+    """
+    # 検証の on_epoch_end を終えた後の段階
+    trainer.after_stages.append(read_json(
+        trainer.experiment.run_dir / "progress.json"
+    ))
+
+
+def test_epoch_end_stage(tmp_path: Path) -> None:
+    """
+    エポックの終わりの処理を継承した場合に, その間の段階を progress.json
+    に書くことを確かめる関数 (継承しない場合は test_progress_while_training
+    で batches)
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 継承した場合は, 間隔の中でも epoch_end を書く
+    experiment = make_experiment(tmp_path, "trainer:\n  epochs: 1\n")
+    trainer = EpochEndTrainer(nn.Linear(1, 1), experiment, regression_step)
+    trainer.seen_stages = []
+    trainer.after_stages = []
+    trainer.add_callback(partial(record_stage, trainer))
+    trainer.run_status.progress_interval = 3600.0
+    trainer.fit(make_loader(n=32, batch_size=16),
+                make_loader(n=16, batch_size=16))
+    stages = [(item["phase"], item["stage"], item["batch"])
+              for item in trainer.seen_stages]
+    assert stages == [("train", "epoch_end", 2), ("valid", "epoch_end", 1)]
+
+    # 終えた後は batches に戻す (保存などの間に評価中と出し続けない)
+    assert [item["stage"] for item in trainer.after_stages] == ["batches"]
 
 
 def test_stop_request(tmp_path: Path) -> None:

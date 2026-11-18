@@ -123,6 +123,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `phase` | 文字 | 今のフェーズ (`train`, `train_eval`, `valid`) |
 | `epoch`, `total_epochs` | 整数 | 今のエポックと予定のエポック数 |
 | `batch`, `total_batches` | 整数, 整数か null | エポックの中で終えたバッチの数と総数 (分からない場合は null) |
+| `stage` | 文字 | フェーズの中の段階. `batches` (バッチを回している) か `epoch_end` (エポックの終わりの処理 `on_epoch_end` を継承した場合だけ, その間. FID など高価な評価が入りうる). 処理を終えると `batches` に戻す. 無ければ `batches` と読む (この項目を足す前の ML-Found が書いたファイル. 版は同じ 1). `add_callback` の関数の処理の間は `epoch_end` にならない |
 | `elapsed_sec` | 数 | 経過時間 (秒) |
 | `updated_at` | 文字 | 更新した時刻 (タイムゾーン付きの ISO 8601). 1 秒以上の間隔で上書きする |
 

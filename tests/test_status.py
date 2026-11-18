@@ -1,4 +1,5 @@
 import json
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -158,6 +159,27 @@ class EpochEndTrainer(Trainer):
         return metrics
 
 
+def record_stage(trainer: EpochEndTrainer, info: dict) -> None:
+    """
+    エポックの終わりの callback で, その時点の進み具合を記録する関数
+
+    Parameters
+    ----------
+    trainer: EpochEndTrainer
+        記録する Trainer
+    info: dict
+        エポックの結果 (使わない)
+
+    Returns
+    ----------
+    None
+    """
+    # 検証の on_epoch_end を終えた後の段階
+    trainer.after_stages.append(read_json(
+        trainer.experiment.run_dir / "progress.json"
+    ))
+
+
 def test_epoch_end_stage(tmp_path: Path) -> None:
     """
     エポックの終わりの処理を継承した場合に, その間の段階を progress.json
@@ -177,12 +199,17 @@ def test_epoch_end_stage(tmp_path: Path) -> None:
     experiment = make_experiment(tmp_path, "trainer:\n  epochs: 1\n")
     trainer = EpochEndTrainer(nn.Linear(1, 1), experiment, regression_step)
     trainer.seen_stages = []
+    trainer.after_stages = []
+    trainer.add_callback(partial(record_stage, trainer))
     trainer.run_status.progress_interval = 3600.0
     trainer.fit(make_loader(n=32, batch_size=16),
                 make_loader(n=16, batch_size=16))
     stages = [(item["phase"], item["stage"], item["batch"])
               for item in trainer.seen_stages]
     assert stages == [("train", "epoch_end", 2), ("valid", "epoch_end", 1)]
+
+    # 終えた後は batches に戻す (保存などの間に評価中と出し続けない)
+    assert [item["stage"] for item in trainer.after_stages] == ["batches"]
 
 
 def test_stop_request(tmp_path: Path) -> None:

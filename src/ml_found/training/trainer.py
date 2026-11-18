@@ -1394,16 +1394,23 @@ class Trainer:
             raise ValueError(f"{phase} の loader が空です")
 
         # エポックの終わりの処理 (継承した場合だけ. FID など高価な評価が
-        # 入りうるので, 間隔に関係なく段階を書き出し)
-        if type(self).on_epoch_end is not Trainer.on_epoch_end:
+        # 入りうるので, 間隔に関係なく段階を書き出し, 終えたら戻す)
+        overridden = type(self).on_epoch_end is not Trainer.on_epoch_end
+        if overridden:
             self.run_status.progress(
                 phase, self.epoch, self.end_epoch, n_batches,
                 total_batches, force=True, stage="epoch_end"
             )
+        extra_metrics = self.on_epoch_end(phase)
+        if overridden:
+            self.run_status.progress(
+                phase, self.epoch, self.end_epoch, n_batches,
+                total_batches, force=True
+            )
 
         # バッチの平均とエポック全体から求めた指標を集約
         epoch_metrics = tracker.compute()
-        for key, value in self.on_epoch_end(phase).items():
+        for key, value in extra_metrics.items():
             if "/" in key:
                 raise ValueError(f"指標の名前に / は使えません: {key}")
             if key in epoch_metrics:

@@ -1393,6 +1393,14 @@ class Trainer:
         if n_batches == 0:
             raise ValueError(f"{phase} の loader が空です")
 
+        # エポックの終わりの処理 (継承した場合だけ. FID など高価な評価が
+        # 入りうるので, 間隔に関係なく段階を書き出し)
+        if type(self).on_epoch_end is not Trainer.on_epoch_end:
+            self.run_status.progress(
+                phase, self.epoch, self.end_epoch, n_batches,
+                total_batches, force=True, stage="epoch_end"
+            )
+
         # バッチの平均とエポック全体から求めた指標を集約
         epoch_metrics = tracker.compute()
         for key, value in self.on_epoch_end(phase).items():

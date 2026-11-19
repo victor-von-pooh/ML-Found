@@ -705,7 +705,7 @@ def build_scheduler(
 
 def step_scheduler(
     scheduler: Optional[optim.lr_scheduler.LRScheduler],
-    metric: Optional[float] = None
+    metric: Optional[float] = None, judged: bool = True
 ) -> None:
     """
     Scheduler の学習率を 1 回更新する関数
@@ -716,6 +716,9 @@ def step_scheduler(
         更新する Scheduler, None の場合は何もしない
     metric: Optional[float] = None
         ReduceLROnPlateau が改善を判定するための指標の値
+    judged: bool = True
+        指標で判定するエポックか. False の場合 (検証しないエポック) は
+        ReduceLROnPlateau だけ更新せず, 他の Scheduler は更新
 
     Returns
     ----------
@@ -729,11 +732,14 @@ def step_scheduler(
     if not isinstance(
         scheduler, optim.lr_scheduler.LRScheduler
     ) and hasattr(scheduler, "schedulers"):
-        scheduler.step(metric)
+        scheduler.step(metric, judged)
         return
 
     # ReduceLROnPlateau は指標の値を見て学習率を下げるので値の受け渡し
+    # 判定しないエポックは指標が無いので更新なし
     if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+        if not judged:
+            return
         if metric is None:
             raise ValueError("ReduceLROnPlateau には指標の値が必要です")
         scheduler.step(metric)

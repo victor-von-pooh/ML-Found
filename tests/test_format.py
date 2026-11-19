@@ -172,6 +172,42 @@ def test_run_directory_matches_format(
     assert diff["trainer.epochs"] == {"default": 3, "experiment": 2}
 
 
+def test_history_with_valid_interval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    検証の間隔を空けた history.csv が, 検証しないエポックの valid/ を空に
+    する docs/FORMAT.md の形と合うことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        sys.argv の差し替えに使う
+
+    Returns
+    ----------
+    None
+    """
+    # 2 エポックで間隔 2 (エポック 2 だけ検証)
+    run_dir = run_project(
+        tmp_path / "project", monkeypatch,
+        extra="  valid_every_n_epochs: 2\n"
+    )
+
+    # エポック 1 の valid/ は空, エポック 2 は値あり. 列の名前は同じ決まり
+    with open(run_dir / "history.csv", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    assert [row["epoch"] for row in rows] == ["1", "2"]
+    assert rows[0]["valid/loss"] == ""
+    assert float(rows[1]["valid/loss"]) >= 0.0
+    for column in rows[0]:
+        assert column in ("epoch", "lr") or re.match(
+            r"(train|valid|train_eval)/", column
+        ), column
+
+
 def test_failed_run_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

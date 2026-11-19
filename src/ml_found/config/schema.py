@@ -117,6 +117,11 @@ class TrainerConfig:
     # 検証の後は学習の乱数の状態に復帰
     valid_seed: Optional[int] = None
 
+    # 検証するエポックの間隔. エポックの番号が割り切れるエポックと予定の最後の
+    # エポックだけ検証し, ベストモデル, Early Stopping, ReduceLROnPlateau を
+    # 判定 (Early Stopping の patience は判定の回数)
+    valid_every_n_epochs: int = 1
+
     # 学習の後に学習用データを推論モードで評価し直し, train_eval/ で記録するか
     # (Dropout などが効いた状態の train/ の指標を補う. 検証と同じ設定で評価)
     eval_train: bool = False

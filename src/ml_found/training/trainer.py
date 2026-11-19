@@ -724,7 +724,8 @@ class Trainer:
 
         関数はエポックごとに, epoch (エポック), record (記録の写し),
         improved (ベストモデルを更新したか), best_epoch, best_value,
-        early_stopping (Early Stopping で止めるか) の辞書を受け取る. 真の値
+        early_stopping (Early Stopping で止めるか), judged (検証して判定した
+        エポックか) の辞書を受け取る. 真の値
         (True など) を返すと, そのエポックで学習を止める (状態は stopped,
         予定の最後のエポックなら completed)
 
@@ -743,7 +744,8 @@ class Trainer:
         self.callbacks.append(fn)
 
     def run_callbacks(
-        self, epoch: int, record: dict, improved: bool, should_stop: bool
+        self, epoch: int, record: dict, improved: bool, should_stop: bool,
+        judged: bool = True
     ) -> bool:
         """
         登録した関数にエポックの結果を渡す関数
@@ -758,6 +760,8 @@ class Trainer:
             ベストモデルを更新したかどうか
         should_stop: bool
             Early Stopping で止めるかどうか
+        judged: bool = True
+            検証してベストモデルなどを判定したエポックかどうか
 
         Returns
         ----------
@@ -772,7 +776,8 @@ class Trainer:
                 "improved": bool(improved),
                 "best_epoch": self.checkpoint.best_epoch or None,
                 "best_value": self.checkpoint.best_value,
-                "early_stopping": bool(should_stop)
+                "early_stopping": bool(should_stop),
+                "judged": bool(judged)
             }
             # numpy や torch の真偽値も, 真の値なら止める要求として扱う
             if fn(info):
@@ -1507,6 +1512,36 @@ class Trainer:
 
         return metrics
 
+    def get_monitor_value(self, record: dict, monitor: str) -> float:
+        """
+        判定するエポックの記録から監視する指標の値を取得する関数
+
+        Parameters
+        ----------
+        record: dict
+            そのエポックの記録
+        monitor: str
+            監視する指標の名前
+
+        Returns
+        ----------
+        value: float
+            監視する指標の値, 無い場合と nan や inf の場合はエラー
+        """
+        # 監視する指標があり, 有限の値であることの確認
+        if monitor not in record:
+            raise ValueError(
+                f"監視する指標 {monitor} がありません: "
+                f"{list(record.keys())}"
+            )
+        value = record[monitor]
+        if not math.isfinite(value):
+            raise ValueError(
+                f"監視する指標 {monitor} が {value} になりました"
+            )
+
+        return value
+
     def get_tiebreak(self, record: dict) -> Optional[float]:
         """
         監視する指標が同じ値の場合に比べる指標の値を取得する関数
@@ -1565,6 +1600,30 @@ class Trainer:
 
         return monitor
 
+    def is_judged_epoch(self, epoch: int) -> bool:
+        """
+        検証し, ベストモデルなどを判定するエポックかを返す関数
+
+        エポックの番号が trainer.valid_every_n_epochs で割り切れるエポックと,
+        予定の最後のエポック. 番号は通しなので, 再開や fit の呼び直しでも
+        同じエポックを判定する
+
+        Parameters
+        ----------
+        epoch: int
+            エポックの番号 (1 から)
+
+        Returns
+        ----------
+        judged: bool
+            判定するエポックなら True
+        """
+        # 間隔で割り切れるエポックと予定の最後のエポック
+        every = self.trainer_cfg.valid_every_n_epochs
+        judged = epoch % every == 0 or epoch == self.end_epoch
+
+        return judged
+
     def state_dict(self, epoch: int, monitor: str) -> dict:
         """
         チェックポイントとして保存する内容をまとめる関数
@@ -1590,6 +1649,7 @@ class Trainer:
             "monitor_tiebreak": self.trainer_cfg.monitor_tiebreak,
             "monitor_tiebreak_mode": self.trainer_cfg.monitor_tiebreak_mode,
             "select_best": self.trainer_cfg.select_best,
+            "valid_every_n_epochs": self.trainer_cfg.valid_every_n_epochs,
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": (
@@ -1708,6 +1768,19 @@ class Trainer:
                 f"{old_tiebreak[0]} ({old_tiebreak[1]}), 今回は "
                 f"{new_tiebreak[0]} ({new_tiebreak[1]})"
             )
+
+        # 検証の間隔が変わると, 待つ回数が表すエポック数が変わるので警告
+        # (この設定を入れる前のチェックポイントは毎エポック検証)
+        old_every = state.get("valid_every_n_epochs", 1)
+        new_every = self.trainer_cfg.valid_every_n_epochs
+        if old_every != new_every:
+            message = (
+                f"再開元と検証の間隔が違います: 再開元は {old_every}, "
+                f"今回は {new_every}. Early Stopping と ReduceLROnPlateau の"
+                "待つ回数は判定の回数のまま続けます"
+            )
+            warnings.warn(message, stacklevel=2)
+            self.logger.warning(message)
 
         # モデル, Optimizer, Scheduler, 記録の復元
         # Scheduler が Optimizer に書き込む値 (OneCycleLR の max_lr など) も
@@ -2246,6 +2319,12 @@ class Trainer:
         None
         """
         self.logger.info(f"監視する指標: {monitor} ({self.trainer_cfg.mode})")
+        every = self.trainer_cfg.valid_every_n_epochs
+        if every > 1:
+            self.logger.info(
+                f"検証の間隔: {every} エポックごとと予定の最後のエポック "
+                f"({self.end_epoch}). 判定もこのエポックだけ"
+            )
         if self.trainer_cfg.monitor_tiebreak is not None:
             self.logger.info(
                 "同じ値の場合に比べる指標: "
@@ -3279,18 +3358,20 @@ class Trainer:
                 # このエポックを始めた時点の学習率の保持
                 lrs = self.current_lrs()
 
-                # 学習し, 検証用のデータがある場合は検証
+                # 学習し, 判定するエポックでは評価し直しと検証
+                # (判定しないエポックは学習だけ)
                 # エポックの途中で止める要求があれば, このエポックを捨てて終了
+                judged = self.is_judged_epoch(epoch)
                 record = {"epoch": epoch}
                 self.epoch_extra = {}
                 self.epoch_start_step = self.global_step
                 try:
                     record.update(self.run_epoch(train_loader, train=True))
-                    if self.trainer_cfg.eval_train:
+                    if judged and self.trainer_cfg.eval_train:
                         record.update(
                             self.run_valid_epoch(train_loader, "train_eval")
                         )
-                    if valid_loader is not None:
+                    if judged and valid_loader is not None:
                         record.update(self.run_valid_epoch(valid_loader))
                 except StopWithinEpoch:
                     self.discard_epoch(epoch)
@@ -3313,42 +3394,40 @@ class Trainer:
                         )
                 record.update(self.epoch_extra)
 
-                # 監視する指標があることを確かめてから記録
-                if monitor not in record:
-                    raise ValueError(
-                        f"監視する指標 {monitor} がありません: "
-                        f"{list(record.keys())}"
-                    )
-                value = record[monitor]
-                if not math.isfinite(value):
-                    raise ValueError(
-                        f"監視する指標 {monitor} が {value} になりました"
-                    )
-
-                # 監視する指標が同じ値の場合に比べる指標の取得
-                tiebreak = self.get_tiebreak(record)
+                # 判定するエポックでは, 監視する指標があることを確かめて
+                # 同じ値の場合に比べる指標も取得してから記録
+                value: Optional[float] = None
+                tiebreak: Optional[float] = None
+                if judged:
+                    value = self.get_monitor_value(record, monitor)
+                    tiebreak = self.get_tiebreak(record)
                 self.history.append(record)
 
                 # epoch ごとに学習率を更新する場合はここで更新
+                # (判定しないエポックでは ReduceLROnPlateau だけ更新なし)
                 if self.scheduler_interval == "epoch":
-                    step_scheduler(self.scheduler, value)
+                    step_scheduler(self.scheduler, value, judged)
 
-                # ベストモデルと Early Stopping の状態を先に更新
-                # (ベストモデルを選ばない設定では, 改善を判定しない)
-                improved = self.trainer_cfg.select_best and (
-                    self.checkpoint.update(
-                        value, epoch, self.eval_model(), tiebreak
+                # 判定するエポックだけ, ベストモデルと Early Stopping の状態を
+                # 先に更新 (ベストモデルを選ばない設定では, 改善を判定しない)
+                improved = False
+                should_stop = False
+                if judged:
+                    improved = self.trainer_cfg.select_best and (
+                        self.checkpoint.update(
+                            value, epoch, self.eval_model(), tiebreak
+                        )
                     )
-                )
-                should_stop = (
-                    self.early_stopping is not None
-                    and self.early_stopping.step(value, tiebreak)
-                )
+                    should_stop = (
+                        self.early_stopping is not None
+                        and self.early_stopping.step(value, tiebreak)
+                    )
 
                 # 登録した関数にエポックの結果を渡し, 止める要求があるかの確認
                 # 外から止める要求 (STOP のファイル) と同じく, このエポックで停止
+                # (判定しないエポックで止めた場合, ベストモデルは前の判定のまま)
                 callback_stop = self.run_callbacks(
-                    epoch, record, improved, should_stop
+                    epoch, record, improved, should_stop, judged
                 )
                 file_stop = self.run_status.stop_requested()
                 stop_requested = file_stop or callback_stop

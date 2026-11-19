@@ -5,6 +5,7 @@ from ml_found.experiment import (
     Experiment, register_rng, start_experiment, unregister_rng
 )
 from ml_found.training import History, Trainer
+from ml_found.utils.requirements import describe_requirements, require
 
 # バージョンは pyproject.toml の値を使用
 try:
@@ -13,6 +14,7 @@ except metadata.PackageNotFoundError:
     __version__ = "不明"
 
 __all__ = [
-    "Experiment", "History", "Trainer", "load_config", "load_project_config",
-    "register_rng", "start_experiment", "unregister_rng"
+    "Experiment", "History", "Trainer", "describe_requirements",
+    "load_config", "load_project_config", "register_rng", "require",
+    "start_experiment", "unregister_rng"
 ]

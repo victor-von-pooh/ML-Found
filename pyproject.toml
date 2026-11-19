@@ -25,6 +25,13 @@ dev = [
 examples = [
     "scikit-learn"
 ]
+rl = [
+    "gymnasium>=1.0"
+]
+mujoco = [
+    "gymnasium>=1.0",
+    "mujoco"
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

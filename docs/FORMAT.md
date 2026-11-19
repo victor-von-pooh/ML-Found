@@ -181,7 +181,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 
 - パス (`base.experiment`, `dataset.path`) は, `source.yaml` と同じく, プロジェクトの中ならプロジェクトからの相対パス (区切りは `/`), 外なら絶対パス
 - 読む側は, `target.origin.type` が `process` なら「指標はその処理との一致を測り, その処理を超えられない」, `annotation` なら「付けた人との一致」, `environment` なら「環境の報酬で測る. 実機での結果は別に確かめる」と指標の横に書く (ML-Found の `describe_origin` が文を返す). 知らない値は `unknown` として説明する (値を足す前の ML-Found も同じ)
-- **方策の実験の例**: `role: effect`, `output: action`, `target.kind: reward`, `target.origin.type: environment`, `target.origin.name` に環境の名前 (`CartPole-v1` など), `method: scratch`. 方策は問題の設定 (ML-Quest) では効果を見積もるの扱い (2.1) なので `role` は `effect`
+- **方策の実験の例**: `role: effect`, `output: action`, `target.kind: reward`, `target.origin.type: environment`, `target.origin.name` に環境の名前 (`CartPole-v1` など), `method: scratch`. 方策は問題の設定 (ML-Quest) では効果の見積もりの扱いなので `role` は `effect`
 - **`format_version` は 1 以上の整数**. 文字 (`'2'`), 小数 (`2.0`), 真偽値, 無い場合は誤りとして止まる (版 1 として読み違えないため)
 - **新しい版の読み方 (`task.yaml` だけの決まり)**: 知っている版より新しい `task.yaml` は, 他の項目は読める項目だけを使うが, `target.origin` は分からないもの (`unknown`) として扱い, 新しい版であることを画面で知らせる (`load_task` は `target.origin` を `unknown` に置き換え, 返す辞書に `newer_version: true` を足す. `describe_origin` に版を渡すと言い切らない文を返す). `task.yaml` は「この処理を超えられない」のような言い切りの元なので, 意味の変わったかもしれない欄から言い切ると誤った説明になる (他のファイルは表示が欠けるだけで, 誤りは言わない)
 - 書くのは `start_experiment` (config の `task` がある場合) と `write_task`. 後から書いた方で置き換える
@@ -207,7 +207,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 
 - 同じ名前で書き直すと置き換える
 - 読む側は `evaluations/*.json` を全て読む (一時ファイル `.<名前>.json.*.tmp` は無視する)
-- **比べる相手との表の形 (推奨)**: 1 行を 1 つのグループ (全体なら 1 行) にし, 指標ごとに `<指標>` (この実験), `<指標>_baseline` (比べる相手), `<指標>_diff` (この実験 − 比べる相手) の 3 列を並べ, `baseline` に相手の名前を書く. 差の符号は値の差のままで, 良し悪しの向きは指標の名前から読む側が決める (小さいほど良い指標では負が良い). 画面は `_diff` の列を差として色分けできる
+- **比べる相手との表の形 (推奨)**: 1 行を 1 つのグループ (全体なら 1 行) にし, 指標ごとに `<指標>` (この実験), `<指標>_baseline` (比べる相手), `<指標>_diff` (この実験 - 比べる相手) の 3 列を並べ, `baseline` に相手の名前を書く. 差の符号は値の差のままで, 良し悪しの向きは指標の名前から読む側が決める (小さいほど良い指標では負が良い). 画面は `_diff` の列を差として色分けできる
 - **別の形 (許す)**: 1 行を (グループ, 答えた側) の組にし, 答えた側の列 `answer` に `model` か比べる相手の名前を書く (差の列は持たない). 相手が 2 つ以上ある場合や, 相手ごとに指標の列が違う場合に使う. このときも `baseline` に相手の名前 (複数なら `, ` でつなぐ) を書く
 
 ### samples
@@ -241,10 +241,10 @@ samples/
 | `split` | 文字か null | 見本の入力の分割 |
 | `caption` | 文字か null | 添える説明 |
 | `classes` | リストか null | `mask` の番号の表 (下). 他の種類は null |
-| `convention` | 辞書か null | 値の決まり (点群の座標の単位や正規化のずらしなど. 下). 無ければ null |
+| `convention` | 辞書か null | 値の決まり (点群の座標の単位や正規化で引いた中心など. 下). 無ければ null |
 | `created_at` | 文字 | 書いた時刻 (タイムゾーン付きの ISO 8601) |
 
-- `classes` と `convention` は 2026-11-20 に足した (版 1 のまま). 足す前の ML-Found が書いた項目には無いので, 読む側は無い場合を null と読む
+- `classes` と `convention` は 2026-11-20 に足した (版 1 のまま). 足す前の ML-Found が書いた項目には無いので, 読む側は無い場合を null と読む (`load_samples` は null を補って返す)
 - **`mask` の番号の表** (`classes`): 並びの 1 つが 1 つの番号で, `id` (0 から 255 の整数), `name` (名前. 文字か null), `color` (PNG での色. `#rrggbb`). 書いた番号の全て (名前を渡した番号と, 配列に現れた番号) を番号の順に並べる. 色は決まった色の表 (PASCAL VOC と同じ, 番号のビットから作る 256 色. 0 は黒) から番号で選ぶので, 実験が違っても同じ番号は同じ色. 画面は PNG をそのまま出し, この表から凡例を作る
 - **値の決まり** (`convention`): 書いた側の補足で, 形は決めない (JSON の辞書). 点群では `units` (座標の単位. `m`, `mm` など), `shift` (正規化で引いた中心の座標. 元の座標は `値 × scale + shift`), `scale` (正規化で割った大きさ), `axes` (軸の向き. `y_up` など) を推奨する
 - ML-Found が配列から書く形: 画像は PNG (8 bit), 領域の番号は色分けした PNG (8 bit の RGB), 音は WAV (16 bit の PCM), 点群は PLY (ascii. 頂点の `x`, `y`, `z` だけ). ファイルを渡すと形を変えずに写す

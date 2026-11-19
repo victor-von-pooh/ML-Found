@@ -65,7 +65,7 @@ pip install -e ./ML-Found
 from ml_found import MissingRequirementError, describe_requirements, require
 
 try:
-    require("rl")  # 無ければ MissingRequirementError (ImportError の子) で, 入れ方を示して止まる
+    require("rl")  # 無ければ入れ方を示す MissingRequirementError (ImportError の子) を送出
 except MissingRequirementError as error:
     print(error)  # 入れ方の案内
 entries = describe_requirements()  # 全ての機能の一覧 (JSON にできる)
@@ -517,7 +517,7 @@ task:
 
 スクリプトから書く場合は `write_task` を使う (後から書いた方で置き換える). 微調整では元にした実験 (`base.experiment`) か重み (`base.weights`. Hugging Face のモデルの名前など) を書く.
 
-強化学習の方策は, 受け持ちを `effect` (問題の設定では効果を見積もるの扱い), 出力の形を `action`, 正解の種類を `reward`, 正解の出どころを `environment` (環境の報酬) にする.
+強化学習の方策は, 受け持ちを `effect` (問題の設定 (ML-Quest) では効果の見積もりの扱い), 出力の形を `action`, 正解の種類を `reward`, 正解の出どころを `environment` (環境の報酬) にする.
 
 ```python
 write_task(experiment, {
@@ -560,18 +560,18 @@ save_evaluation(
 )
 ```
 
-比べる相手との表は, 上のように 1 行を 1 つのグループにし, 指標ごとに `<指標>` (この実験), `<指標>_baseline` (比べる相手), `<指標>_diff` (この実験 − 比べる相手) を並べる形を推奨する (画面が差の列を見分けられる). 相手が 2 つ以上ある場合などは, 1 行を (グループ, 答えた側) にし, 答えた側を `answer` の列 (`model` か相手の名前) に書く形も使える (docs/FORMAT.md の「evaluations」).
+比べる相手との表は, 上のように 1 行を 1 つのグループにし, 指標ごとに `<指標>` (この実験), `<指標>_baseline` (比べる相手), `<指標>_diff` (この実験 - 比べる相手) を並べる形を推奨する (画面が差の列を見分けられる). 相手が 2 つ以上ある場合などは, 1 行を (グループ, 答えた側) にし, 答えた側を `answer` の列 (`model` か相手の名前) に書く形も使える (docs/FORMAT.md の「evaluations」).
 
 評価と見本の名前は英数字と `_`, `.`, `@`, `-` だけで, 先頭は `.` 以外 (見本は `index.json` と, `samples/` の直下のファイルと同じ名前も不可).
 
-見本は `save_sample(experiment, 名前, 値, epoch=...)` で書く. 文字は文 (`.txt`), `pathlib.Path` はファイルをそのまま写す (種類は拡張子から), 配列とテンソルは `kind` を渡す. `image` は (高さ, 幅), (高さ, 幅, チャンネル), (チャンネル, 高さ, 幅) で, 小数は 0 から 1, 整数は 0 から 255 の値 (PNG). `audio` は (サンプル数,) か (チャンネル, サンプル数) で -1 から 1 の値と `sample_rate` (16 bit の WAV. チャンネルは 8 まで. (サンプル数, チャンネル) の配列は `.T` で入れ替える). `point_cloud` は (点の数, 3) で nan の無い座標 (PLY). `mask` は (高さ, 幅) の領域の番号 (0 から 255 の整数か真偽値) で, 決まった色の表 (PASCAL VOC と同じ. 0 は黒) で色分けした PNG を書き, 番号ごとの名前と色の表を一覧の `classes` に残す (名前は `classes` に名前のリストか番号から名前の辞書で渡す). 小数の配列は確率の取り違えとして誤り (argmax で番号にする). 画像と音の nan と無限大, 整数の音 (型の最大値で割って小数にする) は誤り. 学習の途中では `on_epoch_end` の中で `epoch=self.epoch` を渡し (`samples/<名前>/epoch_0005.png` に置く), 学習の後はエポックを省く (`samples/<名前>/final.png`). 同じエポックと名前で書き直すと置き換える. `split` と `caption` (どちらも文字) も添えられる. 値の決まり (点群の座標の単位, 正規化で引いた中心など) は, `caption` の文でなく `convention` (JSON にできる辞書) に書く (画面が元の座標に戻せるように).
+見本は `save_sample(experiment, 名前, 値, epoch=...)` で書く. 文字は文 (`.txt`), `pathlib.Path` はファイルをそのまま写す (種類は拡張子から), 配列とテンソルは `kind` を渡す. `image` は (高さ, 幅), (高さ, 幅, チャンネル), (チャンネル, 高さ, 幅) で, 小数は 0 から 1, 整数は 0 から 255 の値 (PNG). `audio` は (サンプル数,) か (チャンネル, サンプル数) で -1 から 1 の値と `sample_rate` (16 bit の WAV. チャンネルは 8 まで. (サンプル数, チャンネル) の配列は `.T` で入れ替える). `point_cloud` は (点の数, 3) で nan の無い座標 (PLY). `mask` は (高さ, 幅) の領域の番号 (0 から 255 の整数か真偽値) で, 決まった色の表 (PASCAL VOC と同じ. 0 は黒) で色分けした PNG を書き, 番号ごとの名前と色の表を一覧の `classes` に残す (名前は `classes` に名前のリストか番号から名前の辞書で渡す). 小数の配列は確率の取り違えとして誤り (argmax で番号にする). 画像と音の nan と無限大, 整数の音 (型の最大値で割って小数にする) は誤り. 学習の途中では `on_epoch_end` の中で `epoch=self.epoch` を渡し (`samples/<名前>/epoch_0005.png` に置く), 学習の後はエポックを省く (`samples/<名前>/final.png`). 同じエポックと名前で書き直すと置き換える. `split` と `caption` (どちらも文字) も添えられる. 値の決まり (点群の座標の単位, 正規化で引いた中心など) は, `caption` の文でなく `convention` (JSON にできる辞書) に書く (画面が元の座標に戻せるように). 同じプロセスのスレッドからは同時に書けるが, 複数のプロセス (DDP のランクなど) から書く場合はランク 0 だけが書く. 前からプロジェクトが `samples/` の直下に置いていた番号付きの画像 (`samples/epoch_010.png`) はそのまま使え, `load_samples` も見本として返す (`legacy: true`).
 
 ```python
 save_sample(experiment, "seg", pred_mask, kind="mask",
             classes=["背景", "物", "縁"], caption="予測")
 save_sample(experiment, "cloud", points, kind="point_cloud",
             convention={"units": "m", "shift": [0.1, 0.0, 0.5], "scale": 1.0})
-``` 同じプロセスのスレッドからは同時に書けるが, 複数のプロセス (DDP のランクなど) から書く場合はランク 0 だけが書く. 前からプロジェクトが `samples/` の直下に置いていた番号付きの画像 (`samples/epoch_010.png`) はそのまま使え, `load_samples` も見本として返す (`legacy: true`).
+```
 
 読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
 

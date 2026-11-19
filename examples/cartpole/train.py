@@ -112,12 +112,14 @@ policy_dir = export_policy(
     train_env.action_space, guards,
     metadata={
         "env_id": cfg.env.id, "algorithm": "REINFORCE",
-        "model": {"class": "train.PolicyNet", "args": model_args}
+        "model": {
+            "class": f"{PolicyNet.__module__}.PolicyNet", "args": model_args
+        }
     }
 )
 
 # 書き出した一式を metadata の引数で組み立て直したモデルに読み直し,
-# 守り付きで動かした結果を守る指標の表に
+# 守り付きで動かした結果を守る指標の表に保存
 policy = load_policy(policy_dir, PolicyNet(**model_args))
 observation, _ = valid_env.reset(seed=cfg.env.valid_seed)
 first_action = policy.act(observation)

@@ -619,7 +619,7 @@ def mask_color(class_id: int) -> tuple[int, int, int]:
     color: tuple[int, int, int]
         赤, 緑, 青 (0 から 255). 番号 0 は黒
     """
-    # 番号の下位のビットから 3 つずつ取り, 色の上位のビットに順に置く
+    # 番号の下位のビットから 3 つずつ取り, 色の上位のビットに順に配置
     red = 0
     green = 0
     blue = 0
@@ -666,8 +666,10 @@ def mask_array(value: Any) -> np.ndarray:
             "領域の見本は整数か真偽値の配列にしてください (確率なら argmax で"
             f"番号にします): {array.dtype}"
         )
+    if array.size == 0:
+        raise ValueError(f"領域の見本が空です: {array.shape}")
     mask = array.astype(np.int64)
-    if mask.size and (mask.min() < 0 or mask.max() >= MASK_IDS):
+    if (mask.min() < 0 or mask.max() >= MASK_IDS):
         raise ValueError(
             f"領域の番号は 0 から {MASK_IDS - 1} にしてください: "
             f"{int(mask.min())} から {int(mask.max())}"
@@ -1026,7 +1028,7 @@ def save_sample(
     else:
         suffix = SUFFIX_BY_KIND.get(decided, "")
 
-    # 領域の番号は色分けした画像にし, 番号の表を一覧に残す
+    # 領域の番号は色分けした画像に, 番号の表は一覧に記録
     table = None
     content = value
     written = decided
@@ -1170,5 +1172,11 @@ def load_samples(run_dir: Union[str, os.PathLike]) -> list[dict]:
     except (OSError, ValueError):
         samples = []
     samples = samples + legacy_samples(root)
+
+    # classes と convention を足す前の項目には null を補完
+    for item in samples:
+        if isinstance(item, dict):
+            item.setdefault("classes", None)
+            item.setdefault("convention", None)
 
     return samples

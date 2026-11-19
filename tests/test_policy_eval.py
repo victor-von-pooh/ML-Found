@@ -95,6 +95,26 @@ class BrokenPolicy:
         return result
 
 
+class NoActionPolicy:
+    def act(self, observation: Any) -> dict:
+        """
+        status が ok で行動の無い結果を返す関数
+
+        Parameters
+        ----------
+        observation: Any
+            観測
+
+        Returns
+        ----------
+        result: dict
+            行動が None の辞書
+        """
+        result = {"action": None, "status": "ok", "reasons": []}
+
+        return result
+
+
 def guarded_policy(tmp_path: Path, high: float, fallback: str) -> Any:
     """
     観測の上限で止める守りを付けた方策を書き出して読み直す関数
@@ -246,7 +266,8 @@ def test_evaluate_policy_argument_checks(tmp_path: Path) -> None:
     policy = guarded_policy(tmp_path, 2.5, "handover")
     for kwargs in (
         {"episodes": 0}, {"episodes": True}, {"episodes": 1, "seed": 1.5},
-        {"episodes": 1, "seed": True}, {"episodes": 1, "max_steps": 0}
+        {"episodes": 1, "seed": True}, {"episodes": 1, "seed": -1},
+        {"episodes": 1, "max_steps": 0}
     ):
         with pytest.raises(ValueError):
             evaluate_policy(policy, ToyEnv(), **kwargs)
@@ -254,6 +275,10 @@ def test_evaluate_policy_argument_checks(tmp_path: Path) -> None:
     # status の無い結果を返す方策は誤り
     with pytest.raises(ValueError, match="status"):
         evaluate_policy(BrokenPolicy(), ToyEnv(), episodes=1)
+
+    # ok なのに行動を返さない方策も誤り (stop と取り違えない)
+    with pytest.raises(ValueError, match="行動を返しません"):
+        evaluate_policy(NoActionPolicy(), ToyEnv(), episodes=1)
 
 
 def test_evaluate_policy_env_id(tmp_path: Path) -> None:
@@ -284,10 +309,16 @@ def test_evaluate_policy_env_id(tmp_path: Path) -> None:
     )
     policy = load_policy(directory, nn.Linear(4, 2))
     rows = evaluate_policy(policy, "CartPole-v1", episodes=2, seed=0)
-    assert len(rows) == 2
+    assert [row["seed"] for row in rows] == [0, 1]
+
+    # 狭い範囲なので台車が外れて handover で終え, 報酬は歩数と同じ
     for row in rows:
-        assert row["end"] in ("terminated", "truncated", "handover")
-        assert row["length"] == row["ok"] + row["clipped"] + row["fallback"]
+        assert row["end"] == "handover" and row["handover"] == 1
+        assert row["reward"] == float(row["length"]) == float(row["ok"])
+
+    # 同じ種では同じ結果
+    again = evaluate_policy(policy, "CartPole-v1", episodes=2, seed=0)
+    assert again == rows
 
 
 def test_evaluate_policy_env_id_without_gymnasium(

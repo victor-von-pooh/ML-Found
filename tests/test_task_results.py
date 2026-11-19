@@ -1170,6 +1170,7 @@ def test_save_sample_mask(tmp_path: Path) -> None:
         (np.array([[0, 256]]), {}, "0 から 255"),
         (np.array([[-1, 0]]), {}, "0 から 255"),
         (np.zeros((2, 2, 3), dtype=int), {}, "高さ, 幅"),
+        (np.zeros((0, 3), dtype=int), {}, "空"),
         (np.zeros((2, 2), dtype=int), {"classes": "abc"}, "classes"),
         (np.zeros((2, 2), dtype=int), {"classes": {300: "x"}}, "classes"),
         (np.zeros((2, 2), dtype=int), {"classes": [1]}, "名前"),
@@ -1240,3 +1241,35 @@ def test_save_sample_convention(tmp_path: Path) -> None:
                 **kwargs
             )
     assert len(load_samples(experiment.run_dir)) == 1
+
+
+def test_load_samples_fills_new_fields(tmp_path: Path) -> None:
+    """
+    classes と convention を足す前の一覧の項目にも null を補うことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 前の ML-Found が書いた形の一覧
+    experiment = make_experiment(tmp_path)
+    root = experiment.run_dir / "samples"
+    (root / "note").mkdir(parents=True)
+    (root / "note" / "final.txt").write_text("x", encoding="utf-8")
+    old = {
+        "epoch": None, "name": "note", "kind": "text",
+        "file": "note/final.txt", "split": None, "caption": None,
+        "created_at": "2026-11-19T00:00:00+09:00"
+    }
+    (root / "index.json").write_text(
+        json.dumps({"samples": [old]}), encoding="utf-8"
+    )
+    entry = load_samples(experiment.run_dir)[0]
+    assert entry["classes"] is None and entry["convention"] is None
+    assert entry["name"] == "note"

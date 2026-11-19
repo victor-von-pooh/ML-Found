@@ -34,9 +34,9 @@ def check_episodes(episodes: Any) -> None:
         )
 
 
-def check_seed(seed: Any, where: str) -> None:
+def check_optional_int(seed: Any, where: str) -> None:
     """
-    乱数の種と歩数の上限が整数か None であることを確かめる関数
+    乱数の種と歩数の上限が 0 以上の整数か None であることを確かめる関数
 
     Parameters
     ----------
@@ -51,8 +51,13 @@ def check_seed(seed: Any, where: str) -> None:
     """
     if seed is None:
         return
-    if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)):
-        raise ValueError(f"{where} は整数か None にしてください: {seed!r}")
+    if (
+        isinstance(seed, bool) or not isinstance(seed, (int, np.integer))
+        or seed < 0
+    ):
+        raise ValueError(
+            f"{where} は 0 以上の整数か None にしてください: {seed!r}"
+        )
 
 
 def run_guarded_episode(
@@ -85,8 +90,8 @@ def run_guarded_episode(
     length = 0
     end = None
 
-    # 1 歩ごとに守りを当てた行動を決める. stop と handover は行動を返さない
-    # ので, そこでエピソードを終える (止めたか元の制御に戻した扱い)
+    # 1 歩ごとの守りを当てた行動の決定. stop と handover は行動を返さない
+    # ので, そこでエピソードを終了 (止めたか元の制御に戻した扱い)
     while end is None:
         result = policy.act(observation)
         status = result.get("status") if isinstance(result, dict) else None
@@ -97,13 +102,18 @@ def run_guarded_episode(
                 f"{result!r}"
             )
         counts[status] += 1
-        if status in STOP_STATUSES or result.get("action") is None:
-            end = status if status in STOP_STATUSES else "stop"
+        if status in STOP_STATUSES:
+            end = status
             continue
+        if result.get("action") is None:
+            raise ValueError(
+                f"方策の act が status {status} で行動を返しませんでした: "
+                f"{result!r}"
+            )
         observation, reward, terminated, truncated, _ = env.step(
             result["action"]
         )
-        total += float(reward)
+        total += float(np.asarray(reward, dtype=np.float64).item())
         length += 1
         if terminated:
             end = "terminated"
@@ -154,15 +164,15 @@ def evaluate_policy(
     """
     # 何も動かす前に, 回数と種の確認
     check_episodes(episodes)
-    check_seed(seed, "seed")
-    check_seed(max_steps, "max_steps")
+    check_optional_int(seed, "seed")
+    check_optional_int(max_steps, "max_steps")
     if max_steps is not None and max_steps < 1:
         raise ValueError(
             f"max_steps は 1 以上の整数か None にしてください: {max_steps!r}"
         )
 
-    # 名前なら環境を作り (Gymnasium が無ければ入れ方を示して止まる),
-    # 終えたら閉じる. 渡された環境は閉じない
+    # 名前なら環境を作り (Gymnasium が無ければ入れ方を示して停止),
+    # 終えたら閉じる処理 (渡された環境はそのまま)
     owned = isinstance(env_or_id, str)
     env = make_env(env_or_id) if owned else env_or_id
     rows = []

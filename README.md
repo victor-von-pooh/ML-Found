@@ -75,6 +75,18 @@ entries = describe_requirements()  # 全ての機能の一覧 (JSON にできる
 - 確かめ方は import せずにモジュールを探す (`importlib.util.find_spec`) ので, 一覧を作るだけで重いライブラリを読み込まない. ただし版は確かめない (古い版は使うときのエラーになる) のと, `a.b` のような名前では親のパッケージ `a` を import する
 - プロジェクトの機能は `register_requirement(name, description, checks, install, match, note)` で加えられる (`ml_found.utils`. ML-Found の機能の名前は上書きできない)
 
+学習に要る機能は, config の一番上の `requires` に機能の名前のリストで書ける (例: `requires: [rl]`). `start_experiment` は出力先を作る前に, 書いた順に `require` で確かめ, 足りなければ入れ方を示す `MissingRequirementError` で止まる. 画面 (ML-Dashboard) は同じ項目を読み, 足りないまま学習を起動しないので, 画面から始めても端末から始めても同じ決まりで止まる.
+
+```yaml
+# configs/default/train.yaml
+requires: [rl]
+```
+
+- 値は文字のリスト (1 つだけでもリスト). 1 つの文字だけ, 同じ名前が 2 回, 登録簿に無い名前はエラーになる (登録簿の名前を添える). 書かないか `null` の場合は何も確かめない. 値の参照 (`${...}`) は解決して読む
+- default に書くとそのプロジェクトの全ての学習に効く. experiment の config は default に無い項目を書けないので, 学習ごとに変える場合は default に `requires: []` などを書き, experiment で置き換える (リストは置き換わり, 足し合わない. 例: default の `requires: [rl]` を experiment の `requires: []` で外す)
+- プロジェクトの機能 (`register_requirement`) の名前も書ける. ただし `start_experiment` の前に登録する. 画面は自分のプロセスで登録されない名前を注意にするだけで止めないので, 足りなければ `start_experiment` が止める
+- 書いた名前だけを確かめるので, 書き忘れは見つけられない (そのときは学習のスクリプトの `require` や `make_env` が止める)
+
 ## 使い方
 
 ### プロジェクトの構成
@@ -604,8 +616,9 @@ history = trainer.fit(train_loader, valid_loader)
 - **エポック**: `RolloutLoader` は今の方策でエピソードを集め, `batch_episodes` ごとに 1 つのバッチを返す (バッチごとに 1 回更新するので, 次のバッチは更新した方策で集める). エポックの長さは `episodes` (エピソードの数) か `steps` (歩数. 達したエピソードの終わりまで) のどちらかで決める. 環境の乱数の種は最初の `reset` だけに渡し, 後は環境の乱数を続けて使う. `max_episode_steps` で 1 エピソードの歩数を切れる. 環境の打ち切り (TimeLimit など) と `max_episode_steps` で切ったエピソードも, 終わったもの (最後の歩の後の報酬を 0) として報酬の和を求める (モンテカルロの REINFORCE. 打ち切りの後の価値を足すのは, 価値の関数を持つ方法で行う)
 - **探索**: `Exploration(temperature, epsilon)` で, 方策の分布を温度で平らにし, `epsilon` の割合で一様に選ぶ. 実際に選んだ確率を記録し, `ReinforceStep` は方策の確率との比 (1 で打ち切る) で重みを補正する. 比の方策の確率は, 行動を選んだときと同じ推論モードで求める (Dropout があっても, 既定の温度 1, `epsilon` 0 では更新の前の比は 1. 損失の勾配は学習モードで求める). 途中で変える場合は `add_callback` の関数で `train_loader.exploration` を差し替える
 - **評価**: `EvaluationLoader` は学習とは別の環境で, 毎回 `seed`, `seed + 1`, ... の種で始めたエピソードを, 最もスコアの高い行動で動かす (エポックの間で比べられる). 全てのエピソードを 1 つのバッチにする
-- **指標**: エピソードごとの報酬の和 (`reward`), 歩数 (`length`), 安全の違反の数 (`violations`. 環境が `info` の `safety_key` (既定 `cost`) に 0 より大きい値を入れた歩の数) を, エピソードの数で重み付けして平均する. `success_key` (`is_success` など) を指定すると, 最後の歩の値から成功の割合 (`success`) も記録する. 学習では方策の損失 (`loss`) とエントロピー (`entropy`) も記録する
-- **損失**: `ReinforceStep` は, バッチの平均を基準 (baseline) にした REINFORCE. 学習の `loss` は方策の勾配の損失, 検証の `loss` は評価の報酬の和の平均の符号を反転した値 (意味が違うので, 監視する指標は `trainer.monitor: valid/reward` と `trainer.mode: max` にする)
+- **指標**: エピソードごとの報酬の和 (`reward`), 歩数 (`length`), 安全の違反の数 (`violations`. 環境が `info` の `safety_key` (既定 `cost`) に 0 より大きい値を入れた歩の数) を, エピソードの数で重み付けして平均する. `success_key` (`is_success` など) を指定すると, 最後の歩の値から成功の割合 (`success`) も記録する. 学習と検証では方策の損失 (`loss`) とエントロピー (`entropy`) も記録する
+- **損失**: `ReinforceStep` は, バッチの平均を基準 (baseline) にした REINFORCE. 学習の `loss` は方策の勾配の損失, 検証の `loss` は評価の報酬の和の平均の符号を反転した値 (意味が違うので, 監視する指標は `trainer.monitor: valid/reward` と `trainer.mode: max` にする). 検証では, 評価で通った観測ごとの方策のエントロピーの平均 (`valid/entropy`) も記録する
+- **報酬が上限で並ぶ場合**: CartPole のように報酬の和に上限がある環境では, 評価の報酬が上限に達すると後のエポックは同じ値になり, ベストモデルは最初に達したエポックのままになる. `valid/loss` と `valid/length` は `valid/reward` と一緒に動くので, `trainer.monitor_tiebreak` に指定しても比べられない. 報酬と別に動く指標を指定する. 推奨は `trainer.monitor_tiebreak: train/reward` と `trainer.monitor_tiebreak_mode: max` (探索を含む学習のエピソードでも高い報酬を取る方策を選ぶ. 学習の環境の乱数で揺れる). 迷いの少ない方策を選ぶなら `valid/entropy` と `min`. 安全の違反が起きる環境では `valid/violations` と `min` も使える (違反が 0 で並ぶ場合は比べられない)
 - 行動を番号で選ぶ環境 (Discrete. 番号は 0 から) だけに対応する. 連続の行動 (Box) の学習と, 価値の関数を使う方法 (Actor-Critic など) は, 自分で loader (経験の集め方) と step を書けば今の仕組みで動かせる (名前付きの複数の Optimizer も使える)
 - 行動を選ぶときは, モデルを一時的に推論モードにする (1 件の観測の BatchNorm と, Dropout で確率がずれるのを避けるため)
 - `RolloutLoader` は学習だけに使う. `trainer.eval_train: true` では, 評価し直しで学習の環境の乱数が進んで結果が変わるので, エラーにする (評価は `EvaluationLoader`)
@@ -687,6 +700,7 @@ ML-Found が使う項目と既定値.
 
 | 項目 | 既定値 | 説明 |
 | --- | --- | --- |
+| `requires` | (無し) | 学習に要る機能の名前のリスト (「追加の依存」). `start_experiment` が出力先を作る前に確かめる. experiment で変える場合は default にも書く |
 | `experiment.name` | `experiment` | 実験の名前, 出力先のディレクトリ名になる |
 | `experiment.output_dir` | `outputs` | 出力先, 相対パスの場合はプロジェクトのディレクトリから辿る |
 | `experiment.seed` | `42` | 乱数シード |

@@ -377,6 +377,8 @@ trainer:
 - 検証するエポック (判定するエポック) だけ, 検証, `eval_train` の評価し直し, 監視する指標の確認 (無いか nan や inf ならエラー), ベストモデルの判定, Early Stopping, ReduceLROnPlateau を行う. ベストモデルは判定したエポックの中から選ぶ. 検証用のデータを渡さない場合 (`train/loss` を監視する場合) も同じエポックだけ判定する
 - Early Stopping の `patience` と ReduceLROnPlateau の `patience` は, エポック数ではなく判定の回数で数える. 間隔が 5 で `patience: 3` なら, 15 エポック改善しなければ止まる
 - 判定しないエポックは, 学習の指標 (`train/`), 学習率, `extra` だけを記録する. `history.csv` の `valid/` と `train_eval/` の列は空になり, `History.get` では `None` になる. 学習曲線では記録のあるエポックだけを点で描く
+- `step` が `extra` で返した値は, 判定するエポックでは検証の値, 判定しないエポックでは学習の値が残る. 学習と検証の両方で返す値は `history.csv` で学習と検証の値が入れ替わって並ぶので, どちらか一方のフェーズだけで返すか, フェーズごとに別の名前にする
+- `extra` の名前が指標と同じ場合のエラーも, その指標が検証だけのもの (`valid/` だけにある名前) なら, 最初に判定するエポックまで出ない
 - ReduceLROnPlateau 以外の Scheduler (`scheduler.interval: epoch` の StepLR など) は, 判定しないエポックも毎エポック進める
 - 重い評価は `on_epoch_end` を継承して `phase == "valid"` のときに書く. `on_epoch_start` と `on_epoch_end` はフェーズごとに呼ばれるので, 検証しないエポックでは `valid` で呼ばれず, 重い評価も行われない. 評価の間は `progress.json` の段階が `epoch_end` になり, 画面に評価中と出る
 - 判定しないエポックで `STOP` や `add_callback` の関数で止めた場合は, 検証せずに止める. ベストモデルは最後に判定したエポックのまま (1 回も判定しないうちに止めた場合はベストモデルが無く, `final_model.pt` は最後のエポックの重み). 止めたエポックの `last.pt` は保存する

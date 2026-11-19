@@ -12,7 +12,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 - **`run.json` の版**: 実験のディレクトリ全体の版を兼ねる. 版を持たないファイル (`history.csv`, `diff.yaml`, `progress.json`, `model_summary.csv` など) の形を変える場合は, `run.json` の版を上げる
 - **`source.yaml` の版**: `source.yaml` の形だけの版
 - **`task.yaml` の版**: `task.yaml` の形だけの版 (後の段階 (推論など) が実験のディレクトリの他のファイルと別に読むため). `evaluations/` と `samples/` は版を持たず, `run.json` の版に従う. 新しい版の読み方は, 下の「読む側」と違う (「task.yaml」の節)
-- **版を変えない変更**: ファイル, 項目, 列を足す. 読む側は, 知らないファイル, 項目, 列を無視する
+- **版を変えない変更**: ファイル, 項目, 列を足す. 選択肢の値 (`task.yaml` の `output` や `target.origin.type`, 見本の `kind` など) を足す. 読む側は, 知らないファイル, 項目, 列を無視し, 知らない選択肢の値は分からないもの (`unknown` や `file` の扱い) として読む (言い切りの元にしない)
 - **版を上げる変更**: ファイル, 項目, 列を消す. 名前, 意味, 値の型を変える
 - **読む側**: 知っている版より新しいファイルは, 読める項目だけを使い, 新しい版の ML-Found の出力であることを利用者に知らせる (読むのを止めない)
 - 版を書く前の ML-Found が作った `source.yaml` には `format_version` が無い. 中身は版 1 と同じ形なので, 版 1 として読む
@@ -164,9 +164,9 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | --- | --- | --- |
 | `format_version` | 整数 | 形式の版 (1) |
 | `role` | 文字か null | 受け持ち. `predict` (予測する), `generate` (作る), `rank` (並べる), `group` (まとめる), `effect` (効果を見積もる) |
-| `output` | 文字か null | 出力の形. `class`, `value`, `distribution`, `region`, `shape`, `text`, `image`, `table`, `ranking`, `cluster`, `effect` (ML-Quest の出力の形) |
+| `output` | 文字か null | 出力の形. `class`, `value`, `distribution`, `region`, `shape`, `text`, `image`, `table`, `ranking`, `cluster`, `effect` (ML-Quest の出力の形), `action` (続けて選ぶ行動. 強化学習の方策. 2026-11-20 に足した) |
 | `what` | 文字か null | 出力の意味 (何を出すか. 人が読む文) |
-| `target` | 辞書 | 正解. `kind` (正解の種類. `mask`, `point_cloud`, `column` など. 文字か null), `origin` (正解の出どころ. 下) |
+| `target` | 辞書 | 正解. `kind` (正解の種類. `mask`, `point_cloud`, `column` など. 方策は `reward` (環境の報酬) を推奨. 文字か null), `origin` (正解の出どころ. 下) |
 | `method` | 文字か null | 作り方. `rule` (規則), `pretrained` (既製のモデルをそのまま), `head` (既製の特徴の上に頭だけ学習), `partial` (一部を微調整), `finetune` (全体を微調整), `scratch` (一から学習) |
 | `base` | 辞書 | 元にしたもの. `experiment` (元にした実験のディレクトリ), `weights` (元にした重みの名前か場所. Hugging Face のモデルの名前など, 書いた文字のまま). どちらも文字か null. `scratch` では両方 null |
 | `dataset` | 辞書 | 学習に使ったデータセット. `path` (ML-EDA が書き出したディレクトリ), `name`, `format_version` (その `dataset.yaml` の版). どれも null がありうる |
@@ -175,12 +175,13 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 
 | 欄 | 型 | 中身 |
 | --- | --- | --- |
-| `type` | 文字 | `process` (今ある処理の出力), `annotation` (人が付けた), `measurement` (測った), `synthetic` (作った正確な正解), `unknown` (分からない. 既定) |
+| `type` | 文字 | `process` (今ある処理の出力), `annotation` (人が付けた), `measurement` (測った), `synthetic` (作った正確な正解), `environment` (環境の報酬. シミュレータなど. 2026-11-20 に足した. ML-EDA の `dataset.yaml` には無い値), `unknown` (分からない. 既定) |
 | `name` | 文字か null | 正解を作った処理 (か道具) の名前 |
 | `settings` | 任意か null | その処理の設定 |
 
 - パス (`base.experiment`, `dataset.path`) は, `source.yaml` と同じく, プロジェクトの中ならプロジェクトからの相対パス (区切りは `/`), 外なら絶対パス
-- 読む側は, `target.origin.type` が `process` なら「指標はその処理との一致を測り, その処理を超えられない」, `annotation` なら「付けた人との一致」と指標の横に書く (ML-Found の `describe_origin` が文を返す)
+- 読む側は, `target.origin.type` が `process` なら「指標はその処理との一致を測り, その処理を超えられない」, `annotation` なら「付けた人との一致」, `environment` なら「環境の報酬で測る. 実機での結果は別に確かめる」と指標の横に書く (ML-Found の `describe_origin` が文を返す). 知らない値は `unknown` として説明する (値を足す前の ML-Found も同じ)
+- **方策の実験の例**: `role: effect`, `output: action`, `target.kind: reward`, `target.origin.type: environment`, `target.origin.name` に環境の名前 (`CartPole-v1` など), `method: scratch`. 方策は問題の設定 (ML-Quest) では効果を見積もるの扱い (2.1) なので `role` は `effect`
 - **`format_version` は 1 以上の整数**. 文字 (`'2'`), 小数 (`2.0`), 真偽値, 無い場合は誤りとして止まる (版 1 として読み違えないため)
 - **新しい版の読み方 (`task.yaml` だけの決まり)**: 知っている版より新しい `task.yaml` は, 他の項目は読める項目だけを使うが, `target.origin` は分からないもの (`unknown`) として扱い, 新しい版であることを画面で知らせる (`load_task` は `target.origin` を `unknown` に置き換え, 返す辞書に `newer_version: true` を足す. `describe_origin` に版を渡すと言い切らない文を返す). `task.yaml` は「この処理を超えられない」のような言い切りの元なので, 意味の変わったかもしれない欄から言い切ると誤った説明になる (他のファイルは表示が欠けるだけで, 誤りは言わない)
 - 書くのは `start_experiment` (config の `task` がある場合) と `write_task`. 後から書いた方で置き換える
@@ -206,6 +207,8 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 
 - 同じ名前で書き直すと置き換える
 - 読む側は `evaluations/*.json` を全て読む (一時ファイル `.<名前>.json.*.tmp` は無視する)
+- **比べる相手との表の形 (推奨)**: 1 行を 1 つのグループ (全体なら 1 行) にし, 指標ごとに `<指標>` (この実験), `<指標>_baseline` (比べる相手), `<指標>_diff` (この実験 − 比べる相手) の 3 列を並べ, `baseline` に相手の名前を書く. 差の符号は値の差のままで, 良し悪しの向きは指標の名前から読む側が決める (小さいほど良い指標では負が良い). 画面は `_diff` の列を差として色分けできる
+- **別の形 (許す)**: 1 行を (グループ, 答えた側) の組にし, 答えた側の列 `answer` に `model` か比べる相手の名前を書く (差の列は持たない). 相手が 2 つ以上ある場合や, 相手ごとに指標の列が違う場合に使う. このときも `baseline` に相手の名前 (複数なら `, ` でつなぐ) を書く
 
 ### samples
 
@@ -233,13 +236,18 @@ samples/
 | --- | --- | --- |
 | `epoch` | 整数か null | エポック (学習の後は null) |
 | `name` | 文字 | 見本の名前 (同じエポックの中で 1 つ. 評価の名前と同じ決まり) |
-| `kind` | 文字 | `image` (PNG など), `text` (UTF-8 の文), `audio` (WAV など), `point_cloud` (PLY), `file` (その他) |
+| `kind` | 文字 | `image` (PNG など), `text` (UTF-8 の文), `audio` (WAV など), `point_cloud` (PLY), `mask` (領域の番号を色分けした PNG. 2026-11-20 に足した), `file` (その他). 読む側は知らない種類を `file` として扱う |
 | `file` | 文字 | `samples/` からの相対パス (区切りは `/`) |
 | `split` | 文字か null | 見本の入力の分割 |
 | `caption` | 文字か null | 添える説明 |
+| `classes` | リストか null | `mask` の番号の表 (下). 他の種類は null |
+| `convention` | 辞書か null | 値の決まり (点群の座標の単位や正規化のずらしなど. 下). 無ければ null |
 | `created_at` | 文字 | 書いた時刻 (タイムゾーン付きの ISO 8601) |
 
-- ML-Found が配列から書く形: 画像は PNG (8 bit), 音は WAV (16 bit の PCM), 点群は PLY (ascii. 頂点の `x`, `y`, `z` だけ). ファイルを渡すと形を変えずに写す
+- `classes` と `convention` は 2026-11-20 に足した (版 1 のまま). 足す前の ML-Found が書いた項目には無いので, 読む側は無い場合を null と読む
+- **`mask` の番号の表** (`classes`): 並びの 1 つが 1 つの番号で, `id` (0 から 255 の整数), `name` (名前. 文字か null), `color` (PNG での色. `#rrggbb`). 書いた番号の全て (名前を渡した番号と, 配列に現れた番号) を番号の順に並べる. 色は決まった色の表 (PASCAL VOC と同じ, 番号のビットから作る 256 色. 0 は黒) から番号で選ぶので, 実験が違っても同じ番号は同じ色. 画面は PNG をそのまま出し, この表から凡例を作る
+- **値の決まり** (`convention`): 書いた側の補足で, 形は決めない (JSON の辞書). 点群では `units` (座標の単位. `m`, `mm` など), `shift` (正規化で引いた中心の座標. 元の座標は `値 × scale + shift`), `scale` (正規化で割った大きさ), `axes` (軸の向き. `y_up` など) を推奨する
+- ML-Found が配列から書く形: 画像は PNG (8 bit), 領域の番号は色分けした PNG (8 bit の RGB), 音は WAV (16 bit の PCM), 点群は PLY (ascii. 頂点の `x`, `y`, `z` だけ). ファイルを渡すと形を変えずに写す
 - 同じエポックと名前で書き直すと, ファイルと一覧の項目を置き換える
 - 一覧に無いファイル (書きかけの一時ファイル `.<名前>.*.tmp` など) は無視する. ただし直下の番号付きの画像は上の「前からの形」として読む
 - 一覧の書き換えは同じプロセスの中では 1 つずつ行う. 複数のプロセス (DDP のランクなど) から同じ実験に書くと一覧の項目が落ちるので, 1 つのプロセス (ランク 0) だけが書く
@@ -278,7 +286,7 @@ policy/
 | `weights_sha256` | 文字 | 重みのファイルの sha256 (16 進の小文字 64 文字). 読む側は確かめ, 違えば読まない |
 | `model_class` | 文字 | 書き出したモデルのクラスの名前 (`モジュール.クラス`. 読む側は同じ組み立てのモデルを用意する. コードは自動では読まない) |
 | `created_at` | 文字 | 書き出した時刻 (タイムゾーン付きの ISO 8601) |
-| `metadata` | 辞書 | 書き出した側の補足 (環境の名前, 学習の方法など). 形は決めない |
+| `metadata` | 辞書 | 書き出した側の補足 (環境の名前, 学習の方法など). 形は決めない. 推奨の形は下の「metadata の推奨の形」 |
 
 ### 空間
 
@@ -304,3 +312,14 @@ policy/
 2. モデルがエラーになるか, 出力に有限でない値があるか, 大きさが違えば, 外れたときの動き
 3. 行動の範囲を当てる (`box` は clip, `discrete` は選んでよい行動). 変えた場合は `clipped`
 4. `box` の行動は float32 にする. 丸めで範囲の外に出た要素は内側の隣の float32 に寄せ, 無限大になるか範囲に float32 が無い場合は外れたときの動き. 決めた行動 (`fallback` の `action`) も同じく寄せる
+
+### metadata の推奨の形
+
+`model_class` は読み込んだモジュールの名前 (スクリプトの隣の `model.py` なら `model.PolicyNet`) なので, それだけではモデルを組み立て直せない. 読む側 (推論の段階, 画面) が同じ組み立てのモデルを用意できるように, `metadata` に次の項目を書くのを推奨する. どれも任意で, 読む側は無い項目を分からないものとして扱う (方策の一式の版は変えない).
+
+- `env_id`: 環境の名前 (`CartPole-v1` など)
+- `algorithm`: 学習の方法 (`REINFORCE` など)
+- `experiment`: 書き出した実験のディレクトリ (分かれば)
+- `model`: 組み立て方の辞書. 次のどちらか (両方でもよい)
+    - `class` と `args`: クラスの名前 (`モジュール.クラス`) と, コンストラクタに名前で渡す引数の辞書 (`{"obs_dim": 4, "hidden_dim": 64, "n_actions": 2}` など). 読む側は同じクラスを用意し, `args` を渡して作る
+    - `spec`: モデルの定義 (ML-ModelControl の定義のファイル) の場所. 一式のディレクトリからの相対パス (区切りは `/`) で, 一式に写して置くのを推奨する (一式だけを渡しても組み立てられるように)

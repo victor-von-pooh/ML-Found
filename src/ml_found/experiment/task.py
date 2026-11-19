@@ -21,19 +21,25 @@ TASK_FORMAT_VERSION = 1
 # 読める ML-EDA の dataset.yaml の版 (正解の出どころを持つ版)
 DATASET_FORMAT_VERSION = 2
 
-# 受け持ち, 出力の形, 作り方の値 (ML-Quest の問題の設定の値を写したもの)
+# 受け持ち, 出力の形, 作り方の値 (ML-Quest の問題の設定の値を写したもの.
+# action は強化学習の方策の出力の形として足した値)
+# 値を足すのは版を変えない変更 (読む側は知らない値を分からないものとして読む)
 ROLES = ("predict", "generate", "rank", "group", "effect")
 OUTPUTS = (
     "class", "value", "distribution", "region", "shape", "text", "image",
-    "table", "ranking", "cluster", "effect"
+    "table", "ranking", "cluster", "effect", "action"
 )
 METHODS = ("rule", "pretrained", "head", "partial", "finetune", "scratch")
 
 # 元にした重みか実験があるはずの作り方
 BASED_METHODS = ("head", "partial", "finetune")
 
-# 正解の出どころの種類 (ML-EDA の dataset.yaml の版 2 の値を写したもの)
-ORIGIN_TYPES = ("process", "annotation", "measurement", "synthetic", "unknown")
+# 正解の出どころの種類 (ML-EDA の dataset.yaml の版 2 の値を写したもの.
+# environment は環境の報酬で測る方策のために足した値)
+ORIGIN_TYPES = (
+    "process", "annotation", "measurement", "synthetic", "environment",
+    "unknown"
+)
 
 # 書ける項目 (知らない項目は typo として誤り)
 TASK_KEYS = ("role", "output", "what", "target", "method", "base", "dataset")
@@ -56,6 +62,7 @@ ORIGIN_NOTES = {
     "synthetic": (
         "正解は作った正確な値 ({name}). 実際のデータでの性能は別に確かめる"
     ),
+    "environment": "環境の報酬で測る. 実機での結果は別に確かめる",
     "unknown": "正解の出どころは分からない. 指標が何との一致かを確かめる"
 }
 
@@ -321,7 +328,7 @@ def build_origin(origin: Any) -> dict:
         warnings.warn(
             "task.target.origin に type が無いので, 正解の出どころは unknown "
             "(分からない) として書きます. process, annotation, measurement, "
-            "synthetic のどれかなら type を書いてください",
+            "synthetic, environment のどれかなら type を書いてください",
             stacklevel=4
         )
     built = {

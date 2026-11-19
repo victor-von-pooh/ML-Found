@@ -7,7 +7,9 @@ from ml_found.experiment import (
     task_from_dataset, unregister_rng, write_task
 )
 from ml_found.training import History, Trainer
-from ml_found.utils.requirements import describe_requirements, require
+from ml_found.utils.requirements import (
+    MissingRequirementError, describe_requirements, require
+)
 
 # バージョンは pyproject.toml の値を使用
 try:
@@ -16,9 +18,9 @@ except metadata.PackageNotFoundError:
     __version__ = "不明"
 
 __all__ = [
-    "Experiment", "History", "Trainer", "describe_origin",
-    "describe_requirements", "load_config", "load_evaluations",
-    "load_project_config", "load_samples", "load_task", "register_rng",
-    "require", "save_evaluation", "save_sample", "start_experiment",
-    "task_from_dataset", "unregister_rng", "write_task"
+    "Experiment", "History", "MissingRequirementError", "Trainer",
+    "describe_origin", "describe_requirements", "load_config",
+    "load_evaluations", "load_project_config", "load_samples", "load_task",
+    "register_rng", "require", "save_evaluation", "save_sample",
+    "start_experiment", "task_from_dataset", "unregister_rng", "write_task"
 ]

@@ -62,6 +62,7 @@ Python のコードからは, `Trainer.add_callback` で登録した関数がエ
 - 実験のディレクトリに任意のファイルを約束として足す (済み. docs/FORMAT.md. 版は上げない): `evaluations/` (データ全体の評価. グループごとの表, 曲線, 比べる相手との差, 守る指標. `save_evaluation`), `samples/` (画像, 文, 音, 点群の見本. `save_sample`), `task.yaml` (受け持ち, 出力の意味, 正解の出どころ, 作り方と元にした実験や重み. config の `task` か `write_task`. ML-EDA の `dataset.yaml` の版 2 から埋める `task_from_dataset`. 後の推論の段階が読む). 表示は ML-Dashboard で (指標の横に正解の出どころの説明 `describe_origin`, 評価の表と曲線, 見本)
 - 大きな学習済みのモデルの微調整: 勾配の蓄積, 混合精度 (bf16 から. mps での効果は未確認), 学習するパラメータだけの保存, 重みの一部の読み込みの補助
 - 強化学習は, 2026-11-19 の相談の答えで「方策を作り, 確かめ, 守りと一緒に書き出すところまで」に広げた (下の 10)
+- 見本と評価の補い (2026-11-20, 利用者のテストを受けて): 領域の番号の見本 `kind: mask` (決まった色の表で色分けした PNG と, 一覧の番号の表 `classes`), 見本の値の決まり `convention` (点群の単位, 正規化のずらしなど), 比べる相手との表の推奨の形 (`<指標>`, `<指標>_baseline`, `<指標>_diff` の列). 版は上げない. 画面 (ML-Dashboard) で凡例と元の座標を出すのは残り
 - 型ごとの指標の計算 (NDCG, Qini, Chamfer, FID) は, 当面はプロジェクトに書き, 2 つ以上の段階で同じ計算が要るものが増えたら共有の場所へ
 
 ### 9. 追加の依存の一覧と案内 (最初の分は対応済み. 2026-11-19 の相談の答え)
@@ -74,4 +75,5 @@ Python のコードからは, `Trainer.add_callback` で登録した関数がエ
 
 自律して行動する方策を作り, 確かめ, 守りと一緒に書き出すところまでを扱う. 実機での実行は道具の外. 環境とのやり取りを loader にして `Trainer` の step とエポックの決まりに乗せ (`RolloutLoader`, `EvaluationLoader`), 経験の記録 (`ExperienceBuffer`), 探索の設定 (`Exploration`), 基準付きの REINFORCE (`ReinforceStep`), エピソードの報酬, 歩数, 安全の違反, 成功の割合の記録, 守り (行動の範囲, 止める条件, 外れたときの動き) と一緒の書き出し (`export_policy`, `policy/` の形は docs/FORMAT.md) と読み直し (`load_policy`, `apply_guards`) を入れた. 例は `examples/cartpole/`.
 
+- 利用者のテスト (方策の課題) を受けて足したもの (2026-11-20): 書き出した方策を守り付きで動かし, エピソードごとの報酬, 歩数, 終えた理由, 守りの結果ごとの数を返す `evaluate_policy` (`save_evaluation` にそのまま渡せる). `task.yaml` の出力の形 `action`, 正解の出どころ `environment` と方策の書き方の例 (選択肢の値を足すのは版を変えない変更). `policy.json` の `metadata` の推奨の形 (組み立ての引数か, モデルの定義の場所). `MissingRequirementError` を `ml_found` の直下からも読めるように
 - 残り: 連続の行動 (Box) の学習と価値の関数を使う方法 (Actor-Critic, PPO など) の補助, 記録した経験からの方策の見積もり (重点サンプリングなど), 環境の状態の再開, 評価の成功率を画面で見せること

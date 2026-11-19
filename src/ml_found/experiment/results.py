@@ -4,15 +4,16 @@ import os
 from pathlib import Path
 import re
 import shutil
-import tempfile
+import threading
 from typing import Any, Optional, Union
+import uuid
 import wave
 
 from matplotlib import image as mpimg
 import numpy as np
 import torch
 
-from ml_found.training.status import now_iso, write_json
+from ml_found.training.status import now_iso
 
 # データ全体の評価と見本を置くディレクトリの名前
 EVALUATIONS_DIR = "evaluations"
@@ -21,8 +22,17 @@ SAMPLES_DIR = "samples"
 # 見本の一覧のファイルの名前
 SAMPLES_INDEX = "index.json"
 
-# 学習の後の見本 (エポックを渡さない場合) を置くディレクトリの名前
-FINAL_DIR = "final"
+# 学習の後の見本 (エポックを渡さない場合) のファイルの名前 (拡張子の前)
+FINAL_STEM = "final"
+
+# ML-Found の形より前にプロジェクトが samples/ の直下に置いた画像
+# (samples/epoch_010.png のような番号付きの画像. ML-Dashboard の画像の推移と
+# 同じ見分け方)
+LEGACY_IMAGE = re.compile(r"^(.*?)(\d+)\.(png|jpe?g|gif|webp)$", re.IGNORECASE)
+LEGACY_NAME = "samples"
+
+# 見本の一覧の読み書きを 1 つずつにする鍵 (同じプロセスのスレッドの間)
+SAMPLES_LOCK = threading.Lock()
 
 # 評価と見本の名前に使える文字 (ファイルの名前になるため.
 # ML-Quest の指標の名前と同じ決まり)
@@ -51,6 +61,76 @@ CHANNELS = (1, 3, 4)
 
 # 音のチャンネルの数の上限 (サンプル数との取り違えの確認)
 MAX_CHANNELS = 8
+
+
+def new_temp(path: Path) -> Path:
+    """
+    書き込みの一時ファイルを, 普通のファイルと同じ権限で作る関数
+
+    Parameters
+    ----------
+    path: Path
+        最後に置き換えるファイル
+
+    Returns
+    ----------
+    temp: Path
+        同じディレクトリの空の一時ファイル (.<名前>.<乱数>.tmp).
+        umask に従う権限 (config.yaml と同じ) で, 別のユーザーの画面も読める
+    """
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    with open(temp, "x", encoding="utf-8"):
+        pass
+
+    return temp
+
+
+def write_json_file(path: Path, data: Any) -> None:
+    """
+    読み手が書きかけを読まないように JSON を書く関数
+
+    Parameters
+    ----------
+    path: Path
+        書くファイル
+    data: Any
+        書く内容
+
+    Returns
+    ----------
+    None
+    """
+    # 一時ファイルに書いてから置き換え, 失敗した場合は一時ファイルの削除
+    temp = new_temp(path)
+    try:
+        text = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False)
+        temp.write_text(text, encoding="utf-8")
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def check_optional_text(value: Any, where: str) -> Optional[str]:
+    """
+    値が文字か None であることを確かめる関数
+
+    Parameters
+    ----------
+    value: Any
+        確かめる値
+    where: str
+        誤りのメッセージに出す引数の名前
+
+    Returns
+    ----------
+    checked: Optional[str]
+        確かめた値
+    """
+    if value is not None and not isinstance(value, str):
+        raise ValueError(f"{where} は文字か None にしてください: {value!r}")
+    checked = value
+
+    return checked
 
 
 def run_directory(target: Any) -> Path:
@@ -121,8 +201,12 @@ def to_plain(value: Any, where: str) -> Any:
         JSON に書ける値, nan と無限大は None
     """
     # テンソルと NumPy の数は Python の数に変換
-    if isinstance(value, (torch.Tensor, np.ndarray, np.generic)):
-        if getattr(value, "ndim", 0) != 0 and np.size(value) != 1:
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            raise ValueError(f"{where} の値は 1 つの数にしてください")
+        value = value.item()
+    elif isinstance(value, (np.ndarray, np.generic)):
+        if np.size(value) != 1:
             raise ValueError(f"{where} の値は 1 つの数にしてください")
         value = value.item()
     if value is None or isinstance(value, (bool, str)):
@@ -273,6 +357,8 @@ def save_evaluation(
         not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0
     ):
         raise ValueError(f"epoch は 0 以上の整数にしてください: {epoch!r}")
+    check_optional_text(description, "description")
+    check_optional_text(baseline, "baseline")
 
     # 一時ファイルから置き換えて書き込み
     evaluation = {
@@ -291,7 +377,7 @@ def save_evaluation(
     folder = run_dir / EVALUATIONS_DIR
     folder.mkdir(exist_ok=True)
     path = folder / f"{name}.json"
-    write_json(path, evaluation)
+    write_json_file(path, evaluation)
 
     return path
 
@@ -385,7 +471,10 @@ def image_array(value: Any) -> np.ndarray:
         )
 
     # 小数は 0 から 1, 整数は 0 から 255 として 8 bit に変換
+    # nan と無限大は黙って黒や白にせず誤り
     if np.issubdtype(array.dtype, np.floating) or array.dtype == bool:
+        if not np.isfinite(array).all():
+            raise ValueError("画像に nan か無限大の値があります")
         scaled = np.clip(array.astype(np.float64), 0.0, 1.0) * 255.0
         pixels = np.rint(scaled).astype(np.uint8)
     elif np.issubdtype(array.dtype, np.integer):
@@ -444,7 +533,16 @@ def write_audio(path: Path, value: Any, sample_rate: Optional[int]) -> None:
             f"音の見本には 1 以上の整数の sample_rate を渡してください: "
             f"{sample_rate!r}"
         )
-    array = to_array(value).astype(np.float64)
+    # 整数の音は幅 (16 bit, 32 bit など) で -1 から 1 の値が変わるので誤り
+    array = to_array(value)
+    if not np.issubdtype(array.dtype, np.floating):
+        raise ValueError(
+            "音は -1 から 1 の小数の配列にしてください (整数の音は, 型の最大値"
+            f"で割って小数にします): {array.dtype}"
+        )
+    if not np.isfinite(array).all():
+        raise ValueError("音に nan か無限大の値があります")
+    array = array.astype(np.float64)
     if array.ndim == 1:
         array = array[None]
     if array.ndim != 2:
@@ -541,9 +639,9 @@ def sample_kind(value: Any, kind: Optional[str]) -> str:
     )
 
 
-def sample_folder(epoch: Optional[int]) -> str:
+def sample_stem(epoch: Optional[int]) -> str:
     """
-    見本を置くディレクトリの名前を決める関数
+    見本のファイルの名前 (拡張子の前) を決める関数
 
     Parameters
     ----------
@@ -552,15 +650,49 @@ def sample_folder(epoch: Optional[int]) -> str:
 
     Returns
     ----------
-    folder: str
+    stem: str
         epoch_0005 のような名前か final
     """
     if epoch is None:
-        folder = FINAL_DIR
-        return folder
+        stem = FINAL_STEM
+        return stem
     if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
         raise ValueError(f"epoch は 0 以上の整数にしてください: {epoch!r}")
-    folder = f"epoch_{epoch:04d}"
+    stem = f"epoch_{epoch:04d}"
+
+    return stem
+
+
+def sample_folder(root: Path, name: str) -> Path:
+    """
+    見本の名前ごとのディレクトリを, 他のファイルとぶつからないか確かめて
+    作る関数
+
+    Parameters
+    ----------
+    root: Path
+        samples/ のディレクトリ
+    name: str
+        見本の名前
+
+    Returns
+    ----------
+    folder: Path
+        samples/<名前>/
+    """
+    # 一覧のファイルの名前と, 前からある同じ名前のファイル (直下の画像など)
+    # とのぶつかりは誤り
+    folder = root / name
+    if name == SAMPLES_INDEX:
+        raise ValueError(f"見本の名前に {SAMPLES_INDEX} は使えません")
+    if root.exists() and not root.is_dir():
+        raise ValueError(f"{root} がディレクトリではありません")
+    if folder.exists() and not folder.is_dir():
+        raise ValueError(
+            f"見本の名前 {name} は samples/ の直下のファイルとぶつかります. "
+            "別の名前にしてください"
+        )
+    folder.mkdir(parents=True, exist_ok=True)
 
     return folder
 
@@ -586,7 +718,7 @@ def write_sample_file(
     ----------
     None
     """
-    # ファイルは形を変えずに写す
+    # ファイルは形を変えない写し (中身だけを写し, 権限は一時ファイルのもの)
     if isinstance(value, os.PathLike):
         source = Path(value)
         if not source.is_file():
@@ -639,14 +771,14 @@ def save_sample(
     caption: Optional[str] = None, sample_rate: Optional[int] = None
 ) -> Path:
     """
-    見本の出力を samples/ に書き, 一覧に加える関数
+    見本の出力を samples/<名前>/ に書き, 一覧に加える関数
 
     Parameters
     ----------
     target: Any
         start_experiment が返した実験か, 実験のディレクトリのパス
     name: str
-        見本の名前 (英数字と _ . @ - だけ. 同じエポックの中で 1 つ)
+        見本の名前 (英数字と _ . @ - だけ. 先頭は . 以外, index.json は不可)
     value: Any
         見本. 文字 (文), pathlib.Path (ファイルを写す), 配列かテンソル
         (画像, 音, 点群. kind が要る)
@@ -665,61 +797,119 @@ def save_sample(
     Returns
     ----------
     path: Path
-        書いたファイル
+        書いたファイル (samples/<名前>/epoch_0005.png など)
     """
-    # 名前, 種類, 置き場所の決定
+    # 何も書く前に, 名前, 種類, エポック, 添える文字の確認
     run_dir = run_directory(target)
     check_name(name, "見本")
     decided = sample_kind(value, kind)
-    folder_name = sample_folder(epoch)
+    stem = sample_stem(epoch)
+    check_optional_text(split, "split")
+    check_optional_text(caption, "caption")
     if isinstance(value, os.PathLike):
         suffix = Path(value).suffix.lower()
     else:
         suffix = SUFFIX_BY_KIND.get(decided, "")
+
+    # 一覧の読み書きは同じプロセスのスレッドの間で 1 つずつ
     root = run_dir / SAMPLES_DIR
-    folder = root / folder_name
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{name}{suffix}"
-
-    # 一覧を先に読み, 壊れていれば書く前に誤り
     index_path = root / SAMPLES_INDEX
-    samples = read_samples_index(index_path)
+    with SAMPLES_LOCK:
+        folder = sample_folder(root, name)
+        path = folder / f"{stem}{suffix}"
+        samples = read_samples_index(index_path)
 
-    # 一時ファイルに書いてから置き換え (書きかけを読ませないため)
-    handle, temp_name = tempfile.mkstemp(
-        dir=folder, prefix=f".{name}.", suffix=".tmp"
-    )
-    os.close(handle)
-    temp = Path(temp_name)
-    try:
-        write_sample_file(temp, value, decided, sample_rate)
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
+        # 一時ファイルに書いてから置き換え (書きかけを読ませないため)
+        temp = new_temp(path)
+        try:
+            write_sample_file(temp, value, decided, sample_rate)
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
 
-    # 書けた後に, 同じエポックと名前の前の見本 (拡張子の違うものを含む) を削除
-    kept = []
-    for item in samples:
-        if item.get("epoch") == epoch and item.get("name") == name:
-            old = root / str(item.get("file", ""))
+        # 同じエポックと名前の前の項目を置き換えた一覧の書き込み
+        kept = []
+        removed = []
+        for item in samples:
+            if item.get("epoch") == epoch and item.get("name") == name:
+                removed.append(root / str(item.get("file", "")))
+                continue
+            kept.append(item)
+        kept.append({
+            "epoch": epoch,
+            "name": name,
+            "kind": decided,
+            "file": f"{name}/{path.name}",
+            "split": split,
+            "caption": caption,
+            "created_at": now_iso()
+        })
+        write_json_file(index_path, {"samples": kept})
+
+        # 一覧を書けた後に, 拡張子の違う前の見本のファイルを削除
+        for old in removed:
             if old != path and old.parent == folder:
                 old.unlink(missing_ok=True)
-            continue
-        kept.append(item)
-
-    # 一覧に加えて書き込み
-    kept.append({
-        "epoch": epoch,
-        "name": name,
-        "kind": decided,
-        "file": f"{folder_name}/{path.name}",
-        "split": split,
-        "caption": caption,
-        "created_at": now_iso()
-    })
-    write_json(index_path, {"samples": kept})
 
     return path
+
+
+def legacy_samples(root: Path) -> list[dict]:
+    """
+    samples/ の直下に置かれた番号付きの画像を, 見本の項目にする関数
+
+    Parameters
+    ----------
+    root: Path
+        samples/ のディレクトリ
+
+    Returns
+    ----------
+    samples: list[dict]
+        名前とエポックの順の項目. 名前は番号の前の部分 (空か epoch なら
+        samples), 番号をエポックとし, legacy を True にする
+    """
+    # ML-Found の形より前のプロジェクトの画像 (samples/epoch_010.png など)
+    samples: list[dict] = []
+    if not root.is_dir():
+        return samples
+    for path in root.iterdir():
+        match = LEGACY_IMAGE.match(path.name)
+        if not path.is_file() or match is None or path.name.startswith("."):
+            continue
+        prefix = match.group(1).rstrip("_.-")
+        samples.append({
+            "epoch": int(match.group(2)),
+            "name": LEGACY_NAME if prefix in ("", "epoch") else prefix,
+            "kind": "image",
+            "file": path.name,
+            "split": None,
+            "caption": None,
+            "created_at": None,
+            "legacy": True
+        })
+    samples.sort(key=legacy_order)
+
+    return samples
+
+
+def legacy_order(item: dict) -> tuple[str, int]:
+    """
+    直下の画像の項目を並べる順を返す関数
+
+    Parameters
+    ----------
+    item: dict
+        見本の項目
+
+    Returns
+    ----------
+    order: tuple[str, int]
+        名前とエポック
+    """
+    order = (item["name"], item["epoch"])
+
+    return order
 
 
 def load_samples(run_dir: Union[str, os.PathLike]) -> list[dict]:
@@ -734,14 +924,15 @@ def load_samples(run_dir: Union[str, os.PathLike]) -> list[dict]:
     Returns
     ----------
     samples: list[dict]
-        書いた順の見本の項目. samples/ が無い実験 (足す前の ML-Found が
-        作った実験など) と, 一覧が読めない場合は空
+        一覧の項目 (書いた順) と, samples/ の直下の番号付きの画像
+        (ML-Found の形より前のプロジェクトのもの. legacy が True).
+        samples/ が無い実験は空. 一覧が読めない場合は直下の画像だけ
     """
+    root = Path(run_dir) / SAMPLES_DIR
     try:
-        samples = read_samples_index(
-            Path(run_dir) / SAMPLES_DIR / SAMPLES_INDEX
-        )
+        samples = read_samples_index(root / SAMPLES_INDEX)
     except (OSError, ValueError):
         samples = []
+    samples = samples + legacy_samples(root)
 
     return samples

@@ -1,13 +1,13 @@
 import copy
 import os
 from pathlib import Path
-import tempfile
 from typing import TYPE_CHECKING, Any, Optional, Union
 import warnings
 
-from omegaconf import OmegaConf
+import yaml
 
 from ml_found.config.source import relative_to_project
+from ml_found.experiment.results import new_temp
 
 if TYPE_CHECKING:
     from ml_found.experiment.setup import Experiment
@@ -58,6 +58,12 @@ ORIGIN_NOTES = {
     ),
     "unknown": "正解の出どころは分からない. 指標が何との一致かを確かめる"
 }
+
+# 新しい版の task.yaml の正解の出どころの説明
+NEWER_NOTE = (
+    "新しい版の ML-Found が書いた task.yaml なので, 正解の出どころは"
+    "分からないものとして扱う. ML-Found を更新すると読める"
+)
 
 
 def check_keys(data: Any, allowed: tuple, where: str) -> dict:
@@ -196,8 +202,13 @@ def read_dataset_yaml(path: Path) -> dict:
     if not file.is_file():
         raise FileNotFoundError(f"dataset.yaml がありません: {file}")
 
-    # 設定の値の ${...} を補間として扱わないように, 解決せずに読み込み
-    info = OmegaConf.to_container(OmegaConf.load(file), resolve=False)
+    # 設定の値の ${...} を補間として扱わないように, YAML のまま読み込み
+    try:
+        info = yaml.safe_load(file.read_text(encoding="utf-8"))
+    except yaml.YAMLError as error:
+        raise ValueError(
+            f"dataset.yaml を読めません: {file}: {error}"
+        ) from error
     if not isinstance(info, dict):
         raise ValueError(f"dataset.yaml が辞書ではありません: {file}")
 
@@ -304,10 +315,18 @@ def build_origin(origin: Any) -> dict:
     built: dict
         type, name, settings
     """
+    # 種類を書かずに名前か設定だけを書くと unknown になるので警告
     data = check_keys(origin, ORIGIN_KEYS, "task.target.origin")
+    if data and data.get("type") is None:
+        warnings.warn(
+            "task.target.origin に type が無いので, 正解の出どころは unknown "
+            "(分からない) として書きます. process, annotation, measurement, "
+            "synthetic のどれかなら type を書いてください",
+            stacklevel=4
+        )
     built = {
         "type": check_choice(
-            data.get("type", "unknown"), ORIGIN_TYPES,
+            data.get("type") or "unknown", ORIGIN_TYPES,
             "task.target.origin.type", allow_none=False
         ),
         "name": check_text(data.get("name"), "task.target.origin.name"),
@@ -482,7 +501,7 @@ def build_task(task: Any, project_dir: Path) -> dict:
 
     # YAML に書けない値 (配列など) を書く前に確認
     try:
-        OmegaConf.create(built)
+        yaml.safe_dump(built)
     except Exception as error:
         raise ValueError(
             f"task に YAML に書けない値があります: {error}"
@@ -509,19 +528,18 @@ def save_task(run_dir: Path, task: dict) -> None:
     # 読み手が書きかけを読まないように, 一時ファイルから置き換え
     # 失敗した場合は一時ファイルの削除
     path = Path(run_dir) / TASK_FILE
-    handle, temp_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{TASK_FILE}.", suffix=".tmp"
-    )
-    os.close(handle)
-    temp = Path(temp_name)
+    temp = new_temp(path)
     try:
-        OmegaConf.save(OmegaConf.create(task), temp)
+        text = yaml.safe_dump(task, allow_unicode=True, sort_keys=False)
+        temp.write_text(text, encoding="utf-8")
         os.replace(temp, path)
     finally:
         temp.unlink(missing_ok=True)
 
 
-def describe_origin(origin: Any) -> str:
+def describe_origin(
+    origin: Any, format_version: Optional[int] = None
+) -> str:
     """
     正解の出どころから, 指標が何との一致かの説明を作る関数
 
@@ -529,13 +547,22 @@ def describe_origin(origin: Any) -> str:
     ----------
     origin: Any
         task.yaml の target.origin (type, name, settings)
+    format_version: Optional[int] = None
+        その task.yaml の版. 知っている版より新しい場合は言い切らない
 
     Returns
     ----------
     note: str
         人が読む説明. 出どころが分からない場合もその旨を返す
     """
-    # 知らない種類 (新しい版) と壊れた値は分からないものとして説明
+    # 新しい版は欄の意味が変わったかもしれないので, 言い切らない知らせ
+    if isinstance(format_version, int) and (
+        format_version > TASK_FORMAT_VERSION
+    ):
+        note = NEWER_NOTE
+        return note
+
+    # 知らない種類と壊れた値は分からないものとして説明
     data = origin if isinstance(origin, dict) else {}
     kind = data.get("type")
     if kind not in ORIGIN_NOTES:
@@ -597,26 +624,46 @@ def load_task(run_dir: Union[str, os.PathLike]) -> Optional[dict]:
     ----------
     task: Optional[dict]
         task.yaml の中身, 無いか読めない場合は None
-        (task.yaml を足す前の ML-Found が作った実験と, 書かなかった実験)
+        (task.yaml を足す前の ML-Found が作った実験と, 書かなかった実験).
+        新しい版では target.origin を unknown に置き換え, newer_version を
+        True にする
     """
     # 無い場合と壊れた場合は分からないものとして None
     path = Path(run_dir) / TASK_FILE
     if not path.is_file():
         return None
     try:
-        task = OmegaConf.to_container(OmegaConf.load(path), resolve=False)
-    except Exception:
+        task = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError):
         return None
     if not isinstance(task, dict):
         return None
 
-    # 新しい版は読める項目だけを使い, 新しい ML-Found の出力であることを警告
+    # 版は 1 以上の整数 (文字や小数を版 1 として読み違えないため)
     version = task.get("format_version")
-    if isinstance(version, int) and version > TASK_FORMAT_VERSION:
+    if (
+        not isinstance(version, int) or isinstance(version, bool)
+        or version < 1
+    ):
+        raise ValueError(
+            f"{path} の format_version が 1 以上の整数ではありません: "
+            f"{version!r}"
+        )
+
+    # 新しい版は意味が変わったかもしれないので, 正解の出どころ (「処理を
+    # 超えられない」などの言い切りの元) を分からないものに置き換え
+    if version > TASK_FORMAT_VERSION:
         warnings.warn(
             f"{path} は新しい版 ({version}) の ML-Found が書いたものです. "
-            "読める項目だけを使います",
+            "正解の出どころは分からないものとして扱い, 他は読める項目だけを"
+            "使います",
             stacklevel=2
         )
+        target = task.get("target")
+        task["target"] = dict(target) if isinstance(target, dict) else {}
+        task["target"]["origin"] = {
+            "type": "unknown", "name": None, "settings": None
+        }
+        task["newer_version"] = True
 
     return task

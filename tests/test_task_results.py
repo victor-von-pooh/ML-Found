@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import re
+import threading
 import wave
 
 from matplotlib import image as mpimg
@@ -320,12 +322,25 @@ def test_load_task_newer_version(tmp_path: Path) -> None:
     ----------
     None
     """
+    # 処理の出力を正解とした新しい版. 出どころは分からないものに置き換え
     (tmp_path / TASK_FILE).write_text(
-        "format_version: 2\nrole: predict\nnew_field: 1\n", encoding="utf-8"
+        "format_version: 2\nrole: predict\nnew_field: 1\n"
+        "target:\n  kind: mask\n  origin:\n    type: process\n"
+        "    name: reconstruct\n",
+        encoding="utf-8"
     )
-    with pytest.warns(UserWarning, match="新しい版"):
+    with pytest.warns(UserWarning, match="分からないもの"):
         task = load_task(tmp_path)
     assert task["role"] == "predict"
+    assert task["newer_version"] is True
+    assert task["target"]["kind"] == "mask"
+    assert task["target"]["origin"]["type"] == "unknown"
+    note = describe_origin(task["target"]["origin"])
+    assert "超えられない" not in note
+    newer = describe_origin(
+        {"type": "process", "name": "reconstruct"}, format_version=2
+    )
+    assert "超えられない" not in newer and "新しい版" in newer
 
     # 壊れたファイルと辞書でないファイルは分からないもの
     (tmp_path / TASK_FILE).write_text("- 1\n", encoding="utf-8")
@@ -489,7 +504,7 @@ def test_save_samples(tmp_path: Path) -> None:
         split="valid", caption="復元"
     )
     assert image.relative_to(experiment.run_dir).as_posix() == (
-        "samples/epoch_0001/recon.png"
+        "samples/recon/epoch_0001.png"
     )
     assert mpimg.imread(image).shape[:2] == (8, 6)
 
@@ -530,7 +545,7 @@ def test_save_samples(tmp_path: Path) -> None:
         ]
     assert samples[0]["split"] == "valid"
     assert samples[0]["caption"] == "復元"
-    assert samples[3]["file"] == "final/voice.wav"
+    assert samples[3]["file"] == "voice/final.wav"
     assert not list((experiment.run_dir / "samples").rglob("*.tmp"))
 
 
@@ -666,7 +681,7 @@ def test_save_sample_failure_keeps_previous(tmp_path: Path) -> None:
         )
     assert old.read_text(encoding="utf-8") == "前の見本"
     assert [item["file"] for item in load_samples(experiment.run_dir)] == [
-        "epoch_0001/out.txt"
+        "out/epoch_0001.txt"
     ]
 
 
@@ -739,3 +754,308 @@ def test_save_evaluation_empty_table(tmp_path: Path) -> None:
     save_evaluation(experiment, "empty", {}, "test")
     evaluation = load_evaluations(experiment.run_dir)[0]
     assert evaluation["columns"] == [] and evaluation["rows"] == []
+
+
+@pytest.mark.parametrize("version", ["'2'", "2.0", "true", "0", "null"])
+def test_load_task_invalid_version(tmp_path: Path, version: str) -> None:
+    """
+    整数でない版の task.yaml を版 1 として読まずに止まることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    version: str
+        format_version に書く YAML の値
+
+    Returns
+    ----------
+    None
+    """
+    (tmp_path / TASK_FILE).write_text(
+        f"format_version: {version}\nrole: predict\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="format_version"):
+        load_task(tmp_path)
+
+
+def test_partial_origin_warns(tmp_path: Path) -> None:
+    """
+    種類を書かない正解の出どころが unknown になることを警告する関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    with pytest.warns(UserWarning, match="type が無い"):
+        task = write_task(
+            experiment, {"target": {"origin": {"name": "reconstruct"}}}
+        )
+    assert task["target"]["origin"]["type"] == "unknown"
+    assert task["target"]["origin"]["name"] == "reconstruct"
+
+
+def test_load_samples_legacy_flat_files(tmp_path: Path) -> None:
+    """
+    samples/ の直下に置かれた番号付きの画像 (ML-Found の形より前の
+    プロジェクト) も見本として読み, 新しい見本とぶつからないことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # GAN と拡散のタスクが書いていた形
+    experiment = make_experiment(tmp_path)
+    root = experiment.run_dir / "samples"
+    root.mkdir()
+    for name in ("epoch_010.png", "epoch_002.png", "fake_003.png", "a.txt"):
+        (root / name).write_bytes(b"x")
+    samples = load_samples(experiment.run_dir)
+    assert [(item["name"], item["epoch"], item["file"]) for item in samples] \
+        == [
+            ("fake", 3, "fake_003.png"), ("samples", 2, "epoch_002.png"),
+            ("samples", 10, "epoch_010.png")
+        ]
+    assert all(item["legacy"] for item in samples)
+
+    # 新しい見本は名前のディレクトリに置き, 直下のファイルとのぶつかりは誤り
+    save_sample(experiment, "recon", np.zeros((2, 2)), epoch=1, kind="image")
+    samples = load_samples(experiment.run_dir)
+    assert samples[0]["file"] == "recon/epoch_0001.png"
+    assert len(samples) == 4
+    with pytest.raises(ValueError, match="ぶつかります"):
+        save_sample(experiment, "epoch_010.png", "x")
+    with pytest.raises(ValueError, match="index.json"):
+        save_sample(experiment, "index.json", "x")
+
+
+def test_sample_layout_matches_dashboard_series() -> None:
+    """
+    新しい見本の場所が ML-Dashboard の画像の推移の見分け方 (番号の前の
+    部分とディレクトリでまとめる) で名前ごとの並びになることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # ML-Dashboard の NUMBERED と同じ正規表現でのまとまり
+    numbered = re.compile(r"^(.*?)(\d+)\.(png|jpe?g|gif|webp)$", re.I)
+    groups: dict[str, list[int]] = {}
+    paths = [
+        "samples/recon/epoch_0001.png", "samples/recon/epoch_0012.png",
+        "samples/real/epoch_0001.png", "samples/epoch_010.png",
+        "samples/epoch_020.png", "samples/recon/final.png"
+    ]
+    for path in paths:
+        folder, file = path.rsplit("/", 1)
+        match = numbered.match(file)
+        if match is None:
+            continue
+        prefix = match.group(1).rstrip("_.-")
+        name = f"{folder}/{prefix}" if prefix else folder
+        groups.setdefault(name, []).append(int(match.group(2)))
+    assert groups == {
+        "samples/recon/epoch": [1, 12], "samples/real/epoch": [1],
+        "samples/epoch": [10, 20]
+    }
+
+
+def test_samples_threads_keep_all_entries(tmp_path: Path) -> None:
+    """
+    複数のスレッドから書いた見本が一覧から落ちないことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    threads = [
+        threading.Thread(
+            target=save_sample, args=(experiment, f"s{index}", "x"),
+            kwargs={"epoch": 1}
+        )
+        for index in range(40)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(load_samples(experiment.run_dir)) == 40
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"value": np.full((2, 2), np.nan), "kind": "image"}, "nan"),
+        ({"value": np.zeros(10, dtype=np.int16), "kind": "audio",
+          "sample_rate": 8}, "小数"),
+        ({"value": np.full(10, np.nan), "kind": "audio",
+          "sample_rate": 8}, "nan"),
+        ({"value": "x", "caption": 3}, "caption"),
+        ({"value": "x", "split": ["test"]}, "split"),
+    ]
+)
+def test_save_sample_value_errors(
+    tmp_path: Path, kwargs: dict, message: str
+) -> None:
+    """
+    nan, 整数の音, 文字でない添え書きを, 前の見本と一覧を変えずに
+    誤りにすることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    kwargs: dict
+        既定から変える引数
+    message: str
+        誤りのメッセージに含まれる文字
+
+    Returns
+    ----------
+    None
+    """
+    # 前の見本を書いてから, 同じエポックと名前で誤りの見本
+    experiment = make_experiment(tmp_path)
+    old = save_sample(experiment, "out", "前の見本", epoch=1)
+    arguments = {"name": "out", "epoch": 1}
+    arguments.update(kwargs)
+    with pytest.raises(ValueError, match=message):
+        save_sample(experiment, **arguments)
+    assert old.read_text(encoding="utf-8") == "前の見本"
+    assert [item["file"] for item in load_samples(experiment.run_dir)] == [
+        "out/epoch_0001.txt"
+    ]
+    assert not list(experiment.run_dir.rglob("*.tmp"))
+
+
+def test_evaluation_text_arguments(tmp_path: Path) -> None:
+    """
+    評価の説明と比べる相手が文字でなければ書く前に誤りにすることを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    with pytest.raises(ValueError, match="description"):
+        save_evaluation(experiment, "a", {"x": 1}, "test", description=1)
+    with pytest.raises(ValueError, match="baseline"):
+        save_evaluation(experiment, "a", {"x": 1}, "test", baseline=2.0)
+    assert load_evaluations(experiment.run_dir) == []
+
+    # 複数の要素を持つ値は, 0 次元でない 1 要素のテンソルなら数として可
+    save_evaluation(
+        experiment, "b", {"x": [torch.tensor([0.5])]}, "test"
+    )
+    assert load_evaluations(experiment.run_dir)[0]["rows"] == [{"x": 0.5}]
+
+
+def test_new_files_are_readable_by_others(tmp_path: Path) -> None:
+    """
+    新しいファイルが config.yaml と同じ権限 (umask に従う) で作られる
+    ことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    write_task(experiment, {"role": "predict"})
+    paths = [
+        experiment.run_dir / TASK_FILE,
+        save_evaluation(experiment, "a", {"x": 1}, "test"),
+        save_sample(experiment, "s", "x", epoch=1),
+        experiment.run_dir / "samples" / "index.json"
+    ]
+    expected = (experiment.run_dir / "config.yaml").stat().st_mode & 0o777
+    for path in paths:
+        assert path.stat().st_mode & 0o777 == expected, path
+
+
+def test_dataset_yaml_dollar_text(tmp_path: Path) -> None:
+    """
+    dataset.yaml の ${ を含む文字を補間の書き方として解かずに写すことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # OmegaConf では読めない書き方 (閉じない ${) を含む設定
+    folder = tmp_path / "data"
+    folder.mkdir()
+    (folder / "dataset.yaml").write_text(
+        "format_version: 2\nrole: predict\ntarget:\n  kind: mask\n"
+        "  origin:\n    type: process\n    name: tool\n"
+        "    settings: {cmd: 'run ${HOME and ${x'}\n",
+        encoding="utf-8"
+    )
+    task = task_from_dataset(folder)
+    assert task["target"]["origin"]["settings"]["cmd"] == "run ${HOME and ${x"
+    experiment = make_experiment(tmp_path / "run")
+    write_task(experiment, task)
+    loaded = load_task(experiment.run_dir)
+    assert loaded["target"]["origin"]["settings"]["cmd"] == (
+        "run ${HOME and ${x"
+    )
+
+
+def test_sample_names_with_dots_do_not_collide(tmp_path: Path) -> None:
+    """
+    拡張子に見える名前 (a.txt) と拡張子の無い名前 (a) の見本が,
+    名前ごとのディレクトリで別のファイルになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    first = save_sample(experiment, "a", "文", epoch=1)
+    second = save_sample(experiment, "a.txt", "別の文", epoch=1)
+    assert first != second
+    assert first.read_text(encoding="utf-8") == "文"
+    assert second.read_text(encoding="utf-8") == "別の文"
+    assert len(load_samples(experiment.run_dir)) == 2

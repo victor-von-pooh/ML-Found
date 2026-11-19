@@ -351,4 +351,4 @@ def test_optional_files_match_format(
     )
     assert list(index) == ["samples"]
     assert set(index["samples"][0]) == documented_keys("### samples")
-    assert (run_dir / "samples" / "epoch_0005" / "note.txt").is_file()
+    assert (run_dir / "samples" / "note" / "epoch_0005.txt").is_file()

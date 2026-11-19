@@ -10,6 +10,10 @@ from ml_found.experiment.env_info import get_ml_found_info
 from ml_found.experiment.setup import (
     Experiment, make_run_dir, start_experiment
 )
+from ml_found.utils.requirements import (
+    MissingRequirementError, register_requirement, unregister_requirement
+)
+from test_requirements import hide_modules
 
 
 def run_experiment(
@@ -255,3 +259,153 @@ def test_ml_found_info() -> None:
     info = get_ml_found_info()
 
     assert "commit id:" in info
+
+
+def always_found() -> bool:
+    """
+    いつも入っているとする確かめ方の関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    found: bool
+        いつも True
+    """
+    # 確かめずに入っている扱い
+    found = True
+
+    return found
+
+
+def test_requires_missing_stops_before_run_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    config の requires の機能が足りなければ, 入れ方を示して出力先を作らずに
+    止まることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        Gymnasium が入っていないように見せるのに使う
+
+    Returns
+    ----------
+    None
+    """
+    hide_modules(monkeypatch, {"gymnasium"})
+    with pytest.raises(MissingRequirementError) as info:
+        run_experiment(
+            tmp_path, "experiment:\n  device: cpu\nrequires: [rl]\n"
+        )
+    assert info.value.feature == "rl"
+    assert 'pip install -e "./ML-Found[rl]"' in str(info.value)
+    assert not (tmp_path / "outputs").exists()
+
+
+def test_requires_experiment_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    experiment の requires が default の requires を置き換え (足し合わず),
+    書いた機能だけを確かめることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        Gymnasium が入っていないように見せるのに使う
+
+    Returns
+    ----------
+    None
+    """
+    hide_modules(monkeypatch, {"gymnasium"})
+    register_requirement(
+        "test_found", "いつも入っている機能",
+        [{"kind": "function", "name": "always", "function": always_found}],
+        {"kind": "pip", "packages": ["nothing"]}
+    )
+    try:
+        # default の [rl] を空のリストと入っている機能で置き換え
+        default = "experiment:\n  device: cpu\nrequires: [rl]\n"
+        experiment = run_experiment(tmp_path, default, "requires: []\n")
+        assert experiment.cfg.requires == []
+        experiment = run_experiment(
+            tmp_path, default, "requires: [test_found]\n"
+        )
+        assert list(experiment.cfg.requires) == ["test_found"]
+
+        # null は何も確かめず, 値の参照は解決して確かめる
+        run_experiment(tmp_path, default, "requires: null\n")
+        with pytest.raises(MissingRequirementError):
+            run_experiment(
+                tmp_path,
+                "experiment:\n  device: cpu\nfeature: rl\n"
+                "requires: ['${feature}']\n"
+            )
+    finally:
+        unregister_requirement("test_found")
+
+
+def test_requires_only_in_default(tmp_path: Path) -> None:
+    """
+    default に無い requires を experiment で書くとエラーになることを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    with pytest.raises(ValueError, match="requires"):
+        run_experiment(
+            tmp_path, "experiment:\n  device: cpu\n", "requires: []\n"
+        )
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("rl", "リストで書いて"),
+        ("[rl, rl]", "2 回以上"),
+        ("[1]", "リストで書いて"),
+        ("['']", "リストで書いて"),
+        ("{rl: true}", "リストで書いて"),
+        ("[nothing_like_this]", "登録簿にありません. 登録済み: .*rl"),
+        ("['${missing}']", "解決できません")
+    ]
+)
+def test_requires_invalid(tmp_path: Path, value: str, message: str) -> None:
+    """
+    requires の書き方の誤りと登録簿に無い名前が, 出力先を作る前に分かり
+    やすいエラーになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    value: str
+        requires に書く YAML の値
+    message: str
+        エラーの文に含まれるべき文字
+
+    Returns
+    ----------
+    None
+    """
+    with pytest.raises(ValueError, match=message):
+        run_experiment(
+            tmp_path, f"experiment:\n  device: cpu\nrequires: {value}\n"
+        )
+    assert not (tmp_path / "outputs").exists()

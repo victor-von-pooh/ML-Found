@@ -267,7 +267,7 @@ def test_reinforce_learns_toy_env(tmp_path: Path) -> None:
     history = trainer.fit(train_loader, valid_loader)
 
     # エピソードの指標が記録され, 最後は全て報酬の出る行動
-    for name in ("reward", "length", "violations", "success"):
+    for name in ("reward", "length", "violations", "success", "entropy"):
         assert len(history.get(f"train/{name}")) == 8
         assert len(history.get(f"valid/{name}")) == 8
     assert history.get("valid/reward")[-1] == 5.0
@@ -986,3 +986,78 @@ def test_loader_argument_checks() -> None:
     ):
         with pytest.raises(ValueError):
             EvaluationLoader(env, model, **kwargs)
+
+
+def test_valid_entropy_independent_of_reward() -> None:
+    """
+    検証で, 報酬と別に動く方策のエントロピーを記録することを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 同じ評価の結果 (報酬, 歩数) で, 方策の迷いだけが違う 2 つのモデル
+    model = nn.Linear(1, 2)
+    batch = next(iter(EvaluationLoader(ToyEnv(), model, episodes=2)))
+    with torch.no_grad():
+        model.weight.zero_()
+        model.bias.copy_(torch.tensor([0.0, 0.0]))
+    uniform = ReinforceStep()(model, batch, "valid")
+    with torch.no_grad():
+        model.bias.copy_(torch.tensor([0.0, 5.0]))
+    sharp = ReinforceStep()(model, batch, "valid")
+
+    # 一様な方策は log 2, 迷いの少ない方策は小さく, 報酬と loss は同じ
+    assert torch.isclose(uniform["entropy"], torch.log(torch.tensor(2.0)))
+    assert sharp["entropy"] < uniform["entropy"]
+    assert not sharp["entropy"].requires_grad
+    assert torch.equal(uniform["reward"], sharp["reward"])
+    assert torch.equal(uniform["loss"], sharp["loss"])
+
+
+def test_tiebreak_train_reward_on_plateau(tmp_path: Path) -> None:
+    """
+    評価の報酬が上限で並んでも, train/reward で比べてベストのエポックが
+    進むことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(
+        tmp_path,
+        "optimizer:\n  name: Adam\n  params:\n    lr: 0.1\n"
+        "trainer:\n  epochs: 8\n  monitor: valid/reward\n  mode: max\n"
+        "  monitor_tiebreak: train/reward\n"
+        "  monitor_tiebreak_mode: max\n"
+    )
+    model = toy_model()
+    train_loader = RolloutLoader(
+        ToyEnv(), model, episodes=8, batch_episodes=4, seed=0,
+        exploration=Exploration(epsilon=0.1)
+    )
+    valid_loader = EvaluationLoader(ToyEnv(), model, episodes=2, seed=1000)
+    trainer = Trainer(model, experiment, ReinforceStep(entropy_coef=0.01))
+    history = trainer.fit(train_loader, valid_loader)
+
+    # 上限の報酬で並ぶエポックのうち, 学習の報酬が最も大きいものがベスト
+    run = json.loads((experiment.run_dir / "run.json").read_text())
+    valid = history.get("valid/reward")
+    train = history.get("train/reward")
+    top = [i for i, value in enumerate(valid) if value == max(valid)]
+    assert len(top) >= 2
+    expected = top[0]
+    for index in top[1:]:
+        if train[index] > train[expected]:
+            expected = index
+    assert expected != top[0]
+    assert run["best_epoch"] == expected + 1

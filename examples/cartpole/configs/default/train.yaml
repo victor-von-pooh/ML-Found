@@ -1,4 +1,7 @@
 # ML-Found が使う設定, 書かなかった項目は ML-Found の既定値
+# 学習に要る機能 (Gymnasium). 無ければ出力先を作る前に入れ方を示して停止
+requires: [rl]
+
 experiment:
   name: cartpole
   seed: 42
@@ -14,6 +17,9 @@ trainer:
   # 検証の評価のエピソードの報酬の和が大きいほど良い
   monitor: valid/reward
   mode: max
+  # 報酬が上限で並んだ場合は, 学習のエピソードの報酬が大きい方を選択
+  monitor_tiebreak: train/reward
+  monitor_tiebreak_mode: max
 
 # プロジェクト固有の設定, 項目は自由に追加可能
 env:

@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Optional
 import warnings
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf.errors import OmegaConfBaseException
 import torch
 
 from ml_found.config.loader import format_diff, save_config
@@ -25,6 +26,7 @@ from ml_found.training.optim import (
 )
 from ml_found.training.registry import check_optim_params
 from ml_found.utils.device import get_device
+from ml_found.utils.requirements import REQUIREMENTS, require
 
 
 @dataclass
@@ -312,6 +314,73 @@ def make_run_dir(
     return run_dir
 
 
+def read_requires(cfg: DictConfig) -> list[str]:
+    """
+    config の一番上の requires から, 学習に要る機能の名前を読む関数
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        学習に使う config
+
+    Returns
+    ----------
+    names: list[str]
+        機能の名前 (書いた順), 書いていない場合と null の場合は空
+    """
+    # 値の参照 (${...}) も解決して読み, 書いていなければ何も要らない扱い
+    try:
+        value = cfg.get("requires")
+        if isinstance(value, (DictConfig, ListConfig)):
+            value = OmegaConf.to_container(value, resolve=True)
+    except OmegaConfBaseException as e:
+        raise ValueError(f"requires を読めません: {e}") from e
+    if value is None:
+        names = []
+        return names
+
+    # 文字のリスト (1 つの文字だけは不可) で, 同じ名前が無いことの確認
+    if not isinstance(value, list) or not all(
+        isinstance(name, str) and name.strip() for name in value
+    ):
+        raise ValueError(
+            "requires は機能の名前のリストで書いてください "
+            f"(例: requires: [rl]): {value!r}"
+        )
+    if len(set(value)) != len(value):
+        raise ValueError(f"requires に同じ名前が 2 回以上あります: {value!r}")
+
+    # 登録簿に無い名前は, 登録済みの名前を添えてエラー
+    unknown = [name for name in value if name not in REQUIREMENTS]
+    if unknown:
+        raise ValueError(
+            f"requires の {', '.join(unknown)} は登録簿にありません. "
+            f"登録済み: {', '.join(sorted(REQUIREMENTS))} (プロジェクトの"
+            "機能は start_experiment の前に register_requirement で登録)"
+        )
+    names = list(value)
+
+    return names
+
+
+def check_requires(cfg: DictConfig) -> None:
+    """
+    config の requires に書いた機能に要るものが入っていることを確かめる関数
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        学習に使う config
+
+    Returns
+    ----------
+    None
+    """
+    # 書いた順に確かめ, 足りなければ入れ方を示す MissingRequirementError
+    for name in read_requires(cfg):
+        require(name)
+
+
 def start_experiment(
     cfg: DictConfig, diff: dict, project_dir: Optional[str] = None
 ) -> Experiment:
@@ -338,9 +407,11 @@ def start_experiment(
     else:
         project_root = Path(project_dir).resolve()
 
-    # 空の出力先が残らないように, ディレクトリを作る前にデバイス,
+    # 空の出力先が残らないように, ディレクトリを作る前に config の
+    # requires に書いた機能の要るもの, デバイス,
     # Optimizer と Scheduler (クラス, 引数, 仮のパラメータで作れるか) と
     # 学習の設定, 再開元, config の task の確認
+    check_requires(cfg)
     device = get_device(cfg.experiment.device)
     check_optim_config(cfg)
     check_optim_params(cfg)

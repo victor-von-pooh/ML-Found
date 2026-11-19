@@ -99,6 +99,31 @@ class ReinforceStep:
 
         return probs
 
+    def entropy(
+        self, model: nn.Module, batch: dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """
+        バッチの観測ごとの方策のエントロピーの平均を, 勾配なしで求める関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            方策のモデル
+        batch: dict[str, torch.Tensor]
+            EvaluationLoader のバッチ
+
+        Returns
+        ----------
+        entropy: torch.Tensor
+            1 歩ごとのエントロピーの平均 (勾配は流さない)
+        """
+        # 評価の指標なので勾配を記録せずに計算
+        with torch.no_grad():
+            log_probs = self.log_softmax(model(batch["observations"]))
+            entropy = -(log_probs.exp() * log_probs).sum(dim=-1).mean()
+
+        return entropy
+
     def __call__(
         self, model: nn.Module, batch: dict[str, torch.Tensor], phase: str
     ) -> dict:
@@ -118,14 +143,17 @@ class ReinforceStep:
         ----------
         outputs: dict
             学習では方策の勾配の損失, 検証では報酬の和の平均の符号を
-            反転した値を loss に入れ, 報酬, 歩数, 安全の違反の指標を加える
+            反転した値を loss に入れ, 報酬, 歩数, 安全の違反の指標と
+            方策のエントロピー (entropy) を加える
         """
         # エピソードの指標
         outputs = episode_metrics(batch)
 
-        # 検証は報酬の和の平均の符号を反転した値が loss
+        # 検証は報酬の和の平均の符号を反転した値が loss. 報酬が上限で
+        # 並んでも動く指標として, 評価で通った観測の方策のエントロピーの平均
         if phase != "train":
             outputs["loss"] = -batch["episode_rewards"].mean()
+            outputs["entropy"] = self.entropy(model, batch)
             return outputs
 
         # 選んだ行動の対数確率とエントロピー

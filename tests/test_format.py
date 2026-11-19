@@ -175,7 +175,7 @@ def test_run_directory_matches_format(
     diff = OmegaConf.to_container(OmegaConf.load(run_dir / "diff.yaml"))
     assert diff["trainer.epochs"] == {"default": 3, "experiment": 2}
 
-    # 任意のファイルは書かなければ無く, 読む側は分からないものとして扱う
+    # 書かなかった任意のファイルは無く, 読む側では分からないものの扱い
     for name in ("task.yaml", "evaluations", "samples"):
         assert not (run_dir / name).exists(), name
     assert load_task(run_dir) is None
@@ -308,7 +308,7 @@ def test_optional_files_match_format(
     ----------
     None
     """
-    # ML-EDA の版 2 の説明を置き, config の task から読む
+    # ML-EDA の版 2 の説明を置き, config の task からの読み込み
     dataset = tmp_path / "project" / "outputs" / "dataset"
     dataset.mkdir(parents=True)
     (dataset / "dataset.yaml").write_text(

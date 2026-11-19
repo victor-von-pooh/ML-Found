@@ -1,6 +1,7 @@
 import copy
 import os
 from pathlib import Path
+import tempfile
 from typing import TYPE_CHECKING, Any, Optional, Union
 import warnings
 
@@ -218,8 +219,8 @@ def check_dataset_version(info: dict, file: Path) -> None:
     ----------
     None
     """
-    # 版 1 は列の正解のデータセットで, 正解の出どころを持たない
-    # 知らない版は読み違えないように止める
+    # 版 1 は列の正解のデータセットで, 正解の出どころが無いので停止
+    # 知らない版も読み違えないように停止
     version = info.get("format_version")
     if version == DATASET_FORMAT_VERSION:
         return
@@ -255,18 +256,24 @@ def task_from_dataset(
         role, target (kind, origin), dataset (path, name, format_version).
         write_task にそのまま渡せ, 他の項目を足してもよい
     """
-    # ml_eda に頼らずに YAML を直接読み, 版を確かめる
+    # ml_eda に頼らない YAML の直接の読み込みと, 版の確認
     base_dir = Path.cwd() if project_dir is None else Path(project_dir)
     resolved = resolve_from(path, base_dir)
     info = read_dataset_yaml(resolved)
     file = resolved / "dataset.yaml" if resolved.is_dir() else resolved
     check_dataset_version(info, file)
 
-    # 受け持ち, 正解の種類, 正解の出どころを写す (出どころが無ければ unknown)
+    # 受け持ち, 正解の種類, 正解の出どころの写し (出どころが無ければ unknown)
+    # ML-EDA が版を上げずに足した欄は無視
     target = info.get("target") or {}
     if not isinstance(target, dict):
         raise ValueError(f"{file} の target が辞書ではありません")
     origin = target.get("origin") or {"type": "unknown"}
+    if not isinstance(origin, dict):
+        raise ValueError(f"{file} の target.origin が辞書ではありません")
+    origin = {
+        key: value for key, value in origin.items() if key in ORIGIN_KEYS
+    }
     task = {
         "role": info.get("role"),
         "target": {
@@ -419,13 +426,16 @@ def merge_dataset(task: dict, project_dir: Path) -> dict:
         return merged
 
     # 書いた項目を優先 (正解の出どころは欄ごとではなく丸ごと置き換え)
+    # null は書かなかったものとして扱い, 埋めた値を保持
     merged = task_from_dataset(dataset, str(project_dir))
     for key, value in task.items():
-        if key == "dataset":
+        if key == "dataset" or value is None:
             continue
         if key == "target" and isinstance(value, dict):
             target = dict(merged["target"])
-            target.update(value)
+            for name, item in value.items():
+                if item is not None:
+                    target[name] = item
             merged["target"] = target
         else:
             merged[key] = value
@@ -497,10 +507,18 @@ def save_task(run_dir: Path, task: dict) -> None:
     None
     """
     # 読み手が書きかけを読まないように, 一時ファイルから置き換え
+    # 失敗した場合は一時ファイルの削除
     path = Path(run_dir) / TASK_FILE
-    temp = path.with_name(TASK_FILE + ".tmp")
-    OmegaConf.save(OmegaConf.create(task), temp)
-    temp.replace(path)
+    handle, temp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{TASK_FILE}.", suffix=".tmp"
+    )
+    os.close(handle)
+    temp = Path(temp_name)
+    try:
+        OmegaConf.save(OmegaConf.create(task), temp)
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def describe_origin(origin: Any) -> str:

@@ -15,7 +15,9 @@ from ml_found.experiment.env_info import (
 )
 from ml_found.experiment.logger import get_logger
 from ml_found.experiment.seed import EXTRA_RNGS, fix_seed
-from ml_found.experiment.task import build_task, describe_origin, save_task
+from ml_found.experiment.task import (
+    TASK_KEYS, build_task, describe_origin, save_task
+)
 from ml_found.experiment.uncaught import watch_uncaught_errors
 from ml_found.training.optim import (
     check_optim_config, class_uses_gradients, resolve_optimizer_class,
@@ -245,9 +247,18 @@ def config_task(cfg: DictConfig, project_dir: Path) -> Optional[dict]:
     task: Optional[dict]
         task.yaml の中身, config に task の辞書が無ければ None
     """
-    # 辞書でない task (プロジェクトが別の意味で使う項目) は対象外
+    # 辞書でない task と, task.yaml の項目を 1 つも持たない task
+    # (プロジェクトが別の意味で使う項目) は警告して対象外
     section = cfg.get("task")
     if section is None or not isinstance(section, DictConfig):
+        return None
+    if not any(key in TASK_KEYS for key in section.keys()):
+        warnings.warn(
+            "config の task に task.yaml の項目が無いので, task.yaml を"
+            "書きません (プロジェクトの項目として扱います. 項目の名前の誤り"
+            f"なら直してください: {', '.join(TASK_KEYS)})",
+            stacklevel=3
+        )
         return None
     task = build_task(
         OmegaConf.to_container(section, resolve=True), project_dir

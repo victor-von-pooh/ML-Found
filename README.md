@@ -476,7 +476,7 @@ model.load_state_dict(torch.load("outputs/wine/.../final_model.pt"))
 - **`evaluations/<名前>.json`** (データ全体の評価): グループごとの表, 曲線, 比べる相手との差, 守る指標を, 名前と分割の付いた表として書く
 - **`samples/`** (見本): 画像, 文, 音, 点群の見本を, エポックと名前ごとに書き, `samples/index.json` に一覧を残す
 
-`task.yaml` は default の config に `task` を書くと, `start_experiment` が書く. `task.dataset` に ML-EDA が書き出したデータセット (`dataset.yaml` の版 2 かそのディレクトリ. 相対パスはプロジェクトから辿る) を書くと, 受け持ち, 正解の種類と出どころを埋める. 書いた項目は埋めた値より優先する (`target.origin` は欄ごとでなく丸ごと置き換え). 誤り (知らない項目, 選択肢に無い値, 版 2 でない `dataset.yaml`) は出力先を作る前に見つかる. ML-Found は ml_eda に頼らずに `dataset.yaml` を読み, 版 1 (列の正解. 正解の出どころを持たない) と知らない版では止まる. 辞書でない `task` (プロジェクトが別の意味で使う項目) は使わない.
+`task.yaml` は default の config に `task` を書くと, `start_experiment` が書く. `task.dataset` に ML-EDA が書き出したデータセット (`dataset.yaml` の版 2 かそのディレクトリ. 相対パスはプロジェクトから辿る) を書くと, 受け持ち, 正解の種類と出どころを埋める. 書いた項目は埋めた値より優先する (`target.origin` は欄ごとでなく丸ごと置き換え. null と書いた項目は書かなかったものとして扱い, 埋めた値を残す). 誤り (知らない項目, 選択肢に無い値, 版 2 でない `dataset.yaml`) は出力先を作る前に見つかる. ML-Found は ml_eda に頼らずに `dataset.yaml` を読み, 版 1 (列の正解. 正解の出どころを持たない) と知らない版では止まる. 辞書でない `task` と, `task.yaml` の項目 (`role`, `output`, `what`, `target`, `method`, `base`, `dataset`) を 1 つも持たない `task` は, プロジェクトが別の意味で使う項目として警告して使わない. `task.yaml` の項目と他の項目を混ぜた `task` は誤りになる (今まで `task` に自分の辞書を書いていたプロジェクトは, 名前を変える).
 
 ```yaml
 # configs/default/train.yaml
@@ -512,7 +512,9 @@ save_evaluation(
 )
 ```
 
-見本は `save_sample(experiment, 名前, 値, epoch=...)` で書く. 文字は文 (`.txt`), `pathlib.Path` はファイルをそのまま写す (種類は拡張子から), 配列とテンソルは `kind` を渡す. `image` は (高さ, 幅), (高さ, 幅, チャンネル), (チャンネル, 高さ, 幅) で, 小数は 0 から 1, 整数は 0 から 255 の値 (PNG). `audio` は (サンプル数,) か (チャンネル, サンプル数) で -1 から 1 の値と `sample_rate` (16 bit の WAV). `point_cloud` は (点の数, 3) (PLY). 学習の途中では `on_epoch_end` の中で `epoch=self.epoch` を渡し (`samples/epoch_0005/` に置く), 学習の後はエポックを省く (`samples/final/`). 同じエポックと名前で書き直すと置き換える. `split` と `caption` も添えられる.
+評価と見本の名前は英数字と `_`, `.`, `@`, `-` だけで, 先頭は `.` 以外.
+
+見本は `save_sample(experiment, 名前, 値, epoch=...)` で書く. 文字は文 (`.txt`), `pathlib.Path` はファイルをそのまま写す (種類は拡張子から), 配列とテンソルは `kind` を渡す. `image` は (高さ, 幅), (高さ, 幅, チャンネル), (チャンネル, 高さ, 幅) で, 小数は 0 から 1, 整数は 0 から 255 の値 (PNG). `audio` は (サンプル数,) か (チャンネル, サンプル数) で -1 から 1 の値と `sample_rate` (16 bit の WAV. チャンネルは 8 まで. (サンプル数, チャンネル) の配列は `.T` で入れ替える). `point_cloud` は (点の数, 3) で nan の無い座標 (PLY). 学習の途中では `on_epoch_end` の中で `epoch=self.epoch` を渡し (`samples/epoch_0005/` に置く), 学習の後はエポックを省く (`samples/final/`). 同じエポックと名前で書き直すと置き換える. `split` と `caption` も添えられる.
 
 読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため).
 

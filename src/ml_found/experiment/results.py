@@ -26,7 +26,8 @@ FINAL_DIR = "final"
 
 # 評価と見本の名前に使える文字 (ファイルの名前になるため.
 # ML-Quest の指標の名前と同じ決まり)
-NAME_PATTERN = re.compile(r"[A-Za-z0-9_.@-]+")
+# 先頭の . は一時ファイルと見分けるために禁止
+NAME_PATTERN = re.compile(r"[A-Za-z0-9_@-][A-Za-z0-9_.@-]*")
 
 # 評価の種類
 EVALUATION_KINDS = ("table", "curve")
@@ -48,6 +49,9 @@ SUFFIX_BY_KIND = {
 # 画像のチャンネルの数として扱う大きさ
 CHANNELS = (1, 3, 4)
 
+# 音のチャンネルの数の上限 (サンプル数との取り違えの確認)
+MAX_CHANNELS = 8
+
 
 def run_directory(target: Any) -> Path:
     """
@@ -63,7 +67,7 @@ def run_directory(target: Any) -> Path:
     run_dir: Path
         実験のディレクトリ
     """
-    # Experiment は run_dir を持つ
+    # Experiment の run_dir の取り出し
     run_dir = Path(getattr(target, "run_dir", target))
     if not run_dir.is_dir():
         raise FileNotFoundError(f"実験のディレクトリがありません: {run_dir}")
@@ -92,7 +96,8 @@ def check_name(name: Any, where: str) -> str:
         or not NAME_PATTERN.fullmatch(name)
     ):
         raise ValueError(
-            f"{where}の名前は英数字と _ . @ - だけにしてください: {name!r}"
+            f"{where}の名前は英数字と _ . @ - だけ (先頭は . 以外) に"
+            f"してください: {name!r}"
         )
     checked = name
 
@@ -172,7 +177,9 @@ def table_records(table: Any) -> tuple[list[str], list[dict]]:
     # DataFrame は行の辞書の並びに変換
     if hasattr(table, "to_dict") and hasattr(table, "columns"):
         records = table.to_dict(orient="records")
-    elif isinstance(table, dict) and table and all(
+    elif isinstance(table, dict) and not table:
+        records = []
+    elif isinstance(table, dict) and all(
         is_column(value) for value in table.values()
     ):
         # 列の名前から値の並びの辞書は, 長さをそろえて行に変換
@@ -226,7 +233,7 @@ def save_evaluation(
     target: Any
         start_experiment が返した実験か, 実験のディレクトリのパス
     name: str
-        評価の名前 (英数字と _ . @ - だけ)
+        評価の名前 (英数字と _ . @ - だけ. 先頭は . 以外)
     table: Any
         評価の表. 行の辞書の並び, 列の名前から値の並びの辞書, 1 行の辞書,
         pandas の DataFrame のどれか
@@ -263,9 +270,9 @@ def save_evaluation(
     if kind == "table" and x is not None:
         raise ValueError("x は kind が curve の場合だけ書けます")
     if epoch is not None and (
-        not isinstance(epoch, int) or isinstance(epoch, bool)
+        not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0
     ):
-        raise ValueError(f"epoch は整数にしてください: {epoch!r}")
+        raise ValueError(f"epoch は 0 以上の整数にしてください: {epoch!r}")
 
     # 一時ファイルから置き換えて書き込み
     evaluation = {
@@ -446,6 +453,13 @@ def write_audio(path: Path, value: Any, sample_rate: Optional[int]) -> None:
             f"{array.shape}"
         )
 
+    # (サンプル数, チャンネル) の取り違えの確認 (チャンネルは 8 まで)
+    if array.shape[0] > MAX_CHANNELS or array.shape[0] > array.shape[1]:
+        raise ValueError(
+            "音は (チャンネル, サンプル数) の形にしてください. (サンプル数, "
+            f"チャンネル) なら .T で入れ替えます: {array.shape}"
+        )
+
     # -1 から 1 を 16 bit の整数にし, チャンネルを交互に並べて書き込み
     samples = np.rint(np.clip(array, -1.0, 1.0) * 32767).astype("<i2")
     with wave.open(str(path), "wb") as file:
@@ -475,6 +489,8 @@ def write_point_cloud(path: Path, value: Any) -> None:
         raise ValueError(
             f"点群は (点の数, 3) の形にしてください: {array.shape}"
         )
+    if not np.isfinite(array).all():
+        raise ValueError("点群に nan か無限大の座標があります")
     header = (
         "ply\nformat ascii 1.0\n"
         f"element vertex {array.shape[0]}\n"
@@ -659,23 +675,15 @@ def save_sample(
     if isinstance(value, os.PathLike):
         suffix = Path(value).suffix.lower()
     else:
-        suffix = SUFFIX_BY_KIND[decided]
+        suffix = SUFFIX_BY_KIND.get(decided, "")
     root = run_dir / SAMPLES_DIR
     folder = root / folder_name
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{name}{suffix}"
 
-    # 同じエポックと名前の前の見本 (拡張子の違うものを含む) は置き換え
+    # 一覧を先に読み, 壊れていれば書く前に誤り
     index_path = root / SAMPLES_INDEX
     samples = read_samples_index(index_path)
-    kept = []
-    for item in samples:
-        if item.get("epoch") == epoch and item.get("name") == name:
-            old = root / str(item.get("file", ""))
-            if old != path and old.parent == folder:
-                old.unlink(missing_ok=True)
-            continue
-        kept.append(item)
 
     # 一時ファイルに書いてから置き換え (書きかけを読ませないため)
     handle, temp_name = tempfile.mkstemp(
@@ -688,6 +696,16 @@ def save_sample(
         os.replace(temp, path)
     finally:
         temp.unlink(missing_ok=True)
+
+    # 書けた後に, 同じエポックと名前の前の見本 (拡張子の違うものを含む) を削除
+    kept = []
+    for item in samples:
+        if item.get("epoch") == epoch and item.get("name") == name:
+            old = root / str(item.get("file", ""))
+            if old != path and old.parent == folder:
+                old.unlink(missing_ok=True)
+            continue
+        kept.append(item)
 
     # 一覧に加えて書き込み
     kept.append({

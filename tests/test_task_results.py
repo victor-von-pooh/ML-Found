@@ -99,7 +99,7 @@ def test_task_from_dataset(tmp_path: Path) -> None:
     assert task["dataset"]["name"] == "clouds"
     assert task["dataset"]["format_version"] == 2
 
-    # 相対パスは渡したディレクトリから辿る
+    # 相対パスは渡したディレクトリからの辿り
     relative = task_from_dataset("data", project_dir=str(tmp_path))
     assert relative == task
 
@@ -198,7 +198,7 @@ def test_config_task_writes_task_yaml(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        ("task:\n  rol: predict\n", "知らない項目"),
+        ("task:\n  role: predict\n  wat: x\n", "知らない項目"),
         ("task:\n  role: classify\n", "task.role"),
         ("task:\n  method: scratch\n  base:\n    weights: bert\n",
          "scratch"),
@@ -277,7 +277,7 @@ def test_write_task_finetune(tmp_path: Path) -> None:
     assert task["target"]["origin"]["type"] == "process"
     assert load_task(second.run_dir) == task
 
-    # task_from_dataset の結果に足して渡しても同じ
+    # task_from_dataset の結果に足して渡した場合も同じ結果
     filled = task_from_dataset(tmp_path / "data")
     filled["what"] = "物の表面の点"
     again = write_task(second, filled)
@@ -387,7 +387,7 @@ def test_save_evaluation_forms(tmp_path: Path) -> None:
     )
     save_evaluation(experiment, "summary", {"iou": 0.7}, "valid")
 
-    # 曲線は横軸の列が要る
+    # 横軸の列を持つ曲線
     save_evaluation(
         experiment, "pr_curve",
         {"threshold": [0.1, 0.5], "precision": [0.6, 0.9]}, "test",
@@ -430,6 +430,8 @@ def test_save_evaluation_dataframe(tmp_path: Path) -> None:
     [
         ({"name": "../x"}, "名前"),
         ({"name": "評価"}, "名前"),
+        ({"name": ".hidden"}, "名前"),
+        ({"epoch": -1}, "epoch"),
         ({"split": ""}, "split"),
         ({"kind": "curve"}, "横軸"),
         ({"kind": "chart"}, "kind"),
@@ -512,7 +514,7 @@ def test_save_samples(tmp_path: Path) -> None:
     assert lines[0] == "ply" and "element vertex 5" in lines
     assert len(lines) == lines.index("end_header") + 6
 
-    # ファイルは拡張子から種類を決めて写す
+    # 拡張子から種類を決めたファイルの写し
     source = tmp_path / "clip.gif"
     source.write_bytes(b"GIF89a")
     copied = save_sample(experiment, "clip", source)
@@ -566,6 +568,11 @@ def test_save_sample_replaces(tmp_path: Path) -> None:
         ({"value": np.zeros((4, 2)), "kind": "point_cloud"}, "点群"),
         ({"value": np.zeros((2, 3, 4, 5)), "kind": "image"}, "画像"),
         ({"value": np.zeros(10), "kind": "audio"}, "sample_rate"),
+        ({"value": np.zeros((100, 2)), "kind": "audio", "sample_rate": 8},
+         ".T"),
+        ({"value": np.full((2, 3), np.nan), "kind": "point_cloud"}, "nan"),
+        ({"value": np.zeros((2, 2)), "kind": "file"}, "pathlib"),
+        ({"value": "x", "name": ".hidden"}, "名前"),
         ({"value": "x", "kind": "video"}, "kind"),
         ({"value": "x", "epoch": -1}, "epoch"),
         ({"value": "x", "name": "a/b"}, "名前"),
@@ -624,7 +631,7 @@ def test_old_run_without_optional_files(tmp_path: Path) -> None:
     assert load_evaluations(first.run_dir) == []
     assert load_samples(first.run_dir) == []
 
-    # その実験から再開し, 微調整の元としても書ける
+    # その実験からの再開と, 微調整の元としての書き込み
     second = make_experiment(
         tmp_path / "resume",
         f"trainer:\n  epochs: 2\n  resume_from: {first.run_dir / 'last.pt'}\n"
@@ -636,3 +643,99 @@ def test_old_run_without_optional_files(tmp_path: Path) -> None:
         }}
     )
     assert task["base"]["experiment"] == first.run_dir.as_posix()
+
+
+def test_save_sample_failure_keeps_previous(tmp_path: Path) -> None:
+    """
+    置き換えの書き込みに失敗した場合に前の見本と一覧が残ることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    old = save_sample(experiment, "out", "前の見本", epoch=1)
+    with pytest.raises(ValueError, match="画像"):
+        save_sample(
+            experiment, "out", np.zeros((2, 2, 2, 2)), epoch=1, kind="image"
+        )
+    assert old.read_text(encoding="utf-8") == "前の見本"
+    assert [item["file"] for item in load_samples(experiment.run_dir)] == [
+        "epoch_0001/out.txt"
+    ]
+
+
+def test_task_dataset_unknown_origin_field_and_null(tmp_path: Path) -> None:
+    """
+    dataset.yaml の知らない欄を写さず, null と書いた項目が埋めた値を
+    消さないことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # ML-EDA が版を上げずに出どころへ足した欄
+    folder = write_dataset(tmp_path / "data")
+    info = OmegaConf.load(folder / "dataset.yaml")
+    info.target.origin.version = "1.2"
+    OmegaConf.save(info, folder / "dataset.yaml")
+
+    # 全ての項目を null で並べた config
+    experiment = make_experiment(
+        tmp_path,
+        "task:\n  dataset: data\n  role: null\n  what: null\n"
+        "  target:\n    kind: null\n    origin: null\n"
+    )
+    task = load_task(experiment.run_dir)
+    assert task["role"] == "predict"
+    assert task["target"]["kind"] == "point_cloud"
+    assert set(task["target"]["origin"]) == {"type", "name", "settings"}
+    assert task["target"]["origin"]["type"] == "process"
+
+
+def test_config_task_without_task_keys(tmp_path: Path) -> None:
+    """
+    task.yaml の項目を持たない辞書の task は警告して使わないことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    with pytest.warns(UserWarning, match="task.yaml の項目が無い"):
+        experiment = make_experiment(tmp_path, "task:\n  classes: 10\n")
+    assert not (experiment.run_dir / TASK_FILE).exists()
+
+
+def test_save_evaluation_empty_table(tmp_path: Path) -> None:
+    """
+    空の表は行の無い評価になることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    save_evaluation(experiment, "empty", {}, "test")
+    evaluation = load_evaluations(experiment.run_dir)[0]
+    assert evaluation["columns"] == [] and evaluation["rows"] == []

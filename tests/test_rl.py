@@ -61,12 +61,13 @@ class ToyEnv:
         info: dict
             空の辞書
         """
-        # 渡された種を記録して歩数を戻す
+        # 渡された種の記録と歩数の初期化
         self.seeds.append(seed)
         self.t = 0
         observation = np.array([0.0], dtype=np.float32)
+        info: dict = {}
 
-        return observation, {}
+        return observation, info
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
         """
@@ -82,7 +83,7 @@ class ToyEnv:
         result: tuple[np.ndarray, float, bool, bool, dict]
             観測, 報酬, 終了, 打ち切り, info
         """
-        # 歩数を進めて, 最後の歩で成功を知らせる
+        # 歩数を進め, 最後の歩で成功の通知
         self.t += 1
         observation = np.array([float(self.t)], dtype=np.float32)
         info = {"cost": float(action == 0)}
@@ -142,7 +143,7 @@ def test_buffer_returns_and_batch() -> None:
     assert batch["episode_success"].tolist() == [1.0]
     assert len(buffer) == 3
 
-    # 途中のエピソードはバッチにできない
+    # 途中のエピソードはエラー
     buffer.add([0.0, 1.0], 0, 0.0)
     with pytest.raises(ValueError, match="途中"):
         buffer.to_batch()
@@ -357,7 +358,7 @@ def box_spec() -> dict:
     spec: dict
         2 次元の観測と 2 次元の行動の policy.json の中身
     """
-    # 観測の 0 番目に止める条件, 行動は空間より狭い上限
+    # 観測の 0 番目に止める条件, 行動は空間より狭い範囲
     obs_space = Space(low=[-np.inf, -1.0], high=[np.inf, 1.0])
     act_space = Space(low=[-2.0, -2.0], high=[2.0, 2.0])
     guards = make_guards(
@@ -396,7 +397,7 @@ def test_apply_guards_box() -> None:
     """
     spec = box_spec()
 
-    # 上限の中はそのまま, 外は clip
+    # 範囲の中はそのまま, 外は clip
     result = apply_guards(spec, [0.0, 0.0], [0.5, 0.1])
     assert result["status"] == "ok"
     assert result["action"].tolist() == pytest.approx([0.5, 0.1])
@@ -450,7 +451,7 @@ def test_apply_guards_discrete_and_stop() -> None:
     }
     assert apply_guards(spec, [0.0], [3.0, 1.0, 0.0])["action"] == 0
 
-    # 止める条件に当たると元の制御に戻す (行動なし)
+    # 止める条件に当たると元の制御への切り替え (行動なし)
     result = apply_guards(spec, [0.9], [3.0, 1.0, 0.0])
     assert result["status"] == "handover"
     assert result["action"] is None
@@ -481,11 +482,11 @@ def test_make_guards_errors() -> None:
         make_guards(obs_space, Space(n=2), fallback="action")
     with pytest.raises(ValueError, match="fallback"):
         make_guards(obs_space, Space(n=2), fallback="ignore")
-    with pytest.raises(ValueError, match="上限の中"):
+    with pytest.raises(ValueError, match="範囲の中"):
         make_guards(
             obs_space, Space(low=[1.0], high=[2.0]), fallback="action"
         )
-    with pytest.raises(ValueError, match="要素の数"):
+    with pytest.raises(ValueError, match="要素が 1 個"):
         make_guards(obs_space, Space(n=2), observation_low=[0.0, 0.0])
 
 
@@ -524,7 +525,7 @@ def test_bundle_round_trip(tmp_path: Path) -> None:
     assert spec["guards"]["fallback"]["kind"] == "stop"
     assert spec["metadata"] == {"note": "テスト"}
 
-    # 別に作ったモデルに読み込んでも同じ出力, 守りも当たる
+    # 別に作ったモデルに読み込んでも同じ出力と守り
     torch.manual_seed(1)
     policy = load_policy(directory, nn.Linear(2, 2))
     observation = np.array([0.3, -0.2], dtype=np.float32)
@@ -599,3 +600,183 @@ def test_policy_format_documented(tmp_path: Path) -> None:
     assert sorted(path.name for path in directory.iterdir()) == [
         "policy.json", "policy.pt"
     ]
+
+
+def test_rollout_uses_eval_mode_and_restores() -> None:
+    """
+    行動を選ぶ間だけ推論モードにし, BatchNorm のモデルでも動くことを
+    確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(1, 4), nn.BatchNorm1d(4), nn.Linear(4, 2))
+    loader = RolloutLoader(ToyEnv(), model, episodes=1)
+
+    # 1 件の観測でもエラーにならず, 学習モードに戻る
+    batches = list(loader)
+    assert batches[0]["actions"].numel() == 5
+    assert model.training
+
+
+def test_rollout_rejects_eval_train(tmp_path: Path) -> None:
+    """
+    trainer.eval_train で RolloutLoader を評価し直すとエラーになることを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(
+        tmp_path, "trainer:\n  epochs: 1\n  eval_train: true\n"
+    )
+    model = toy_model()
+    loader = RolloutLoader(ToyEnv(), model, episodes=2)
+    trainer = Trainer(model, experiment, ReinforceStep())
+    with pytest.raises(ValueError, match="eval_train"):
+        trainer.fit(loader)
+
+
+def test_rollout_rejects_other_action_spaces() -> None:
+    """
+    0 から始まらない Discrete と, 形を持つ空間を学習で拒むことを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 番号が -1 から始まる行動
+    env = ToyEnv()
+    env.action_space.start = -1
+    with pytest.raises(ValueError, match="0 から"):
+        RolloutLoader(env, toy_model(), episodes=1)
+
+    # MultiBinary のように n と形を持つ空間
+    env = ToyEnv()
+    env.action_space.shape = (2,)
+    with pytest.raises(ValueError, match="Discrete"):
+        RolloutLoader(env, toy_model(), episodes=1)
+
+
+def test_guards_reject_nan_and_bad_json(tmp_path: Path) -> None:
+    """
+    nan の範囲と, 書き換えた policy.json の NaN や不正な値を拒むことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    obs_space = Space(low=[-1.0], high=[1.0])
+    act_space = Space(low=[-1.0], high=[1.0])
+
+    # 書き出す前の nan はエラー
+    with pytest.raises(ValueError, match="nan"):
+        make_guards(obs_space, act_space, observation_high=[np.nan])
+
+    # policy.json に NaN, -Infinity, 小数の番号, 真偽値の版を書いたものはエラー
+    directory = export_policy(
+        tmp_path / "policy", nn.Linear(1, 1), obs_space, act_space
+    )
+    path = directory / "policy.json"
+    text = path.read_text(encoding="utf-8")
+    spec = json.loads(text)
+    for old, new in (
+        ('"observation_high": null', '"observation_high": [NaN]'),
+        ('"action_high": null', '"action_high": [-Infinity]')
+    ):
+        assert old in text
+        path.write_text(text.replace(old, new), encoding="utf-8")
+        with pytest.raises(ValueError):
+            read_policy_spec(directory)
+    for key, value in (
+        ("format_version", True), ("format_version", 0),
+        ("weights", "../other.pt")
+    ):
+        broken = dict(spec)
+        broken[key] = value
+        path.write_text(json.dumps(broken), encoding="utf-8")
+        with pytest.raises(ValueError):
+            read_policy_spec(directory)
+    discrete = dict(spec)
+    discrete["head"] = "categorical"
+    discrete["action_space"] = {"type": "discrete", "n": 3, "start": 0}
+    discrete["guards"] = dict(spec["guards"], allowed_actions=[1.0, 2.0])
+    path.write_text(json.dumps(discrete), encoding="utf-8")
+    with pytest.raises(ValueError, match="allowed_actions"):
+        read_policy_spec(directory)
+
+
+class BrokenModel(nn.Module):
+    def __init__(self):
+        # 親クラスのコンストラクタを呼び出す
+        super(BrokenModel, self).__init__()
+
+        # 重みを持たせるための層
+        self.linear = nn.Linear(1, 2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        いつもエラーを出す関数
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            観測
+
+        Returns
+        ----------
+        output: torch.Tensor
+            返らない
+        """
+        # モデルのエラーの再現
+        raise RuntimeError("壊れたモデル")
+
+
+def test_policy_fallback_on_bad_input(tmp_path: Path) -> None:
+    """
+    数にできない観測とモデルのエラーで, 外れたときの動きになることを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    obs_space = Space(low=[-1.0], high=[1.0])
+    directory = export_policy(
+        tmp_path / "policy", BrokenModel(), obs_space, Space(n=2)
+    )
+    policy = load_policy(directory, BrokenModel())
+
+    # 文字の観測, 形の違う観測, モデルのエラーはどれも stop
+    for observation in ("abc", [[0.0], [0.0]], [0.0]):
+        result = policy.act(observation)
+        assert result["status"] == "stop"
+        assert result["action"] is None
+        assert result["reasons"]

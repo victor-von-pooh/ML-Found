@@ -18,7 +18,7 @@ def episode_metrics(batch: dict[str, torch.Tensor]) -> dict:
         (violations) の平均, 成功の割合 (success. 環境が知らせた場合),
         エピソードの数 (batch_size)
     """
-    # エピソードの数で重み付けして平均されるように batch_size を添える
+    # エピソードの数で重み付けして平均するための batch_size の追加
     metrics = {
         "reward": batch["episode_rewards"].mean(),
         "length": batch["episode_lengths"].mean(),
@@ -60,7 +60,7 @@ class ReinforceStep:
         advantage: torch.Tensor
             平均を引いた値, normalize の場合は標準偏差でも割った値
         """
-        # バッチの平均を基準にして分散を下げる
+        # バッチの平均を基準にした分散の低減
         advantage = returns - returns.mean()
         if self.normalize and returns.numel() > 1:
             advantage = advantage / (returns.std() + 1e-8)
@@ -91,7 +91,7 @@ class ReinforceStep:
         # エピソードの指標
         outputs = episode_metrics(batch)
 
-        # 検証は報酬の和が大きいほど小さい値を loss にする
+        # 検証は報酬の和の平均の符号を反転した値が loss
         if phase != "train":
             outputs["loss"] = -batch["episode_rewards"].mean()
             return outputs

@@ -53,7 +53,7 @@ class ExperienceBuffer:
         steps: int
             終えたエピソードの歩数の合計
         """
-        # 途中のエピソードは含めない
+        # 途中のエピソードは除外
         steps = len(self.actions)
 
         return steps
@@ -106,7 +106,7 @@ class ExperienceBuffer:
             エピソードの報酬の和 (reward), 歩数 (length), 安全の違反の数
             (violations), 成功 (success)
         """
-        # 歩の無いエピソードは記録しない
+        # 歩の無いエピソードはエラー
         if not self.current:
             raise ValueError("歩の無いエピソードは終えられません")
 
@@ -118,7 +118,7 @@ class ExperienceBuffer:
             returns.append(running)
         returns.reverse()
 
-        # 1 歩ごとの記録に移す
+        # 1 歩ごとの記録への移動
         for (obs, action, reward, prob), value in zip(self.current, returns):
             self.observations.append(obs)
             self.actions.append(action)
@@ -154,7 +154,7 @@ class ExperienceBuffer:
             エピソードごとの episode_rewards, episode_lengths,
             episode_violations (環境が成功を知らせた場合は episode_success)
         """
-        # 途中のエピソードと空の入れ物は渡さない
+        # 途中のエピソードと空の入れ物はエラー
         if self.current:
             raise ValueError("途中のエピソードがあります. end_episode を呼んでください")
         if not self.episodes:

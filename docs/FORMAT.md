@@ -179,7 +179,7 @@ policy/
 | `observation_space` | 辞書 | 観測の空間. `box` だけ (下の「空間」) |
 | `action_space` | 辞書 | 行動の空間. `discrete` か `box` |
 | `guards` | 辞書 | 守り (下の「guards」) |
-| `weights` | 文字 | 重みのファイルの名前 (`policy.pt`) |
+| `weights` | 文字 | 重みのファイルの名前 (`policy.pt` に限る) |
 | `model_class` | 文字 | 書き出したモデルのクラスの名前 (`モジュール.クラス`. 読む側は同じ組み立てのモデルを用意する. コードは自動では読まない) |
 | `created_at` | 文字 | 書き出した時刻 (タイムゾーン付きの ISO 8601) |
 | `metadata` | 辞書 | 書き出した側の補足 (環境の名前, 学習の方法など). 形は決めない |
@@ -189,21 +189,21 @@ policy/
 | 項目 | 型 | 中身 |
 | --- | --- | --- |
 | `type` | 文字 | `discrete` (番号で選ぶ) か `box` (数の配列) |
-| `n`, `start` | 整数 | `discrete` の行動の数と最初の番号 (行動は `start` から `start + n - 1`) |
+| `n`, `start` | 整数 | `discrete` の行動の数と最初の番号 (行動は `start` から `start + n - 1`). 真偽値は不可 |
 | `shape` | 整数のリスト | `box` の形 |
-| `low`, `high` | 数か null のリスト | `box` の要素ごとの下限と上限を平らにしたもの. null は制限なし (無限大) |
+| `low`, `high` | 数か null のリスト | `box` の要素ごとの下限と上限を平らにしたもの. null は制限なし (無限大). 数は有限 (NaN と Infinity は JSON の外なので書かない. 読む側はエラーにする) |
 
 ### guards
 
 | 項目 | 型 | 中身 |
 | --- | --- | --- |
-| `action_low`, `action_high` | 数か null のリストか null | `box` の行動の上限. 空間の範囲との狭い方に clip する. null は空間の範囲のまま |
+| `action_low`, `action_high` | 数か null のリストか null | `box` の行動の範囲. 空間の範囲との狭い方に clip する. null は空間の範囲のまま |
 | `allowed_actions` | 整数のリストか null | `discrete` で選んでよい行動. 最もスコアの高い行動が含まれなければ, 含まれる中の最も高い行動にする. null は全て |
 | `observation_low`, `observation_high` | 数か null のリストか null | 止める条件. 観測の要素がこの範囲を外れたら外れたときの動きにする. 要素の null とリストの null は制限なし |
-| `fallback` | 辞書 | 外れたときの動き. `kind` が `stop` (止める), `handover` (元の制御に戻す), `action` (決めた行動 `action` にする. `discrete` は番号, `box` は数のリストで, 行動の上限の中) |
+| `fallback` | 辞書 | 外れたときの動き. `kind` が `stop` (止める), `handover` (元の制御に戻す), `action` (決めた行動 `action` にする. `discrete` は番号, `box` は数のリストで, 行動の範囲の中) |
 
 守りを当てる順は次のとおり. 結果は `action` (行動. `stop` と `handover` では null), `status` (`ok`, `clipped`, `fallback`, `stop`, `handover`), `reasons` (守りが働いた理由の文字のリスト).
 
-1. 観測の大きさが空間と違う, 有限でない値がある, 止める条件の範囲の外のどれかなら, 外れたときの動き
-2. モデルの出力に有限でない値があるか, 大きさが違えば, 外れたときの動き
-3. 行動の上限を当てる (`box` は clip, `discrete` は選んでよい行動). 変えた場合は `clipped`
+1. 観測を数の配列にできない, 形が空間と違う (同じ大きさの平らな配列は可), 有限でない値がある, 止める条件の範囲の外のどれかなら, 外れたときの動き
+2. モデルがエラーになるか, 出力に有限でない値があるか, 大きさが違えば, 外れたときの動き
+3. 行動の範囲を当てる (`box` は clip, `discrete` は選んでよい行動). 変えた場合は `clipped`

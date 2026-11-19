@@ -98,18 +98,26 @@ def select_action(
     prob: float
         その行動を選んだ確率 (greedy の場合は 1)
     """
-    # モデルと同じデバイスで, 勾配を記録せずにスコアを計算
+    # モデルと同じデバイスで, 推論モードにして勾配を記録せずにスコアを計算
+    # (1 件の観測の BatchNorm と, Dropout の違いで確率がずれるのを避ける
+    # ため. 元のモードに復帰)
     device = model_device(model)
     obs = torch.as_tensor(
         np.asarray(observation, dtype=np.float32), device=device
     )
-    with torch.no_grad():
-        logits = model(obs.unsqueeze(0))[0]
+    training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            logits = model(obs.unsqueeze(0))[0]
+    finally:
+        model.train(training)
 
     # 評価は最良の行動, 学習は探索を入れた分布から選択
     if greedy:
         action = int(logits.argmax().item())
-        return action, 1.0
+        prob = 1.0
+        return action, prob
     probs = behavior_probs(logits.float(), exploration)
     action = int(torch.multinomial(probs, 1).item())
     prob = float(probs[action].item())
@@ -158,7 +166,8 @@ def is_violation(info: Any, safety_key: Optional[str]) -> bool:
     """
     # キーが無い場合と数えない設定は違反なし
     if safety_key is None or not isinstance(info, dict):
-        return False
+        violated = False
+        return violated
     value = info.get(safety_key, 0)
     violated = bool(np.any(np.asarray(value, dtype=np.float64) > 0))
 
@@ -201,7 +210,7 @@ def run_episode(
     stats: dict[str, Any]
         エピソードの報酬の和, 歩数, 安全の違反の数, 成功
     """
-    # 環境を初期化して, 終了か打ち切りまで行動を選んで進める
+    # 環境の初期化と, 終了か打ち切りまでの行動の選択
     observation, info = env.reset(seed=seed)
     steps = 0
     done = False
@@ -243,12 +252,20 @@ def check_discrete(env: Any) -> None:
     ----------
     None
     """
-    # 行動の空間を持つ場合だけ, 数 n を持つことを確認
+    # 行動の空間を持つ場合だけ, 0 から始まる Discrete であることを確認
+    # (MultiBinary なども n を持つので, 形が () であることも確認)
     space = getattr(env, "action_space", None)
-    if space is not None and not isinstance(getattr(space, "n", None),
-                                            (int, np.integer)):
+    if space is None:
+        return
+    is_discrete = isinstance(getattr(space, "n", None), (int, np.integer))
+    if not is_discrete or tuple(getattr(space, "shape", ()) or ()) != ():
         raise ValueError(
             "今の強化学習の補助は, 行動を番号で選ぶ環境 (Discrete) だけに"
+            f"対応します: {space!r}"
+        )
+    if int(getattr(space, "start", 0)) != 0:
+        raise ValueError(
+            "今の強化学習の補助は, 行動の番号が 0 から始まる環境だけに"
             f"対応します: {space!r}"
         )
 
@@ -308,7 +325,7 @@ class RolloutLoader:
         n_batches: int
             1 エポックのバッチの数
         """
-        # 歩数で決める場合はエピソードの長さで変わるので数えられない
+        # 歩数で決める場合はエピソードの長さで変わるのでエラー
         if self.episodes is None:
             raise TypeError("steps で決めた RolloutLoader の長さは分かりません")
         n_batches = math.ceil(self.episodes / self.batch_episodes)
@@ -347,7 +364,15 @@ class RolloutLoader:
         batches: Iterator[dict[str, torch.Tensor]]
             ExperienceBuffer.to_batch の形のバッチ
         """
-        # エピソードの数か歩数がエポックの長さに達するまで集める
+        # 推論モード (trainer.eval_train の評価し直し) では, 学習の環境の
+        # 乱数を進めて結果を変えてしまうのでエラー
+        if not self.model.training:
+            raise ValueError(
+                "RolloutLoader は学習だけに使えます. trainer.eval_train は "
+                "false にし, 評価には EvaluationLoader を使ってください"
+            )
+
+        # エピソードの数か歩数がエポックの長さに達するまでの収集
         # 歩数で決める場合は, 達したエピソードの終わりまで
         buffer = ExperienceBuffer(self.gamma)
         n_episodes = 0

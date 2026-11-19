@@ -23,8 +23,8 @@ ML-Found は単体でも使えるライブラリだが, 「機械学習を全て
 - **torch の Optimizer と Scheduler をそのまま使える**: クラス名と引数を config に書くだけで, `torch.optim` にあるものを使える. closure が必要な LBFGS も自動で見分けて使える
 - **ベストモデルと再開**: 監視する指標が最も良いモデルを保存して最後に戻す. Early Stopping, 勾配クリッピング, チェックポイントからの再開にも対応する
 - **Lightning などに依存しない**: 素の PyTorch だけで書いている
-- **強化学習と方策の書き出し (任意)**: Gymnasium の形の環境とのやり取りを loader にして, 同じ `Trainer` で方策を学習し, 守り (行動の上限, 止める条件, 外れたときの動き) と一緒に書き出せる
-- **追加の依存の案内**: 任意の機能 (強化学習, MuJoCo, ROS 2, CUDA) ごとに, 要るもの, 入っているかの確かめ方, 入れ方の一覧を持ち, 足りなければ次の一手を言って止まる
+- **強化学習と方策の書き出し (任意)**: Gymnasium の形の環境とのやり取りを loader にして, 同じ `Trainer` で方策を学習し, 守り (行動の範囲, 止める条件, 外れたときの動き) と一緒に書き出せる
+- **追加の依存の案内**: 任意の機能 (強化学習, MuJoCo, ROS 2, CUDA) ごとに, 要るもの, 入っているかの確かめ方, 入れ方の一覧を持ち, 足りなければ次の一手を案内して止まる
 
 ## 導入
 
@@ -52,23 +52,23 @@ pip install -e ./ML-Found
 
 ### 追加の依存
 
-任意の機能に要るライブラリは, 要るまで入れない (追加の依存). ML-Found は機能ごとに「要るもの, 入っているかの確かめ方, 入れ方」の一覧 (登録簿) を持ち, 足りないまま使うと, 次の一手 (pip のコマンドか公式の手順) を言って止まる.
+任意の機能に要るライブラリは本体の依存に含めず, 追加の依存 (pip の extras) として要るときだけ入れる. ML-Found は機能ごとに「要るもの, 入っているかの確かめ方, 入れ方」の一覧 (登録簿) を持ち, 足りないまま使うと, 次の一手 (pip のコマンドか公式の手順) を案内して止まる.
 
 | 機能 | 要るもの (確かめ方) | 入れ方 |
 | --- | --- | --- |
-| `rl` | `gymnasium` (import できるか) | `pip install -e "./ML-Found[rl]"` (追加の依存 `rl`) |
-| `mujoco` | `gymnasium` と `mujoco` (import できるか) | `pip install -e "./ML-Found[mujoco]"`. 描画には OpenGL が要る ([公式の手順](https://mujoco.readthedocs.io/en/stable/python.html)) |
+| `rl` | `gymnasium` (モジュールが見つかるか) | `pip install -e "./ML-Found[rl]"` (追加の依存 `rl`) |
+| `mujoco` | `gymnasium` と `mujoco` (モジュールが見つかるか) | `pip install -e "./ML-Found[mujoco]"`. 描画には OpenGL が要る ([公式の手順](https://mujoco.readthedocs.io/en/stable/python.html)) |
 | `ros2` | `rclpy` か `ros2` のコマンドのどちらか | pip では入らない. [公式の手順](https://docs.ros.org/) で入れ, setup のスクリプトを source してから Python を起動する |
 | `cuda` | `torch.cuda.is_available()` | NVIDIA のドライバと, [PyTorch の手順](https://pytorch.org/get-started/locally/) で CUDA 付きの PyTorch |
 
 ```python
 from ml_found import describe_requirements, require
 
-require("rl")  # 無ければ MissingRequirementError (ImportError の子) で, 入れ方を言って止まる
+require("rl")  # 無ければ MissingRequirementError (ImportError の子) で, 入れ方を示して止まる
 entries = describe_requirements()  # 全ての機能の一覧 (JSON にできる)
 ```
 
-- `describe_requirements(names=None, check=True)` は, 機能ごとに `name`, `description`, `checks` (確かめ方ごとの `kind`, `name`, `ok`, `error`), `match` (`all` か `any`), `available`, `install` (`kind` が `pip` か `guide`, `extra`, `packages`, `url`, `command`, `extra_command`), `note` を返す. 画面 (ML-Dashboard) のカードや, 問題の設定の受け渡し (ML-Quest) で, 足りないものを早めに知らせるのに使う. `check=False` では確かめない (`ok` と `available` が `null`)
+- `describe_requirements(names=None, check=True)` は, 機能ごとに `name`, `description`, `checks` (確かめ方ごとの `kind`, `name`, `ok`, `error`), `match` (`all` か `any`), `available`, `install` (`kind` が `pip` か `guide`, `extra`, `packages`, `url`, `command`, `extra_command`), `note` を返す. 画面 (ML-Dashboard) のカードや, 問題の設定の受け渡し (ML-Quest) で, 足りないものを早めに知らせるのに使う. `check=False` では確かめない (`ok` と `available` が `None`. JSON では null)
 - 確かめ方は import せずにモジュールを探す (`importlib.util.find_spec`) ので, 一覧を作るだけで重いライブラリを読み込まない
 - プロジェクトの機能は `register_requirement(name, description, checks, install, match, note)` で加えられる (`ml_found.utils`. ML-Found の機能の名前は上書きできない)
 
@@ -503,7 +503,7 @@ from ml_found.rl import (
     EvaluationLoader, Exploration, ReinforceStep, RolloutLoader, make_env
 )
 
-# 学習用と評価用の環境は別に作る (Gymnasium が無ければ入れ方を言って止まる)
+# 学習用と評価用の環境は別に作る (Gymnasium が無ければ入れ方を示して止まる)
 train_env = make_env("CartPole-v1")
 valid_env = make_env("CartPole-v1")
 model = PolicyNet(...)  # 観測から行動ごとのスコアを返すモデル
@@ -524,13 +524,15 @@ history = trainer.fit(train_loader, valid_loader)
 - **評価**: `EvaluationLoader` は学習とは別の環境で, 毎回 `seed`, `seed + 1`, ... の種で始めたエピソードを, 最もスコアの高い行動で動かす (エポックの間で比べられる). 全てのエピソードを 1 つのバッチにする
 - **指標**: エピソードごとの報酬の和 (`reward`), 歩数 (`length`), 安全の違反の数 (`violations`. 環境が `info` の `safety_key` (既定 `cost`) に 0 より大きい値を入れた歩の数) を, エピソードの数で重み付けして平均する. `success_key` (`is_success` など) を指定すると, 最後の歩の値から成功の割合 (`success`) も記録する. 学習では方策の損失 (`loss`) とエントロピー (`entropy`) も記録する
 - **損失**: `ReinforceStep` は, バッチの平均を基準 (baseline) にした REINFORCE. 学習の `loss` は方策の勾配の損失, 検証の `loss` は評価の報酬の和の平均の符号を反転した値 (意味が違うので, 監視する指標は `trainer.monitor: valid/reward` と `trainer.mode: max` にする)
-- 行動を番号で選ぶ環境 (Discrete) だけに対応する. 連続の行動 (Box) の学習と, 価値の関数を使う方法 (Actor-Critic など) は, 自分で step を書けば今の仕組みで動かせる (名前付きの複数の Optimizer も使える)
+- 行動を番号で選ぶ環境 (Discrete. 番号は 0 から) だけに対応する. 連続の行動 (Box) の学習と, 価値の関数を使う方法 (Actor-Critic など) は, 自分で loader (経験の集め方) と step を書けば今の仕組みで動かせる (名前付きの複数の Optimizer も使える)
+- 行動を選ぶときは, モデルを一時的に推論モードにする (1 件の観測の BatchNorm と, Dropout で確率がずれるのを避けるため)
+- `RolloutLoader` は学習だけに使う. `trainer.eval_train: true` では, 評価し直しで学習の環境の乱数が進んで結果が変わるので, エラーにする (評価は `EvaluationLoader`)
 - 再開 (`resume_from`) では, モデルと Optimizer は戻るが, 環境の状態と環境の乱数は戻らない
 - `eval_model` を上書きした場合は, `EvaluationLoader` に渡すモデルもそのモデルにする (loader は渡されたモデルで行動を選ぶ)
 
 ### 方策の書き出しと守り
 
-学習した方策は, 重み, 観測と行動の空間, 守り (行動の上限, 止める条件, 外れたときの動き) を 1 つのディレクトリ (方策の一式) に書き出す. 置き場は実験のディレクトリの `policy/` を推奨する (形と版は [docs/FORMAT.md](docs/FORMAT.md) の「policy/」).
+学習した方策は, 重み, 観測と行動の空間, 守り (行動の範囲, 止める条件, 外れたときの動き) を 1 つのディレクトリ (方策の一式) に書き出す. 置き場は実験のディレクトリの `policy/` を推奨する (形と版は [docs/FORMAT.md](docs/FORMAT.md) の「policy/」).
 
 ```python
 from ml_found.rl import export_policy, load_policy, make_guards
@@ -551,11 +553,12 @@ result = policy.act(observation)
 # {"action": 0, "status": "ok", "reasons": []}
 ```
 
-- **行動の上限**: 連続の行動 (Box) は `action_low` と `action_high` に clip する (空間の範囲との狭い方). 番号で選ぶ行動 (Discrete) は `allowed_actions` の中の最もスコアの高い行動にする. どちらも `status` が `clipped` になる
-- **止める条件**: 観測の要素ごとの範囲 (`observation_low`, `observation_high`. `None` は制限なし). 範囲の外, 観測の形の違い, 有限でない観測とモデルの出力は, 外れたときの動きにする
+- **行動の範囲**: 連続の行動 (Box) は `action_low` と `action_high` に clip する (空間の範囲との狭い方). 番号で選ぶ行動 (Discrete) は `allowed_actions` の中の最もスコアの高い行動にする. どちらも `status` が `clipped` になる
+- **止める条件**: 観測の要素ごとの範囲 (`observation_low`, `observation_high`. `None` は制限なし). 範囲の外の観測, 観測の形の違いと有限でない値, モデルの出力の大きさの違いと有限でない値, モデルのエラーは, 外れたときの動きにする
+- 範囲は有限の数か `None` (制限なし) で書く. nan は守りを黙って外すことになるので, 書き出しでも読み込みでもエラーにする
 - **外れたときの動き** (`fallback`): `stop` (行動を返さず止める. `status` が `stop`), `handover` (行動を返さず元の制御に戻す. `status` が `handover`), `action` (決めた行動. 連続の行動は既定で 0 の行動. `status` が `fallback`)
 - `apply_guards(spec, observation, output)` は, モデルの出力に守りを当てるだけの純粋な関数. 推論の段階 (ML-Inference) は, この関数と `policy.json` で同じ守りを当てられる
-- `load_policy` には, 書き出したときと同じ組み立てのモデルを渡す (重みは一式から読む). 組み立て方は一式に入れず, `model_class` (クラスの名前) と `metadata` に残す
+- `load_policy` には, 書き出したときと同じ組み立てのモデルを渡す (重みは一式から読み, cpu で動かす). 一式に入るのはクラスの名前 (`model_class`) だけなので, 組み立て方 (隠れ層の次元数など) は必要なら `metadata` に書く
 - 返す方策は, 観測から行動と守りの結果を返すだけで, 環境や機械には触れない. 実機での実行は道具の外にあり, 方策を使ってよいかと守りの範囲は人が決める
 
 ## config の項目

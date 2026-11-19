@@ -65,12 +65,12 @@ Python のコードからは, `Trainer.add_callback` で登録した関数がエ
 
 ### 9. 追加の依存の一覧と案内 (最初の分は対応済み. 2026-11-19 の相談の答え)
 
-外のライブラリは要るまで入れず, 入れるときは追加の依存にする. 機能ごとに「要るもの, 入っているかの確かめ方, 入れ方」の登録簿を持ち (`describe_requirements`), 足りなければ `require` が次の一手 (pip のコマンドか, pip で入らないものは公式の手順) を言って止まる. 最初は `rl` (Gymnasium), `mujoco`, `ros2`, `cuda` を入れた.
+外のライブラリは要るまで入れず, 入れるときは追加の依存にする. 機能ごとに「要るもの, 入っているかの確かめ方, 入れ方」の登録簿を持ち (`describe_requirements`), 足りなければ `require` が次の一手 (pip のコマンドか, pip で入らないものは公式の手順) を案内して止まる. 最初は `rl` (Gymnasium), `mujoco`, `ros2`, `cuda` を入れた.
 
 - 残り: 画面 (ML-Dashboard) のカードで一覧を見せる. 問題の設定の受け渡し (ML-Quest) が要る機能の名前を書き, 学習を始める前に確かめる. 機能を足すときは登録簿にも足す (学習済みのモデルの重みの取得など)
 
 ### 10. 強化学習の方策 (最初の分は対応済み. 2026-11-19 の相談の答え)
 
-自律して行動する方策を作り, 確かめ, 守りと一緒に書き出すところまでを扱う. 実機での実行は道具の外. 環境とのやり取りを loader にして `Trainer` の step とエポックの決まりに乗せ (`RolloutLoader`, `EvaluationLoader`), 経験の記録 (`ExperienceBuffer`), 探索の設定 (`Exploration`), 基準付きの REINFORCE (`ReinforceStep`), エピソードの報酬, 歩数, 安全の違反, 成功の割合の記録, 守り (行動の上限, 止める条件, 外れたときの動き) と一緒の書き出し (`export_policy`, `policy/` の形は docs/FORMAT.md) と読み直し (`load_policy`, `apply_guards`) を入れた. 例は `examples/cartpole/`.
+自律して行動する方策を作り, 確かめ, 守りと一緒に書き出すところまでを扱う. 実機での実行は道具の外. 環境とのやり取りを loader にして `Trainer` の step とエポックの決まりに乗せ (`RolloutLoader`, `EvaluationLoader`), 経験の記録 (`ExperienceBuffer`), 探索の設定 (`Exploration`), 基準付きの REINFORCE (`ReinforceStep`), エピソードの報酬, 歩数, 安全の違反, 成功の割合の記録, 守り (行動の範囲, 止める条件, 外れたときの動き) と一緒の書き出し (`export_policy`, `policy/` の形は docs/FORMAT.md) と読み直し (`load_policy`, `apply_guards`) を入れた. 例は `examples/cartpole/`.
 
 - 残り: 連続の行動 (Box) の学習と価値の関数を使う方法 (Actor-Critic, PPO など) の補助, 記録した経験からの方策の見積もり (重点サンプリングなど), 環境の状態の再開, 評価の成功率を画面で見せること

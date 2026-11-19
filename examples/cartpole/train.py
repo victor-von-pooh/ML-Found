@@ -54,7 +54,7 @@ project_dir = Path(__file__).resolve().parent
 cfg, diff = load_project_config(str(project_dir))
 experiment = start_experiment(cfg, diff, str(project_dir))
 
-# 学習用と評価用の環境は別に作る (Gymnasium が無ければ入れ方を言って止まる)
+# 学習用と評価用の環境は別 (Gymnasium が無ければ入れ方を示して止まる)
 train_env = make_env(cfg.env.id)
 valid_env = make_env(cfg.env.id)
 obs_dim = train_env.observation_space.shape[0]
@@ -80,7 +80,8 @@ step = ReinforceStep(entropy_coef=cfg.loss.entropy_coef)
 trainer = Trainer(model, experiment, step)
 history = trainer.fit(train_loader, valid_loader)
 
-# 止める条件 (台車の位置と棒の角度) と, 外れたら元の制御に戻す守りで書き出し
+# 止める条件 (台車の位置と棒の角度) と, 外れたら元の制御に戻す守りで
+# 書き出し
 limits = [cfg.guards.position_limit, None, cfg.guards.angle_limit, None]
 guards = make_guards(
     train_env.observation_space, train_env.action_space,
@@ -90,10 +91,13 @@ guards = make_guards(
 policy_dir = export_policy(
     experiment.run_dir / "policy", model, train_env.observation_space,
     train_env.action_space, guards,
-    metadata={"env_id": cfg.env.id, "algorithm": "REINFORCE"}
+    metadata={
+        "env_id": cfg.env.id, "algorithm": "REINFORCE",
+        "model": {"hidden_dim": cfg.model.hidden_dim}
+    }
 )
 
-# 書き出した一式を読み直し, 1 つの観測で守りを当てた行動を確かめる
+# 書き出した一式を読み直し, 1 つの観測で守りを当てた行動の確認
 policy = load_policy(policy_dir, PolicyNet(obs_dim, cfg.model.hidden_dim,
                                            n_actions))
 observation, _ = valid_env.reset(seed=cfg.env.valid_seed)

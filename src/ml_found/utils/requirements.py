@@ -114,9 +114,6 @@ REQUIREMENTS: dict[str, dict[str, Any]] = {
     }
 }
 
-# 機能の定義に書ける項目
-REQUIREMENT_KEYS = {"description", "checks", "match", "install", "note"}
-
 # 確かめ方の種類
 CHECK_KINDS = {"module", "command", "function"}
 
@@ -138,7 +135,7 @@ def module_found(name: str) -> bool:
     found: bool
         見つかった場合は True
     """
-    # 親のパッケージが無い場合の例外も, 見つからないものとして扱う
+    # 親のパッケージが無い場合の例外も, 見つからないものとして判定
     try:
         found = importlib.util.find_spec(name) is not None
     except (ImportError, ValueError):
@@ -195,7 +192,8 @@ def install_command(install: dict) -> Optional[str]:
     """
     # 版の指定を含むので, パッケージごとに引用符で囲む
     if install["kind"] != "pip":
-        return None
+        command = None
+        return command
     packages = " ".join(f'"{package}"' for package in install["packages"])
     command = f"pip install {packages}"
 
@@ -219,7 +217,8 @@ def extra_command(install: dict) -> Optional[str]:
     """
     # README の導入と同じく, プロジェクトの直下の submodule を想定
     if not install.get("extra"):
-        return None
+        command = None
+        return command
     command = f'pip install -e "./ML-Found[{install["extra"]}]"'
 
     return command
@@ -384,7 +383,7 @@ def get_spec(name: str) -> dict:
 
 def require(feature: str) -> None:
     """
-    機能に要るものが入っていることを確かめ, 無ければ次の一手を言って止める関数
+    機能に要るものが入っていることを確かめ, 無ければ入れ方を示して止める関数
 
     Parameters
     ----------
@@ -507,7 +506,7 @@ def unregister_requirement(name: str) -> None:
     ----------
     None
     """
-    # ML-Found が持つ機能は除かない
+    # ML-Found が持つ機能はエラー
     if name in BUILTIN_NAMES:
         raise ValueError(f"機能 {name} は ML-Found が持つので除けません")
     REQUIREMENTS.pop(name, None)

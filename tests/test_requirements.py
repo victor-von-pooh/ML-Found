@@ -27,7 +27,7 @@ def hide_modules(
     ----------
     None
     """
-    # 元の確かめ方を残し, 隠す名前だけ見つからないことにする
+    # 元の確かめ方を残し, 隠す名前だけ見つからない扱い
     original = requirements.module_found
     monkeypatch.setattr(
         requirements, "module_found",
@@ -57,7 +57,8 @@ class HiddenModules:
         """
         # 隠す名前の判定
         if name in self.hidden:
-            return False
+            found = False
+            return found
         found = self.original(name)
 
         return found
@@ -164,7 +165,7 @@ def test_require_missing_pip_package(
     assert info.value.missing == ["gymnasium"]
     assert isinstance(info.value, ImportError)
 
-    # 一覧でも入っていないことが分かる
+    # 一覧でも入っていない判定
     entry = describe_requirements(["rl"])[0]
     assert entry["available"] is False
 
@@ -211,7 +212,7 @@ def test_ros2_any_check(monkeypatch: pytest.MonkeyPatch) -> None:
     hide_modules(monkeypatch, {"rclpy"})
     monkeypatch.setattr(requirements.shutil, "which", SomeCommand())
 
-    # コマンドだけでも止まらない
+    # コマンドだけでも入っている判定
     require("ros2")
     entry = describe_requirements(["ros2"])[0]
     assert entry["available"] is True
@@ -230,9 +231,13 @@ class NoCommand:
 
         Returns
         ----------
-        None
+        path: None
+            無いことを表す None
         """
-        return None
+        # コマンドが無い印
+        path = None
+
+        return path
 
 
 class SomeCommand:
@@ -250,6 +255,7 @@ class SomeCommand:
         path: str
             仮のパス
         """
+        # コマンドがある印の仮のパス
         path = f"/bin/{name}"
 
         return path
@@ -268,8 +274,8 @@ def test_cuda_check(monkeypatch: pytest.MonkeyPatch) -> None:
     ----------
     None
     """
-    # 使えない場合は公式の手順を添えて止まる
-    monkeypatch.setattr(requirements.torch.cuda, "is_available", NoCommand())
+    # 使えない場合は公式の手順を添えたエラー
+    monkeypatch.setattr(requirements.torch.cuda, "is_available", NoCuda())
     with pytest.raises(MissingRequirementError, match="pytorch.org"):
         require("cuda")
 
@@ -278,6 +284,26 @@ def test_cuda_check(monkeypatch: pytest.MonkeyPatch) -> None:
     entry = describe_requirements(["cuda"])[0]
     assert entry["available"] is False
     assert "RuntimeError" in entry["checks"][0]["error"]
+
+
+class NoCuda:
+    def __call__(self) -> bool:
+        """
+        CUDA を使えないことにする関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        available: bool
+            いつも False
+        """
+        # 使えない印
+        available = False
+
+        return available
 
 
 class Broken:
@@ -294,6 +320,7 @@ class Broken:
         result: bool
             返らない
         """
+        # 確かめ方のエラーの再現
         raise RuntimeError("壊れた確かめ方")
 
 

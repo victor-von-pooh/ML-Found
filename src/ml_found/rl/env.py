@@ -5,7 +5,7 @@ from ml_found.utils.requirements import require
 
 def make_env(env_id: str, **kwargs: Any) -> Any:
     """
-    Gymnasium の環境を作る関数 (Gymnasium が無ければ入れ方を言って止める)
+    Gymnasium の環境を作る関数 (Gymnasium が無ければ入れ方を示して止める)
 
     Parameters
     ----------
@@ -19,7 +19,7 @@ def make_env(env_id: str, **kwargs: Any) -> Any:
     env: Any
         作った環境
     """
-    # 追加の依存の確認の後に読み込み
+    # 追加の依存なので, 確認の後に関数の中で読み込み
     require("rl")
     import gymnasium
 

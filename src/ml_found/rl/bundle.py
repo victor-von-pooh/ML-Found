@@ -24,7 +24,7 @@ FALLBACK_KINDS = {"stop", "handover", "action"}
 
 def bounds_to_json(values: Any) -> list[Optional[float]]:
     """
-    範囲の配列を, 有限でない値を null にした JSON のリストにする関数
+    範囲の配列を, 無限大と None を null にした JSON のリストにする関数
 
     Parameters
     ----------
@@ -34,10 +34,17 @@ def bounds_to_json(values: Any) -> list[Optional[float]]:
     Returns
     ----------
     items: list[Optional[float]]
-        平らにした値, 有限でない値は None (その向きに制限なし)
+        平らにした値, 無限大は None (その向きに制限なし)
     """
-    # inf と nan は JSON に書けないので制限なしの印に変換
-    flat = np.asarray(values, dtype=np.float64).reshape(-1)
+    # None は制限なしのまま無限大に置き換え, nan は守りを黙って外すことに
+    # なるのでエラー, 無限大は制限なしの印
+    raw = np.asarray(values, dtype=object).reshape(-1)
+    flat = np.array(
+        [math.inf if value is None else value for value in raw],
+        dtype=np.float64
+    )
+    if np.any(np.isnan(flat)):
+        raise ValueError(f"範囲に nan は使えません (制限なしは None): {values}")
     items = [float(value) if math.isfinite(value) else None for value in flat]
 
     return items
@@ -69,16 +76,66 @@ def bounds_from_json(
     if items is None:
         bounds = np.full(size, fill, dtype=np.float64)
         return bounds
-    if len(items) != size:
+    if not isinstance(items, list) or len(items) != size:
         raise ValueError(
-            f"{name} の要素の数 {len(items)} が空間の大きさ {size} と違います"
+            f"{name} は要素が {size} 個のリストにしてください: {items!r}"
         )
+
+    # 要素は有限の数か None だけ (nan, 無限大, 真偽値, 文字はエラー)
+    for value in items:
+        is_number = isinstance(value, (int, float)) and not isinstance(
+            value, bool
+        )
+        if value is not None and not (is_number and math.isfinite(value)):
+            raise ValueError(
+                f"{name} の要素は有限の数か null にしてください: {value!r}"
+            )
     bounds = np.array(
         [fill if value is None else float(value) for value in items],
         dtype=np.float64
     )
 
     return bounds
+
+
+def is_int(value: Any) -> bool:
+    """
+    真偽値を除く整数かを確かめる関数
+
+    Parameters
+    ----------
+    value: Any
+        確かめる値
+
+    Returns
+    ----------
+    result: bool
+        int (と NumPy の整数) で, 真偽値でない場合は True
+    """
+    # bool は int の子なので除外
+    result = isinstance(value, (int, np.integer)) and not isinstance(
+        value, (bool, np.bool_)
+    )
+
+    return result
+
+
+def reject_constant(name: str) -> Any:
+    """
+    JSON の外の値 (NaN, Infinity) を読んだらエラーにする関数
+
+    Parameters
+    ----------
+    name: str
+        読んだ値の名前
+
+    Returns
+    ----------
+    value: Any
+        返らない
+    """
+    # 守りの範囲を黙って外さないための停止
+    raise ValueError(f"policy.json に {name} は書けません (制限なしは null)")
 
 
 def space_to_dict(space: Any) -> dict[str, Any]:
@@ -96,10 +153,14 @@ def space_to_dict(space: Any) -> dict[str, Any]:
     spec: dict[str, Any]
         discrete なら type, n, start. box なら type, shape, low, high
     """
-    # 辞書はそのまま確認, Gymnasium は読み込まずに属性で見分け
+    # 辞書はそのまま確認, Gymnasium は読み込まずに属性での見分け
+    # (MultiBinary なども n を持つので, 形が () の場合だけ discrete)
+    shape = tuple(getattr(space, "shape", ()) or ())
     if isinstance(space, dict):
         spec = dict(space)
-    elif isinstance(getattr(space, "n", None), (int, np.integer)):
+    elif isinstance(getattr(space, "n", None), (int, np.integer)) and (
+        shape == ()
+    ):
         spec = {
             "type": "discrete", "n": int(space.n),
             "start": int(getattr(space, "start", 0))
@@ -132,15 +193,17 @@ def check_space(spec: dict) -> None:
     """
     # 種類ごとに要る項目の確認
     if spec.get("type") == "discrete":
-        if not isinstance(spec.get("n"), int) or spec["n"] < 1:
+        if not is_int(spec.get("n")) or spec["n"] < 1:
             raise ValueError(f"discrete の n は 1 以上の整数にしてください: {spec}")
         spec.setdefault("start", 0)
+        if not is_int(spec["start"]):
+            raise ValueError(f"discrete の start は整数にしてください: {spec}")
         return
     if spec.get("type") != "box":
         raise ValueError(f"空間の type は discrete か box にしてください: {spec}")
     shape = spec.get("shape")
     if not isinstance(shape, list) or not all(
-        isinstance(size, int) and size >= 1 for size in shape
+        is_int(size) and size >= 1 for size in shape
     ):
         raise ValueError(f"box の shape は正の整数のリストにしてください: {spec}")
     size = space_size(spec)
@@ -179,7 +242,7 @@ def make_guards(
     fallback: str = "stop", fallback_action: Optional[Any] = None
 ) -> dict[str, Any]:
     """
-    方策の守り (行動の上限, 止める条件, 外れたときの動き) を作る関数
+    方策の守り (行動の範囲, 止める条件, 外れたときの動き) を作る関数
 
     Parameters
     ----------
@@ -232,10 +295,14 @@ def make_guards(
             fallback_action = np.zeros(space_size(act_spec))
         if fallback_action is None:
             raise ValueError("discrete の fallback_action を指定してください")
-        guards["fallback"]["action"] = (
-            int(fallback_action) if act_spec["type"] == "discrete"
-            else bounds_to_json(fallback_action)
-        )
+        if act_spec["type"] == "discrete":
+            if int(fallback_action) != fallback_action:
+                raise ValueError(
+                    f"fallback_action は整数にしてください: {fallback_action}"
+                )
+            guards["fallback"]["action"] = int(fallback_action)
+        else:
+            guards["fallback"]["action"] = bounds_to_json(fallback_action)
     check_guards(guards, obs_spec, act_spec)
 
     return guards
@@ -273,7 +340,7 @@ def check_guards(guards: dict, obs_spec: dict, act_spec: dict) -> None:
     if np.any(obs_low > obs_high):
         raise ValueError("observation_low が observation_high より大きい要素があります")
 
-    # 行動の上限は空間の中で, 空間の種類に合うものだけ
+    # 行動の範囲は空間の中で, 空間の種類に合うものだけ
     if act_spec["type"] == "discrete":
         check_discrete_guards(guards, act_spec)
     else:
@@ -303,14 +370,18 @@ def check_discrete_guards(guards: dict, act_spec: dict) -> None:
     ----------
     None
     """
-    # box の上限は書けず, 選んでよい行動と決めた行動は空間の中
+    # box の範囲は書けず, 選んでよい行動と決めた行動は空間の中
     if guards.get("action_low") is not None or (
         guards.get("action_high") is not None
     ):
         raise ValueError("discrete の行動には action_low と action_high を書けません")
     valid = set(range(act_spec["start"], act_spec["start"] + act_spec["n"]))
     allowed = guards.get("allowed_actions")
-    if allowed is not None and (not allowed or set(allowed) - valid):
+    if allowed is not None and (
+        not isinstance(allowed, list) or not allowed
+        or not all(is_int(action) for action in allowed)
+        or set(allowed) - valid
+    ):
         raise ValueError(
             f"allowed_actions は {sorted(valid)} の中から 1 つ以上にしてください: "
             f"{allowed}"
@@ -319,7 +390,7 @@ def check_discrete_guards(guards: dict, act_spec: dict) -> None:
     if fallback.get("kind") == "action":
         action = fallback.get("action")
         usable = valid if allowed is None else set(allowed)
-        if action not in usable:
+        if not is_int(action) or action not in usable:
             raise ValueError(
                 f"fallback の行動 {action!r} は選んでよい行動にしてください"
             )
@@ -340,14 +411,14 @@ def check_box_guards(guards: dict, act_spec: dict) -> None:
     ----------
     None
     """
-    # 選んでよい行動は書けず, 上限は空間の範囲の中
+    # 選んでよい行動は書けず, 範囲は空間の範囲の中
     if guards.get("allowed_actions") is not None:
         raise ValueError("box の行動には allowed_actions を書けません")
     low, high = action_limits(guards, act_spec)
     if np.any(low > high):
         raise ValueError("action_low が action_high より大きい要素があります")
 
-    # 決めた行動は上限の中
+    # 決めた行動は範囲の中
     fallback = guards.get("fallback") or {}
     if fallback.get("kind") == "action":
         action = fallback.get("action")
@@ -355,15 +426,12 @@ def check_box_guards(guards: dict, act_spec: dict) -> None:
             raise ValueError(
                 f"fallback の行動は要素が {low.size} 個のリストにしてください"
             )
-        values = np.array(
-            [math.nan if value is None else value for value in action],
-            dtype=np.float64
-        )
+        values = bounds_from_json(action, low.size, math.nan, "fallback")
         if not np.all(np.isfinite(values)) or np.any(
             (values < low) | (values > high)
         ):
             raise ValueError(
-                f"fallback の行動 {action} は行動の上限の中にしてください"
+                f"fallback の行動 {action} は行動の範囲の中にしてください"
             )
 
 
@@ -418,10 +486,12 @@ def check_spec(spec: dict) -> None:
     ----------
     None
     """
-    # 版が無いものと新しい版は, 守りを読み違えないように止める
+    # 版が無いものと新しい版は, 守りを読み違えないように停止
     version = spec.get("format_version")
-    if not isinstance(version, int):
-        raise ValueError("policy.json に format_version (整数) がありません")
+    if not is_int(version) or version < 1:
+        raise ValueError(
+            "policy.json に format_version (1 以上の整数) がありません"
+        )
     if version > POLICY_FORMAT_VERSION:
         raise ValueError(
             f"policy.json の版 {version} はこの ML-Found が読める版 "
@@ -444,6 +514,13 @@ def check_spec(spec: dict) -> None:
             f"{head!r}"
         )
     check_guards(spec["guards"], obs_spec, act_spec)
+
+    # 重みは一式の中の決まったファイルだけ
+    if spec.get("weights") != WEIGHTS_FILE:
+        raise ValueError(
+            f"policy.json の weights は {WEIGHTS_FILE} にしてください: "
+            f"{spec.get('weights')!r}"
+        )
 
 
 def export_policy(
@@ -496,7 +573,7 @@ def export_policy(
     }
     check_spec(spec)
 
-    # 重みは cpu のテンソルで保存し, 中身の文書を書く
+    # 重みを cpu のテンソルで保存し, 中身の文書を書き出し
     directory = Path(path)
     directory.mkdir(parents=True, exist_ok=True)
     weights = {
@@ -524,10 +601,13 @@ def read_policy_spec(path: Union[str, Path]) -> dict[str, Any]:
     spec: dict[str, Any]
         policy.json の中身
     """
-    # 読んで版と形を確認
+    # NaN と Infinity は JSON の外なので拒んで読み, 版と形を確認
     spec = json.loads(
-        (Path(path) / SPEC_FILE).read_text(encoding="utf-8")
+        (Path(path) / SPEC_FILE).read_text(encoding="utf-8"),
+        parse_constant=reject_constant
     )
+    if not isinstance(spec, dict):
+        raise ValueError("policy.json は辞書にしてください")
     check_spec(spec)
 
     return spec
@@ -549,12 +629,19 @@ def check_observation(spec: dict, observation: Any) -> list[str]:
     reasons: list[str]
         当たった条件, 当たらなければ空
     """
-    # 形と有限であることの確認
+    # 数の配列にできること, 形と有限であることの確認
+    # 形は空間と同じか, 同じ大きさの平らな配列だけ
     obs_spec = spec["observation_space"]
     size = space_size(obs_spec)
-    obs = np.asarray(observation, dtype=np.float64)
-    if obs.size != size:
-        reasons = [f"観測の大きさ {obs.size} が {size} と違う"]
+    try:
+        obs = np.asarray(observation, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        reasons = [f"観測を数の配列にできない ({exc})"]
+        return reasons
+    if obs.shape not in (tuple(obs_spec["shape"]), (size,)):
+        reasons = [
+            f"観測の形 {obs.shape} が {tuple(obs_spec['shape'])} と違う"
+        ]
         return reasons
     obs = obs.reshape(-1)
     if not np.all(np.isfinite(obs)):
@@ -660,13 +747,17 @@ def apply_guards(
         result = fallback_result(spec, reasons)
         return result
 
-    # 出力が有限でない場合も外れたときの動き
-    values = np.asarray(output, dtype=np.float64).reshape(-1)
+    # 出力が数の配列でないか, 有限でない場合も外れたときの動き
+    try:
+        values = np.asarray(output, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError) as exc:
+        result = fallback_result(spec, [f"モデルの出力を数にできない ({exc})"])
+        return result
     if not np.all(np.isfinite(values)):
         result = fallback_result(spec, ["モデルの出力に有限でない値がある"])
         return result
 
-    # 空間の種類ごとに, 行動の上限を当てて決める
+    # 空間の種類ごとに, 行動の範囲を当てて決める
     if spec["action_space"]["type"] == "discrete":
         result = guard_discrete(spec, values)
     else:
@@ -720,7 +811,7 @@ def guard_discrete(spec: dict, scores: np.ndarray) -> dict[str, Any]:
 
 def guard_box(spec: dict, values: np.ndarray) -> dict[str, Any]:
     """
-    box の行動を上限の中に clip する関数
+    box の行動を範囲の中に clip する関数
 
     Parameters
     ----------
@@ -743,8 +834,11 @@ def guard_box(spec: dict, values: np.ndarray) -> dict[str, Any]:
         )
         return result
 
-    # 上限の中に clip して, 変えた要素を理由に記録
+    # 範囲の中に clip して, 変えた要素を理由に記録
     clipped = np.clip(values, low, high)
+    if not np.all(np.isfinite(clipped)):
+        result = fallback_result(spec, ["clip した行動が有限でない"])
+        return result
     changed = np.nonzero(clipped != values)[0]
     reasons = [
         f"行動の要素 {int(index)} を {values[index]:.6g} から "
@@ -762,8 +856,8 @@ def guard_box(spec: dict, values: np.ndarray) -> dict[str, Any]:
 
 class GuardedPolicy:
     def __init__(self, model: nn.Module, spec: dict):
-        # 推論モードのモデルと, policy.json の中身を保存
-        self.model = model.eval()
+        # cpu の推論モードのモデルと, policy.json の中身を保存
+        self.model = model.cpu().eval()
         self.spec = spec
 
     def act(self, observation: Any) -> dict[str, Any]:
@@ -787,12 +881,19 @@ class GuardedPolicy:
             return result
 
         # 勾配を記録せずにモデルを動かして守りを適用
+        # モデルのエラーも外れたときの動き
         shape = self.spec["observation_space"]["shape"]
         obs = torch.as_tensor(
             np.asarray(observation, dtype=np.float32).reshape(shape)
         )
-        with torch.no_grad():
-            output = self.model(obs.unsqueeze(0))[0]
+        try:
+            with torch.no_grad():
+                output = self.model(obs.unsqueeze(0))[0]
+        except Exception as exc:
+            result = fallback_result(
+                self.spec, [f"モデルのエラー ({type(exc).__name__}: {exc})"]
+            )
+            return result
         result = apply_guards(
             self.spec, observation, output.detach().cpu().numpy()
         )

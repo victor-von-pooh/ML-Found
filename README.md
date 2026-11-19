@@ -23,6 +23,8 @@ ML-Found は単体でも使えるライブラリだが, 「機械学習を全て
 - **torch の Optimizer と Scheduler をそのまま使える**: クラス名と引数を config に書くだけで, `torch.optim` にあるものを使える. closure が必要な LBFGS も自動で見分けて使える
 - **ベストモデルと再開**: 監視する指標が最も良いモデルを保存して最後に戻す. Early Stopping, 勾配クリッピング, チェックポイントからの再開にも対応する
 - **Lightning などに依存しない**: 素の PyTorch だけで書いている
+- **強化学習と方策の書き出し (任意)**: Gymnasium の形の環境とのやり取りを loader にして, 同じ `Trainer` で方策を学習し, 守り (行動の範囲, 止める条件, 外れたときの動き) と一緒に書き出せる
+- **追加の依存の案内**: 任意の機能 (強化学習, MuJoCo, ROS 2, CUDA) ごとに, 要るもの, 入っているかの確かめ方, 入れ方の一覧を持ち, 足りなければ次の一手を案内して止まる
 
 ## 導入
 
@@ -43,9 +45,32 @@ pip install -e ./ML-Found
 - 依存ライブラリは `torch`, `omegaconf`, `numpy`, `tqdm`, `matplotlib` で, インストール時に一緒に入る
 - `-e` を付けてインストールすると, 実験ごとに ML-Found の commit id も記録される. 付けない場合はバージョン番号だけが記録される
 - `examples/minibatch/` を動かす場合は scikit-learn も必要なので, `pip install -e "./ML-Found[examples]"` でインストールする. 例は `python ML-Found/examples/minibatch/train.py` (か `fullbatch`) で動き, 出力は例のディレクトリの `outputs/` にできる (ML-Found の `.gitignore` で除外している)
+- `examples/cartpole/` (強化学習) を動かす場合は Gymnasium も必要なので, `pip install -e "./ML-Found[rl]"` でインストールする (下の「追加の依存」)
 
 プロジェクトの `.gitignore` には `outputs/` を加えておく.
 加えないと, 2 回目以降の実験で前回の出力が未コミットの変更として記録される.
+
+### 追加の依存
+
+任意の機能に要るライブラリは本体の依存に含めず, 追加の依存 (pip の extras) として要るときだけ入れる. ML-Found は機能ごとに「要るもの, 入っているかの確かめ方, 入れ方」の一覧 (登録簿) を持ち, 足りないまま使うと, 次の一手 (pip のコマンドか公式の手順) を案内して止まる.
+
+| 機能 | 要るもの (確かめ方) | 入れ方 |
+| --- | --- | --- |
+| `rl` | `gymnasium` (モジュールが見つかるか) | `pip install -e "./ML-Found[rl]"` (追加の依存 `rl`) |
+| `mujoco` | `gymnasium` と `mujoco` (モジュールが見つかるか) | `pip install -e "./ML-Found[mujoco]"`. 描画には OpenGL が要る ([公式の手順](https://mujoco.readthedocs.io/en/stable/python.html)) |
+| `ros2` | `rclpy` か `ros2` のコマンドのどちらか | pip では入らない. [公式の手順](https://docs.ros.org/) で入れ, setup のスクリプトを source してから Python を起動する |
+| `cuda` | `torch.cuda.is_available()` | NVIDIA のドライバと, [PyTorch の手順](https://pytorch.org/get-started/locally/) で CUDA 付きの PyTorch |
+
+```python
+from ml_found import describe_requirements, require
+
+require("rl")  # 無ければ MissingRequirementError (ImportError の子) で, 入れ方を示して止まる
+entries = describe_requirements()  # 全ての機能の一覧 (JSON にできる)
+```
+
+- `describe_requirements(names=None, check=True)` は, 機能ごとに `name`, `description`, `checks` (確かめ方ごとの `kind`, `name`, `ok`, `error`), `match` (`all` か `any`), `available`, `install` (`kind` が `pip` か `guide`, `extra`, `packages`, `url`, `command`, `extra_command`), `note` を返す. 画面 (ML-Dashboard) のカードや, 問題の設定の受け渡し (ML-Quest) で, 足りないものを早めに知らせるのに使う. `check=False` では確かめない (`ok` と `available` が `None`. JSON では null)
+- 確かめ方は import せずにモジュールを探す (`importlib.util.find_spec`) ので, 一覧を作るだけで重いライブラリを読み込まない. ただし版は確かめない (古い版は使うときのエラーになる) のと, `a.b` のような名前では親のパッケージ `a` を import する
+- プロジェクトの機能は `register_requirement(name, description, checks, install, match, note)` で加えられる (`ml_found.utils`. ML-Found の機能の名前は上書きできない)
 
 ## 使い方
 
@@ -518,6 +543,76 @@ save_evaluation(
 
 読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
 
+### 強化学習
+
+Gymnasium の形の環境 (`reset(seed=...)` が `(観測, info)` を, `step(行動)` が `(観測, 報酬, 終了, 打ち切り, info)` を返すもの) とやり取りして, 行動を選ぶ方策を学習できる. 別の仕組みは作らず, 環境とのやり取りを「バッチを返す loader」にして, これまでの `Trainer` の step とエポックの決まりに乗せる. 使うには追加の依存 `rl` (Gymnasium) を入れる (上の「追加の依存」). 例は `examples/cartpole/` (CartPole を REINFORCE で学習し, 守りと一緒に書き出す).
+
+```python
+from ml_found import Trainer, load_project_config, start_experiment
+from ml_found.rl import (
+    EvaluationLoader, Exploration, ReinforceStep, RolloutLoader, make_env
+)
+
+# 学習用と評価用の環境は別に作る (Gymnasium が無ければ入れ方を示して止まる)
+train_env = make_env("CartPole-v1")
+valid_env = make_env("CartPole-v1")
+model = PolicyNet(...)  # 観測から行動ごとのスコアを返すモデル
+
+# 1 エポックは 20 エピソード (5 エピソードで 1 回更新), 評価は別の種の 10 エピソード
+train_loader = RolloutLoader(
+    train_env, model, episodes=20, batch_episodes=5, gamma=0.99,
+    exploration=Exploration(temperature=1.0, epsilon=0.0), seed=42
+)
+valid_loader = EvaluationLoader(valid_env, model, episodes=10, seed=10000)
+trainer = Trainer(model, experiment, ReinforceStep(entropy_coef=0.01))
+history = trainer.fit(train_loader, valid_loader)
+```
+
+- **経験の記録**: `ExperienceBuffer` が 1 歩ごとの観測, 行動, 報酬, 実際にその行動を選んだ確率と安全の違反を貯め, エピソードを終えるときに割引した報酬の和を求める. `to_batch()` がテンソルの辞書にする
+- **エポック**: `RolloutLoader` は今の方策でエピソードを集め, `batch_episodes` ごとに 1 つのバッチを返す (バッチごとに 1 回更新するので, 次のバッチは更新した方策で集める). エポックの長さは `episodes` (エピソードの数) か `steps` (歩数. 達したエピソードの終わりまで) のどちらかで決める. 環境の乱数の種は最初の `reset` だけに渡し, 後は環境の乱数を続けて使う. `max_episode_steps` で 1 エピソードの歩数を切れる. 環境の打ち切り (TimeLimit など) と `max_episode_steps` で切ったエピソードも, 終わったもの (最後の歩の後の報酬を 0) として報酬の和を求める (モンテカルロの REINFORCE. 打ち切りの後の価値を足すのは, 価値の関数を持つ方法で行う)
+- **探索**: `Exploration(temperature, epsilon)` で, 方策の分布を温度で平らにし, `epsilon` の割合で一様に選ぶ. 実際に選んだ確率を記録し, `ReinforceStep` は方策の確率との比 (1 で打ち切る) で重みを補正する. 比の方策の確率は, 行動を選んだときと同じ推論モードで求める (Dropout があっても, 既定の温度 1, `epsilon` 0 では更新の前の比は 1. 損失の勾配は学習モードで求める). 途中で変える場合は `add_callback` の関数で `train_loader.exploration` を差し替える
+- **評価**: `EvaluationLoader` は学習とは別の環境で, 毎回 `seed`, `seed + 1`, ... の種で始めたエピソードを, 最もスコアの高い行動で動かす (エポックの間で比べられる). 全てのエピソードを 1 つのバッチにする
+- **指標**: エピソードごとの報酬の和 (`reward`), 歩数 (`length`), 安全の違反の数 (`violations`. 環境が `info` の `safety_key` (既定 `cost`) に 0 より大きい値を入れた歩の数) を, エピソードの数で重み付けして平均する. `success_key` (`is_success` など) を指定すると, 最後の歩の値から成功の割合 (`success`) も記録する. 学習では方策の損失 (`loss`) とエントロピー (`entropy`) も記録する
+- **損失**: `ReinforceStep` は, バッチの平均を基準 (baseline) にした REINFORCE. 学習の `loss` は方策の勾配の損失, 検証の `loss` は評価の報酬の和の平均の符号を反転した値 (意味が違うので, 監視する指標は `trainer.monitor: valid/reward` と `trainer.mode: max` にする)
+- 行動を番号で選ぶ環境 (Discrete. 番号は 0 から) だけに対応する. 連続の行動 (Box) の学習と, 価値の関数を使う方法 (Actor-Critic など) は, 自分で loader (経験の集め方) と step を書けば今の仕組みで動かせる (名前付きの複数の Optimizer も使える)
+- 行動を選ぶときは, モデルを一時的に推論モードにする (1 件の観測の BatchNorm と, Dropout で確率がずれるのを避けるため)
+- `RolloutLoader` は学習だけに使う. `trainer.eval_train: true` では, 評価し直しで学習の環境の乱数が進んで結果が変わるので, エラーにする (評価は `EvaluationLoader`)
+- 再開 (`resume_from`) では, モデルと Optimizer は戻るが, 環境の状態と環境の乱数は戻らない
+- `eval_model` を上書きした場合は, `EvaluationLoader` に渡すモデルもそのモデルにする (loader は渡されたモデルで行動を選ぶ)
+
+### 方策の書き出しと守り
+
+学習した方策は, 重み, 観測と行動の空間, 守り (行動の範囲, 止める条件, 外れたときの動き) を 1 つのディレクトリ (方策の一式) に書き出す. 置き場は実験のディレクトリの `policy/` を推奨する (形と版は [docs/FORMAT.md](docs/FORMAT.md) の「policy/」).
+
+```python
+from ml_found.rl import export_policy, load_policy, make_guards
+
+# 台車の位置と棒の角度が範囲を外れたら, 元の制御に戻す
+guards = make_guards(
+    env.observation_space, env.action_space,
+    observation_low=[-2.4, None, -0.21, None],
+    observation_high=[2.4, None, 0.21, None],
+    fallback="handover"
+)
+export_policy(experiment.run_dir / "policy", model, env.observation_space,
+              env.action_space, guards)
+
+# 読み直して, 観測から守りを当てた行動を得る
+policy = load_policy(experiment.run_dir / "policy", PolicyNet(...))
+result = policy.act(observation)
+# {"action": 0, "status": "ok", "reasons": []}
+```
+
+- **行動の範囲**: 連続の行動 (Box) は `action_low` と `action_high` に clip する (空間の範囲との狭い方). 番号で選ぶ行動 (Discrete) は `allowed_actions` の中の最もスコアの高い行動にする. どちらも `status` が `clipped` になる
+- **止める条件**: 観測の要素ごとの範囲 (`observation_low`, `observation_high`. `None` は制限なし). 範囲の外の観測, 観測の形の違いと有限でない値, モデルの出力の大きさの違いと有限でない値, モデルのエラーは, 外れたときの動きにする
+- 範囲は有限の数か `None` (制限なし) で書く. nan は守りを黙って外すことになるので, 書き出しでも読み込みでもエラーにする. 守り, 空間, 外れたときの動きの知らない項目 (`observation_hihg` のような書き損じ) もエラーにする
+- 連続の行動は float32 で返す. 0.1 のような範囲は float32 に丸めると少し外に出るので, 外に出た要素は内側の隣の float32 に寄せる. float32 で無限大になる行動と観測 (1e39 など) は, 外れたときの動きにする
+- 書き出しでは `policy.pt` の sha256 を `policy.json` に書き, 読むときに確かめる (違えばエラー)
+- **外れたときの動き** (`fallback`): `stop` (行動を返さず止める. `status` が `stop`), `handover` (行動を返さず元の制御に戻す. `status` が `handover`), `action` (決めた行動. 連続の行動は既定で 0 の行動. `status` が `fallback`)
+- `apply_guards(spec, observation, output)` は, モデルの出力に守りを当てるだけの純粋な関数. 推論の段階 (ML-Inference) は, この関数と `policy.json` で同じ守りを当てられる
+- `load_policy` には, 書き出したときと同じ組み立てのモデルを渡す (重みは一式から読み, cpu で動かす). 一式に入るのはクラスの名前 (`model_class`) だけなので, 組み立て方 (隠れ層の次元数など) は必要なら `metadata` に書く
+- 返す方策は, 観測から行動と守りの結果を返すだけで, 環境や機械には触れない. 実機での実行は道具の外にあり, 方策を使ってよいかと守りの範囲は人が決める
+
 ## config の項目
 
 ML-Found が使う項目と既定値.
@@ -667,10 +762,12 @@ ML-Found/
 │   ├── config/             # config の型定義, 読み込み, 差分, 起動のしかた
 │   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録, 何の実験か, 評価と見本
 │   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, チェックポイント, 記録, 実験の状態
-│   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧
+│   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, 方策の一式と守り
+│   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿
 ├── examples/
 │   ├── minibatch/          # wine データセットの分類, DataLoader で学習する例
-│   └── fullbatch/          # グラフのノード分類, マスクで学習と検証を分ける例
+│   ├── fullbatch/          # グラフのノード分類, マスクで学習と検証を分ける例
+│   └── cartpole/           # CartPole の方策の学習と, 守りと一緒の書き出し (追加の依存 rl)
 ├── tests/
 ├── CODING_STYLE.md         # コーディングスタイルの基準
 └── pyproject.toml
@@ -681,14 +778,15 @@ ML-Found/
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev,examples]"
+pip install -e ".[dev,examples,rl]"
 
-# テスト
+# テスト (rl を入れない場合, CartPole のテストは飛ばす)
 pytest
 
 # 例の実行
 python examples/minibatch/train.py
 python examples/fullbatch/train.py
+python examples/cartpole/train.py
 ```
 
 コードの書き方は [CODING_STYLE.md](CODING_STYLE.md) に従う.

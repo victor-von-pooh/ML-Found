@@ -28,5 +28,6 @@ jobs:
           cache-dependency-path: pyproject.toml
       # CUDA の無い軽い PyTorch を先に入れてから, パッケージとテストの依存を入れる
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - run: pip install -e ".[dev,examples]"
+      # 強化学習の CartPole のテストのため, 追加の依存 rl も入れる
+      - run: pip install -e ".[dev,examples,rl]"
       - run: pytest -q

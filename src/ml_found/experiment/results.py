@@ -43,7 +43,7 @@ NAME_PATTERN = re.compile(r"[A-Za-z0-9_@-][A-Za-z0-9_.@-]*")
 EVALUATION_KINDS = ("table", "curve")
 
 # 見本の種類と, 写すファイルの拡張子から決める種類
-SAMPLE_KINDS = ("image", "text", "audio", "point_cloud", "file")
+SAMPLE_KINDS = ("image", "text", "audio", "point_cloud", "mask", "file")
 KIND_BY_SUFFIX = {
     ".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image",
     ".webp": "image", ".bmp": "image", ".txt": "text", ".md": "text",
@@ -53,8 +53,12 @@ KIND_BY_SUFFIX = {
 
 # 配列から書く見本の拡張子
 SUFFIX_BY_KIND = {
-    "image": ".png", "text": ".txt", "audio": ".wav", "point_cloud": ".ply"
+    "image": ".png", "text": ".txt", "audio": ".wav", "point_cloud": ".ply",
+    "mask": ".png"
 }
+
+# 領域の番号の範囲 (色の表の大きさ)
+MASK_IDS = 256
 
 # 画像のチャンネルの数として扱う大きさ
 CHANNELS = (1, 3, 4)
@@ -601,6 +605,211 @@ def write_point_cloud(path: Path, value: Any) -> None:
     path.write_text(header + rows, encoding="ascii")
 
 
+def mask_color(class_id: int) -> tuple[int, int, int]:
+    """
+    領域の番号の色を, 決まった色の表 (PASCAL VOC と同じ) から選ぶ関数
+
+    Parameters
+    ----------
+    class_id: int
+        番号 (0 から 255)
+
+    Returns
+    ----------
+    color: tuple[int, int, int]
+        赤, 緑, 青 (0 から 255). 番号 0 は黒
+    """
+    # 番号の下位のビットから 3 つずつ取り, 色の上位のビットに順に配置
+    red = 0
+    green = 0
+    blue = 0
+    value = class_id
+    for shift in range(7, -1, -1):
+        red |= (value & 1) << shift
+        green |= ((value >> 1) & 1) << shift
+        blue |= ((value >> 2) & 1) << shift
+        value >>= 3
+    color = (red, green, blue)
+
+    return color
+
+
+def mask_array(value: Any) -> np.ndarray:
+    """
+    領域の見本を (高さ, 幅) の番号の配列にする関数
+
+    Parameters
+    ----------
+    value: Any
+        領域の番号. (高さ, 幅) か (1, 高さ, 幅) の整数か真偽値の配列
+
+    Returns
+    ----------
+    mask: np.ndarray
+        int64 の配列 (0 から 255)
+    """
+    # 先頭の大きさ 1 の次元 (チャンネル) の除去と形の確認
+    array = to_array(value)
+    if array.ndim == 3 and array.shape[0] == 1:
+        array = array[0]
+    if array.ndim != 2:
+        raise ValueError(
+            "領域の見本は (高さ, 幅) の番号の配列にしてください: "
+            f"{array.shape}"
+        )
+
+    # 小数は番号の取り違え (確率など) のことが多いので誤り
+    if not (
+        np.issubdtype(array.dtype, np.integer) or array.dtype == bool
+    ):
+        raise ValueError(
+            "領域の見本は整数か真偽値の配列にしてください (確率なら argmax で"
+            f"番号にします): {array.dtype}"
+        )
+    if array.size == 0:
+        raise ValueError(f"領域の見本が空です: {array.shape}")
+    mask = array.astype(np.int64)
+    if (mask.min() < 0 or mask.max() >= MASK_IDS):
+        raise ValueError(
+            f"領域の番号は 0 から {MASK_IDS - 1} にしてください: "
+            f"{int(mask.min())} から {int(mask.max())}"
+        )
+
+    return mask
+
+
+def class_names(classes: Any) -> dict[int, Optional[str]]:
+    """
+    渡された番号の名前を, 番号から名前の辞書にする関数
+
+    Parameters
+    ----------
+    classes: Any
+        名前のリスト (番号の順) か, 番号から名前の辞書か None
+
+    Returns
+    ----------
+    names: dict[int, Optional[str]]
+        番号から名前 (名前は文字か None)
+    """
+    # リストは番号の順, 辞書はそのまま
+    if classes is None:
+        names: dict[int, Optional[str]] = {}
+        return names
+    if isinstance(classes, dict):
+        pairs = list(classes.items())
+    elif isinstance(classes, (list, tuple)):
+        pairs = list(enumerate(classes))
+    else:
+        raise ValueError(
+            "classes は名前のリストか, 番号から名前の辞書にしてください: "
+            f"{classes!r}"
+        )
+
+    # 番号は 0 から 255 の整数, 名前は文字か None
+    names = {}
+    for class_id, name in pairs:
+        if (
+            isinstance(class_id, bool)
+            or not isinstance(class_id, (int, np.integer))
+            or not 0 <= class_id < MASK_IDS
+        ):
+            raise ValueError(
+                f"classes の番号は 0 から {MASK_IDS - 1} の整数にして"
+                f"ください: {class_id!r}"
+            )
+        check_optional_text(name, f"classes の番号 {class_id} の名前")
+        names[int(class_id)] = name
+
+    return names
+
+
+def class_table(mask: np.ndarray, classes: Any) -> list[dict]:
+    """
+    領域の見本の番号の表 (番号, 名前, 色) を作る関数
+
+    Parameters
+    ----------
+    mask: np.ndarray
+        番号の配列
+    classes: Any
+        名前のリストか, 番号から名前の辞書か None
+
+    Returns
+    ----------
+    table: list[dict]
+        番号の順の id, name, color (#rrggbb). 名前を渡した番号と,
+        配列に現れた番号の全て
+    """
+    names = class_names(classes)
+    present = {int(value) for value in np.unique(mask)}
+    table = []
+    for class_id in sorted(present | set(names)):
+        red, green, blue = mask_color(class_id)
+        table.append({
+            "id": class_id,
+            "name": names.get(class_id),
+            "color": f"#{red:02x}{green:02x}{blue:02x}"
+        })
+
+    return table
+
+
+def mask_pixels(mask: np.ndarray) -> np.ndarray:
+    """
+    番号の配列を, 決まった色の表で色分けした画像にする関数
+
+    Parameters
+    ----------
+    mask: np.ndarray
+        番号の配列 (0 から 255)
+
+    Returns
+    ----------
+    pixels: np.ndarray
+        (高さ, 幅, 3) の uint8 の画像
+    """
+    palette = np.array(
+        [mask_color(class_id) for class_id in range(MASK_IDS)],
+        dtype=np.uint8
+    )
+    pixels = palette[mask]
+
+    return pixels
+
+
+def check_convention(convention: Any) -> Optional[dict]:
+    """
+    値の決まりが JSON にできる辞書か None であることを確かめる関数
+
+    Parameters
+    ----------
+    convention: Any
+        値の決まり (点群の座標の単位, 正規化のずらしなど)
+
+    Returns
+    ----------
+    checked: Optional[dict]
+        JSON を通した写し (配列やテンソルは渡せない)
+    """
+    if convention is None:
+        return None
+    if not isinstance(convention, dict):
+        raise ValueError(
+            f"convention は辞書か None にしてください: {convention!r}"
+        )
+    try:
+        text = json.dumps(convention, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "convention は JSON にできる値 (数, 文字, 真偽値, None, リスト, "
+            f"辞書. nan と無限大は不可) にしてください: {error}"
+        ) from error
+    checked = json.loads(text)
+
+    return checked
+
+
 def sample_kind(value: Any, kind: Optional[str]) -> str:
     """
     見本の種類を決める関数
@@ -615,7 +824,7 @@ def sample_kind(value: Any, kind: Optional[str]) -> str:
     Returns
     ----------
     decided: str
-        image, text, audio, point_cloud, file のどれか
+        image, text, audio, point_cloud, mask, file のどれか
     """
     # 渡した種類はそのまま (選択肢の確認)
     if kind is not None:
@@ -635,7 +844,8 @@ def sample_kind(value: Any, kind: Optional[str]) -> str:
         decided = KIND_BY_SUFFIX.get(Path(value).suffix.lower(), "file")
         return decided
     raise ValueError(
-        "配列の見本には kind (image, audio, point_cloud) を渡してください"
+        "配列の見本には kind (image, audio, point_cloud, mask) を渡して"
+        "ください"
     )
 
 
@@ -768,7 +978,8 @@ def read_samples_index(path: Path) -> list[dict]:
 def save_sample(
     target: Any, name: str, value: Any, epoch: Optional[int] = None,
     kind: Optional[str] = None, split: Optional[str] = None,
-    caption: Optional[str] = None, sample_rate: Optional[int] = None
+    caption: Optional[str] = None, sample_rate: Optional[int] = None,
+    classes: Any = None, convention: Optional[dict] = None
 ) -> Path:
     """
     見本の出力を samples/<名前>/ に書き, 一覧に加える関数
@@ -785,7 +996,7 @@ def save_sample(
     epoch: Optional[int] = None
         エポック, None は学習の後
     kind: Optional[str] = None
-        image, text, audio, point_cloud, file のどれか.
+        image, text, audio, point_cloud, mask, file のどれか.
         None の場合は文字なら text, パスなら拡張子から決める
     split: Optional[str] = None
         見本の入力の分割
@@ -793,6 +1004,11 @@ def save_sample(
         添える説明
     sample_rate: Optional[int] = None
         音の 1 秒のサンプル数 (配列の音だけ)
+    classes: Any = None
+        mask の番号の名前. 名前のリスト (番号の順) か, 番号から名前の辞書
+        (mask だけ)
+    convention: Optional[dict] = None
+        値の決まり (点群の座標の単位, 正規化のずらしなど. JSON にできる辞書)
 
     Returns
     ----------
@@ -806,10 +1022,28 @@ def save_sample(
     stem = sample_stem(epoch)
     check_optional_text(split, "split")
     check_optional_text(caption, "caption")
+    checked_convention = check_convention(convention)
     if isinstance(value, os.PathLike):
         suffix = Path(value).suffix.lower()
     else:
         suffix = SUFFIX_BY_KIND.get(decided, "")
+
+    # 領域の番号は色分けした画像に, 番号の表は一覧に記録
+    table = None
+    content = value
+    written = decided
+    if decided == "mask":
+        if isinstance(value, os.PathLike):
+            raise ValueError(
+                "kind が mask の見本は, 番号の配列を渡してください "
+                "(色分けは ML-Found が行う)"
+            )
+        mask = mask_array(value)
+        table = class_table(mask, classes)
+        content = mask_pixels(mask)
+        written = "image"
+    elif classes is not None:
+        raise ValueError("classes は kind が mask の場合だけ渡せます")
 
     # 一覧の読み書きは同じプロセスのスレッドの間で 1 つずつ
     root = run_dir / SAMPLES_DIR
@@ -822,7 +1056,7 @@ def save_sample(
         # 一時ファイルに書いてから置き換え (書きかけを読ませないため)
         temp = new_temp(path)
         try:
-            write_sample_file(temp, value, decided, sample_rate)
+            write_sample_file(temp, content, written, sample_rate)
             os.replace(temp, path)
         finally:
             temp.unlink(missing_ok=True)
@@ -842,6 +1076,8 @@ def save_sample(
             "file": f"{name}/{path.name}",
             "split": split,
             "caption": caption,
+            "classes": table,
+            "convention": checked_convention,
             "created_at": now_iso()
         })
         write_json_file(index_path, {"samples": kept})
@@ -885,6 +1121,8 @@ def legacy_samples(root: Path) -> list[dict]:
             "file": path.name,
             "split": None,
             "caption": None,
+            "classes": None,
+            "convention": None,
             "created_at": None,
             "legacy": True
         })
@@ -934,5 +1172,11 @@ def load_samples(run_dir: Union[str, os.PathLike]) -> list[dict]:
     except (OSError, ValueError):
         samples = []
     samples = samples + legacy_samples(root)
+
+    # classes と convention を足す前の項目には null を補完
+    for item in samples:
+        if isinstance(item, dict):
+            item.setdefault("classes", None)
+            item.setdefault("convention", None)
 
     return samples

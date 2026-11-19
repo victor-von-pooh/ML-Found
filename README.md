@@ -62,9 +62,12 @@ pip install -e ./ML-Found
 | `cuda` | `torch.cuda.is_available()` | NVIDIA のドライバと, [PyTorch の手順](https://pytorch.org/get-started/locally/) で CUDA 付きの PyTorch |
 
 ```python
-from ml_found import describe_requirements, require
+from ml_found import MissingRequirementError, describe_requirements, require
 
-require("rl")  # 無ければ MissingRequirementError (ImportError の子) で, 入れ方を示して止まる
+try:
+    require("rl")  # 無ければ入れ方を示す MissingRequirementError (ImportError の子) を送出
+except MissingRequirementError as error:
+    print(error)  # 入れ方の案内
 entries = describe_requirements()  # 全ての機能の一覧 (JSON にできる)
 ```
 
@@ -497,7 +500,7 @@ model.load_state_dict(torch.load("outputs/wine/.../final_model.pt"))
 
 実験のディレクトリに, 任意で次の 3 つを書ける (形は [docs/FORMAT.md](docs/FORMAT.md)). 書かなくても学習は変わらず, 書かなかった実験と今までの実験も同じく読める.
 
-- **`task.yaml`** (何の実験か): 受け持ち (`role`. `predict`, `generate`, `rank`, `group`, `effect`), 出力の形と意味 (`output`, `what`), 正解の種類と出どころ (`target.kind`, `target.origin`), 作り方 (`method`. `scratch`, `finetune` など) と元にした実験や重み (`base`), 学習に使ったデータセット (`dataset`). 値の名前は ML-Quest と ML-EDA のものを写す. 正解が今ある処理の出力 (`target.origin.type: process`) なら, 指標はその処理との一致で, モデルはその処理を超えられない. このことを指標と一緒に読めるようにするためのファイル
+- **`task.yaml`** (何の実験か): 受け持ち (`role`. `predict`, `generate`, `rank`, `group`, `effect`), 出力の形と意味 (`output`. 方策は `action`. `what`), 正解の種類と出どころ (`target.kind`, `target.origin`), 作り方 (`method`. `scratch`, `finetune` など) と元にした実験や重み (`base`), 学習に使ったデータセット (`dataset`). 値の名前は ML-Quest と ML-EDA のものを写す. 正解が今ある処理の出力 (`target.origin.type: process`) なら, 指標はその処理との一致で, モデルはその処理を超えられない. 環境の報酬で学習した方策 (`environment`) なら, 指標はシミュレータなどの環境の報酬で, 実機での結果は別に確かめる. このことを指標と一緒に読めるようにするためのファイル
 - **`evaluations/<名前>.json`** (データ全体の評価): グループごとの表, 曲線, 比べる相手との差, 守る指標を, 名前と分割の付いた表として書く
 - **`samples/`** (見本): 画像, 文, 音, 点群の見本を, エポックと名前ごとに書き, `samples/index.json` に一覧を残す
 
@@ -513,6 +516,21 @@ task:
 ```
 
 スクリプトから書く場合は `write_task` を使う (後から書いた方で置き換える). 微調整では元にした実験 (`base.experiment`) か重み (`base.weights`. Hugging Face のモデルの名前など) を書く.
+
+強化学習の方策は, 受け持ちを `effect` (問題の設定 (ML-Quest) では効果の見積もりの扱い), 出力の形を `action`, 正解の種類を `reward`, 正解の出どころを `environment` (環境の報酬) にする.
+
+```python
+write_task(experiment, {
+    "role": "effect",
+    "output": "action",
+    "what": "観測から押す向きを選ぶ方策",
+    "target": {
+        "kind": "reward",
+        "origin": {"type": "environment", "name": "CartPole-v1"}
+    },
+    "method": "scratch"
+})
+```
 
 ```python
 from ml_found import save_evaluation, save_sample, task_from_dataset, write_task
@@ -532,14 +550,28 @@ write_task(experiment, task)
 ```python
 save_evaluation(
     experiment, "per_group",
-    {"group": ["a", "b"], "iou": [0.81, 0.64], "baseline_iou": [0.78, 0.70]},
+    {
+        "group": ["a", "b"],
+        "iou": [0.81, 0.64],
+        "iou_baseline": [0.78, 0.70],
+        "iou_diff": [0.03, -0.06]
+    },
     "test", baseline="今の処理", guard=True
 )
 ```
 
+比べる相手との表は, 上のように 1 行を 1 つのグループにし, 指標ごとに `<指標>` (この実験), `<指標>_baseline` (比べる相手), `<指標>_diff` (この実験 - 比べる相手) を並べる形を推奨する (画面が差の列を見分けられる). 相手が 2 つ以上ある場合などは, 1 行を (グループ, 答えた側) にし, 答えた側を `answer` の列 (`model` か相手の名前) に書く形も使える (docs/FORMAT.md の「evaluations」).
+
 評価と見本の名前は英数字と `_`, `.`, `@`, `-` だけで, 先頭は `.` 以外 (見本は `index.json` と, `samples/` の直下のファイルと同じ名前も不可).
 
-見本は `save_sample(experiment, 名前, 値, epoch=...)` で書く. 文字は文 (`.txt`), `pathlib.Path` はファイルをそのまま写す (種類は拡張子から), 配列とテンソルは `kind` を渡す. `image` は (高さ, 幅), (高さ, 幅, チャンネル), (チャンネル, 高さ, 幅) で, 小数は 0 から 1, 整数は 0 から 255 の値 (PNG). `audio` は (サンプル数,) か (チャンネル, サンプル数) で -1 から 1 の値と `sample_rate` (16 bit の WAV. チャンネルは 8 まで. (サンプル数, チャンネル) の配列は `.T` で入れ替える). `point_cloud` は (点の数, 3) で nan の無い座標 (PLY). 画像と音の nan と無限大, 整数の音 (型の最大値で割って小数にする) は誤り. 学習の途中では `on_epoch_end` の中で `epoch=self.epoch` を渡し (`samples/<名前>/epoch_0005.png` に置く), 学習の後はエポックを省く (`samples/<名前>/final.png`). 同じエポックと名前で書き直すと置き換える. `split` と `caption` (どちらも文字) も添えられる. 同じプロセスのスレッドからは同時に書けるが, 複数のプロセス (DDP のランクなど) から書く場合はランク 0 だけが書く. 前からプロジェクトが `samples/` の直下に置いていた番号付きの画像 (`samples/epoch_010.png`) はそのまま使え, `load_samples` も見本として返す (`legacy: true`).
+見本は `save_sample(experiment, 名前, 値, epoch=...)` で書く. 文字は文 (`.txt`), `pathlib.Path` はファイルをそのまま写す (種類は拡張子から), 配列とテンソルは `kind` を渡す. `image` は (高さ, 幅), (高さ, 幅, チャンネル), (チャンネル, 高さ, 幅) で, 小数は 0 から 1, 整数は 0 から 255 の値 (PNG). `audio` は (サンプル数,) か (チャンネル, サンプル数) で -1 から 1 の値と `sample_rate` (16 bit の WAV. チャンネルは 8 まで. (サンプル数, チャンネル) の配列は `.T` で入れ替える). `point_cloud` は (点の数, 3) で nan の無い座標 (PLY). `mask` は (高さ, 幅) の領域の番号 (0 から 255 の整数か真偽値) で, 決まった色の表 (PASCAL VOC と同じ. 0 は黒) で色分けした PNG を書き, 番号ごとの名前と色の表を一覧の `classes` に残す (名前は `classes` に名前のリストか番号から名前の辞書で渡す). 小数の配列は確率の取り違えとして誤り (argmax で番号にする). 画像と音の nan と無限大, 整数の音 (型の最大値で割って小数にする) は誤り. 学習の途中では `on_epoch_end` の中で `epoch=self.epoch` を渡し (`samples/<名前>/epoch_0005.png` に置く), 学習の後はエポックを省く (`samples/<名前>/final.png`). 同じエポックと名前で書き直すと置き換える. `split` と `caption` (どちらも文字) も添えられる. 値の決まり (点群の座標の単位, 正規化で引いた中心など) は, `caption` の文でなく `convention` (JSON にできる辞書) に書く (画面が元の座標に戻せるように). 同じプロセスのスレッドからは同時に書けるが, 複数のプロセス (DDP のランクなど) から書く場合はランク 0 だけが書く. 前からプロジェクトが `samples/` の直下に置いていた番号付きの画像 (`samples/epoch_010.png`) はそのまま使え, `load_samples` も見本として返す (`legacy: true`).
+
+```python
+save_sample(experiment, "seg", pred_mask, kind="mask",
+            classes=["背景", "物", "縁"], caption="予測")
+save_sample(experiment, "cloud", points, kind="point_cloud",
+            convention={"units": "m", "shift": [0.1, 0.0, 0.5], "scale": 1.0})
+```
 
 読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
 
@@ -594,11 +626,19 @@ guards = make_guards(
     observation_high=[2.4, None, 0.21, None],
     fallback="handover"
 )
-export_policy(experiment.run_dir / "policy", model, env.observation_space,
-              env.action_space, guards)
+# 組み立て直すための引数を metadata に (下の「組み立て直し」)
+model_args = {"obs_dim": 4, "hidden_dim": 64, "n_actions": 2}
+export_policy(
+    experiment.run_dir / "policy", model, env.observation_space,
+    env.action_space, guards,
+    metadata={
+        "env_id": "CartPole-v1", "algorithm": "REINFORCE",
+        "model": {"class": "model.PolicyNet", "args": model_args}
+    }
+)
 
 # 読み直して, 観測から守りを当てた行動を得る
-policy = load_policy(experiment.run_dir / "policy", PolicyNet(...))
+policy = load_policy(experiment.run_dir / "policy", PolicyNet(**model_args))
 result = policy.act(observation)
 # {"action": 0, "status": "ok", "reasons": []}
 ```
@@ -610,8 +650,36 @@ result = policy.act(observation)
 - 書き出しでは `policy.pt` の sha256 を `policy.json` に書き, 読むときに確かめる (違えばエラー)
 - **外れたときの動き** (`fallback`): `stop` (行動を返さず止める. `status` が `stop`), `handover` (行動を返さず元の制御に戻す. `status` が `handover`), `action` (決めた行動. 連続の行動は既定で 0 の行動. `status` が `fallback`)
 - `apply_guards(spec, observation, output)` は, モデルの出力に守りを当てるだけの純粋な関数. 推論の段階 (ML-Inference) は, この関数と `policy.json` で同じ守りを当てられる
-- `load_policy` には, 書き出したときと同じ組み立てのモデルを渡す (重みは一式から読み, cpu で動かす). 一式に入るのはクラスの名前 (`model_class`) だけなので, 組み立て方 (隠れ層の次元数など) は必要なら `metadata` に書く
+- `load_policy` には, 書き出したときと同じ組み立てのモデルを渡す (重みは一式から読み, cpu で動かす). 一式に入るのはクラスの名前 (`model_class`) だけなので, 組み立て方は `metadata` に書く (下の「組み立て直し」)
 - 返す方策は, 観測から行動と守りの結果を返すだけで, 環境や機械には触れない. 実機での実行は道具の外にあり, 方策を使ってよいかと守りの範囲は人が決める
+
+**組み立て直し**: `model_class` は読み込んだモジュールの名前 (スクリプトの隣の `model.py` なら `model.PolicyNet`) で, それだけでは組み立てられない. `metadata` に `env_id`, `algorithm` と, `model` (`class` とコンストラクタの引数 `args`, またはモデルの定義 (ML-ModelControl) のファイルを一式に写した場所 `spec`) を書くのを推奨する (形は docs/FORMAT.md の「metadata の推奨の形」). 読む側は次のように作り直す.
+
+```python
+from ml_found.rl import load_policy, read_policy_spec
+
+spec = read_policy_spec(policy_dir)
+args = spec["metadata"]["model"]["args"]
+policy = load_policy(policy_dir, PolicyNet(**args))
+```
+
+**守り付きの評価**: `evaluate_policy(policy, env_or_id, episodes, seed)` は, 読み直した方策を守りを当てたまま環境で動かし, エピソードごとの結果を返す. `stop` と `handover` では行動を返さないので, そこでエピソードを終える (止めたか元の制御に戻した扱い). `fallback` は決めた行動で続ける. 環境の名前を渡すと `make_env` で作り (追加の依存 `rl` が要る), 終えたら閉じる. 環境を渡した場合は閉じない. 返す行は `save_evaluation` にそのまま渡せる.
+
+```python
+from ml_found import save_evaluation
+from ml_found.rl import evaluate_policy
+
+rows = evaluate_policy(policy, "CartPole-v1", episodes=10, seed=20000)
+# [{"episode": 0, "seed": 20000, "reward": 500.0, "length": 500,
+#   "end": "truncated", "ok": 500, "clipped": 0, "fallback": 0, "stop": 0,
+#   "handover": 0}, ...]
+save_evaluation(experiment, "guarded_episodes", rows, "simulator",
+                description="守りを当てて動かしたエピソード", guard=True)
+```
+
+- 列は `episode` (0 から), `seed` (エピソードの乱数の種. `seed`, `seed + 1`, ...), `reward` (報酬の和), `length` (環境を進めた歩数), `end` (終えた理由. `terminated`, `truncated`, `max_steps`, `stop`, `handover`), 守りの結果ごとの数 (`ok`, `clipped`, `fallback`, `stop`, `handover`. `act` を呼んだ回数で, 止めた判断も 1 回と数える)
+- `max_steps` で 1 エピソードの歩数を切れる. `seed=None` は環境の乱数の続き
+- 推論の段階 (ML-Inference) と画面でも, 同じ数え方 (`stop` と `handover` で終える) にする
 
 ## config の項目
 
@@ -762,7 +830,7 @@ ML-Found/
 │   ├── config/             # config の型定義, 読み込み, 差分, 起動のしかた
 │   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録, 何の実験か, 評価と見本
 │   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, チェックポイント, 記録, 実験の状態
-│   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, 方策の一式と守り
+│   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, 方策の一式と守り, 守り付きの評価
 │   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿
 ├── examples/
 │   ├── minibatch/          # wine データセットの分類, DataLoader で学習する例

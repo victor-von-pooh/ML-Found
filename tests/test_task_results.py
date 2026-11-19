@@ -364,6 +364,7 @@ def test_describe_origin() -> None:
     assert "付けた人" in describe_origin({"type": "annotation"})
     assert "分からない" in describe_origin(None)
     assert "分からない" in describe_origin({"type": "future_type"})
+    assert "環境の報酬" in describe_origin({"type": "environment"})
 
 
 def test_save_evaluation_forms(tmp_path: Path) -> None:
@@ -1059,3 +1060,216 @@ def test_sample_names_with_dots_do_not_collide(tmp_path: Path) -> None:
     assert first.read_text(encoding="utf-8") == "文"
     assert second.read_text(encoding="utf-8") == "別の文"
     assert len(load_samples(experiment.run_dir)) == 2
+
+
+def test_policy_task_values(tmp_path: Path) -> None:
+    """
+    方策の task.yaml (出力の形 action, 正解の出どころ environment) を書け,
+    出どころの説明が環境の報酬の文になることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    write_task(experiment, {
+        "role": "effect",
+        "output": "action",
+        "what": "観測から押す向きを選ぶ方策",
+        "target": {
+            "kind": "reward",
+            "origin": {"type": "environment", "name": "CartPole-v1"}
+        },
+        "method": "scratch"
+    })
+    task = load_task(experiment.run_dir)
+    assert task["format_version"] == 1
+    assert task["output"] == "action"
+    assert task["target"] == {
+        "kind": "reward",
+        "origin": {
+            "type": "environment", "name": "CartPole-v1", "settings": None
+        }
+    }
+    assert describe_origin(task["target"]["origin"]) == (
+        "環境の報酬で測る. 実機での結果は別に確かめる"
+    )
+    log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
+    assert "環境の報酬で測る" in log
+
+
+def test_save_sample_mask(tmp_path: Path) -> None:
+    """
+    領域の番号の見本を決まった色で PNG に書き, 番号の表を一覧に残すことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    mask = torch.tensor([[0, 1], [2, 2]])
+    path = save_sample(
+        experiment, "seg", mask, epoch=3, kind="mask",
+        classes=["背景", "物", "縁", "影"]
+    )
+    assert path.relative_to(experiment.run_dir).as_posix() == (
+        "samples/seg/epoch_0003.png"
+    )
+
+    # 色は PASCAL VOC と同じ表 (0 は黒, 1 は暗い赤, 2 は暗い緑)
+    pixels = np.rint(mpimg.imread(path)[..., :3] * 255).astype(int)
+    assert pixels[0, 0].tolist() == [0, 0, 0]
+    assert pixels[0, 1].tolist() == [128, 0, 0]
+    assert pixels[1, 0].tolist() == [0, 128, 0]
+
+    # 名前を渡した番号と現れた番号の全てを番号の順に
+    entry = load_samples(experiment.run_dir)[0]
+    assert entry["kind"] == "mask"
+    assert entry["classes"] == [
+        {"id": 0, "name": "背景", "color": "#000000"},
+        {"id": 1, "name": "物", "color": "#800000"},
+        {"id": 2, "name": "縁", "color": "#008000"},
+        {"id": 3, "name": "影", "color": "#808000"}
+    ]
+    assert entry["convention"] is None
+
+    # 辞書の名前と名前の無い番号, 同じ番号は実験が違っても同じ色
+    save_sample(
+        experiment, "seg2", np.array([[0, 5]], dtype=np.uint8), kind="mask",
+        classes={0: "背景"}
+    )
+    second = load_samples(experiment.run_dir)[1]
+    assert second["classes"] == [
+        {"id": 0, "name": "背景", "color": "#000000"},
+        {"id": 5, "name": None, "color": "#800080"}
+    ]
+
+    # 真偽値と (1, 高さ, 幅) の形も可
+    save_sample(experiment, "fg", torch.ones(1, 2, 3, dtype=torch.bool),
+                kind="mask")
+    assert [row["id"] for row in load_samples(experiment.run_dir)[2][
+        "classes"
+    ]] == [1]
+
+
+@pytest.mark.parametrize(
+    "value, kwargs, message",
+    [
+        (np.zeros((2, 2)), {}, "整数か真偽値"),
+        (np.array([[0, 256]]), {}, "0 から 255"),
+        (np.array([[-1, 0]]), {}, "0 から 255"),
+        (np.zeros((2, 2, 3), dtype=int), {}, "高さ, 幅"),
+        (np.zeros((0, 3), dtype=int), {}, "空"),
+        (np.zeros((2, 2), dtype=int), {"classes": "abc"}, "classes"),
+        (np.zeros((2, 2), dtype=int), {"classes": {300: "x"}}, "classes"),
+        (np.zeros((2, 2), dtype=int), {"classes": [1]}, "名前"),
+        (Path("seg.png"), {}, "番号の配列")
+    ]
+)
+def test_save_sample_mask_errors(
+    tmp_path: Path, value: object, kwargs: dict, message: str
+) -> None:
+    """
+    領域の見本の値と番号の表の誤りを, 書く前に拒むことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    value: object
+        見本の値
+    kwargs: dict
+        save_sample に足す引数
+    message: str
+        誤りのメッセージに含まれる文字
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    with pytest.raises(ValueError, match=message):
+        save_sample(experiment, "seg", value, kind="mask", **kwargs)
+    assert load_samples(experiment.run_dir) == []
+
+
+def test_save_sample_convention(tmp_path: Path) -> None:
+    """
+    点群の座標の決まりを一覧の convention に残し, 番号の表は mask だけに
+    渡せることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    convention = {"units": "m", "shift": [0.1, 0.0, 0.5], "scale": 2.0}
+    save_sample(
+        experiment, "cloud", np.zeros((3, 3)), kind="point_cloud",
+        convention=convention
+    )
+    entry = load_samples(experiment.run_dir)[0]
+    assert entry["convention"] == convention
+    assert entry["classes"] is None
+
+    # JSON にできない値, 辞書でない値, mask でない種類の classes は誤り
+    for kwargs in (
+        {"convention": {"shift": np.zeros(3)}},
+        {"convention": {"scale": float("nan")}},
+        {"convention": ["m"]},
+        {"classes": ["背景"]}
+    ):
+        with pytest.raises(ValueError):
+            save_sample(
+                experiment, "cloud2", np.zeros((3, 3)), kind="point_cloud",
+                **kwargs
+            )
+    assert len(load_samples(experiment.run_dir)) == 1
+
+
+def test_load_samples_fills_new_fields(tmp_path: Path) -> None:
+    """
+    classes と convention を足す前の一覧の項目にも null を補うことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 前の ML-Found が書いた形の一覧
+    experiment = make_experiment(tmp_path)
+    root = experiment.run_dir / "samples"
+    (root / "note").mkdir(parents=True)
+    (root / "note" / "final.txt").write_text("x", encoding="utf-8")
+    old = {
+        "epoch": None, "name": "note", "kind": "text",
+        "file": "note/final.txt", "split": None, "caption": None,
+        "created_at": "2026-11-19T00:00:00+09:00"
+    }
+    (root / "index.json").write_text(
+        json.dumps({"samples": [old]}), encoding="utf-8"
+    )
+    entry = load_samples(experiment.run_dir)[0]
+    assert entry["classes"] is None and entry["convention"] is None
+    assert entry["name"] == "note"

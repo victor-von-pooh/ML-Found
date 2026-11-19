@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 import warnings
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 import torch
 
 from ml_found.config.loader import format_diff, save_config
@@ -15,6 +15,7 @@ from ml_found.experiment.env_info import (
 )
 from ml_found.experiment.logger import get_logger
 from ml_found.experiment.seed import EXTRA_RNGS, fix_seed
+from ml_found.experiment.task import build_task, describe_origin, save_task
 from ml_found.experiment.uncaught import watch_uncaught_errors
 from ml_found.training.optim import (
     check_optim_config, class_uses_gradients, resolve_optimizer_class,
@@ -228,6 +229,33 @@ def check_resume_path(cfg: DictConfig, project_dir: Path) -> None:
         )
 
 
+def config_task(cfg: DictConfig, project_dir: Path) -> Optional[dict]:
+    """
+    config の task から task.yaml の中身を作る関数
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        学習に使う config
+    project_dir: Path
+        ML-Found を使っているプロジェクトのディレクトリ
+
+    Returns
+    ----------
+    task: Optional[dict]
+        task.yaml の中身, config に task の辞書が無ければ None
+    """
+    # 辞書でない task (プロジェクトが別の意味で使う項目) は対象外
+    section = cfg.get("task")
+    if section is None or not isinstance(section, DictConfig):
+        return None
+    task = build_task(
+        OmegaConf.to_container(section, resolve=True), project_dir
+    )
+
+    return task
+
+
 def make_run_dir(
     project_dir: Path, output_dir: str, name: str, now: datetime
 ) -> Path:
@@ -301,13 +329,14 @@ def start_experiment(
 
     # 空の出力先が残らないように, ディレクトリを作る前にデバイス,
     # Optimizer と Scheduler (クラス, 引数, 仮のパラメータで作れるか) と
-    # 学習の設定, 再開元の確認
+    # 学習の設定, 再開元, config の task の確認
     device = get_device(cfg.experiment.device)
     check_optim_config(cfg)
     check_optim_params(cfg)
     check_trainer_config(cfg)
     try_build_optim(cfg, device)
     check_resume_path(cfg, project_root)
+    task = config_task(cfg, project_root)
 
     # 出力先を作ると未コミットの変更として数えられるので, 先に環境の情報の収集
     env_info = collect_env_info(str(project_root))
@@ -320,20 +349,26 @@ def start_experiment(
     )
 
     # 学習に使った config と差分, 起動のしかた (スクリプト, config のパス,
-    # 上書き) を保存
+    # 上書き), config に task があれば何の実験か (task.yaml) を保存
     save_config(cfg, diff, str(run_dir))
     save_source(cfg, str(run_dir), project_root)
+    if task is not None:
+        save_task(run_dir, task)
 
     # 未コミットの変更がある場合は再現できるように差分を保存
     if git_diff != b"":
         (run_dir / "git_diff.patch").write_bytes(git_diff)
 
-    # ロガーを設定し, 保存先と差分を記録
+    # ロガーを設定し, 保存先と差分, 正解の出どころを記録
     logger = get_logger(
         str(run_dir / "train.log"), cfg.experiment.log_format
     )
     logger.info(f"保存先: {run_dir}")
     logger.info(f"default との差分:\n\n{format_diff(diff)}")
+    if task is not None:
+        logger.info(
+            f"task.yaml を書きました: {describe_origin(task['target']['origin'])}"
+        )
 
     # 乱数シードを固定して記録
     fix_seed(cfg.experiment.seed, cfg.experiment.deterministic)

@@ -11,7 +11,11 @@ from torch import nn
 
 from ml_found.config.loader import load_project_config
 from ml_found.config.source import SOURCE_FORMAT_VERSION
+from ml_found.experiment.results import (
+    load_evaluations, load_samples, save_evaluation, save_sample
+)
 from ml_found.experiment.setup import start_experiment
+from ml_found.experiment.task import TASK_FORMAT_VERSION, load_task
 from ml_found.training.status import FORMAT_VERSION
 from ml_found.training.trainer import Trainer
 from test_trainer import make_loader, regression_step
@@ -171,6 +175,13 @@ def test_run_directory_matches_format(
     diff = OmegaConf.to_container(OmegaConf.load(run_dir / "diff.yaml"))
     assert diff["trainer.epochs"] == {"default": 3, "experiment": 2}
 
+    # 任意のファイルは書かなければ無く, 読む側は分からないものとして扱う
+    for name in ("task.yaml", "evaluations", "samples"):
+        assert not (run_dir / name).exists(), name
+    assert load_task(run_dir) is None
+    assert load_evaluations(run_dir) == []
+    assert load_samples(run_dir) == []
+
 
 def test_history_with_valid_interval(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -277,3 +288,67 @@ def test_failed_run_directory(
         assert (run_dir / name).is_file(), name
     for name in ("history.csv", "final_model.pt", "progress.json"):
         assert not (run_dir / name).exists(), name
+
+
+def test_optional_files_match_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    任意のファイル (task.yaml, evaluations, samples) が docs/FORMAT.md の
+    形と合うことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        sys.argv の差し替えに使う
+
+    Returns
+    ----------
+    None
+    """
+    # ML-EDA の版 2 の説明を置き, config の task から読む
+    dataset = tmp_path / "project" / "outputs" / "dataset"
+    dataset.mkdir(parents=True)
+    (dataset / "dataset.yaml").write_text(
+        "format_version: 2\nname: pairs\nrole: predict\n"
+        "target:\n  kind: mask\n  entries: [mask]\n"
+        "  origin:\n    type: process\n    name: thresholding\n"
+        "    settings: {level: 0.5}\n",
+        encoding="utf-8"
+    )
+    run_dir = run_project(
+        tmp_path / "project", monkeypatch,
+        extra="task:\n  dataset: outputs/dataset\n  method: scratch\n"
+    )
+
+    # task.yaml の項目と版. 全ての項目を書き, 欄も文書と同じ
+    task = load_task(run_dir)
+    keys = documented_keys("### task.yaml")
+    assert set(task) <= keys
+    assert set(task) == keys - {"type", "name", "settings"}
+    assert set(task["target"]["origin"]) == {"type", "name", "settings"}
+    assert set(task["base"]) == {"experiment", "weights"}
+    assert set(task["dataset"]) == {"path", "name", "format_version"}
+    assert task["format_version"] == TASK_FORMAT_VERSION == 1
+    assert task["dataset"]["path"] == "outputs/dataset"
+
+    # evaluations/<名前>.json の項目
+    save_evaluation(run_dir, "per_group", {"group": ["a"], "iou": [0.5]},
+                    "test")
+    evaluation = json.loads(
+        (run_dir / "evaluations" / "per_group.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert set(evaluation) == documented_keys("### evaluations")
+
+    # samples/index.json の項目と置き場所
+    save_sample(run_dir, "note", "見本の文", epoch=5)
+    index = json.loads(
+        (run_dir / "samples" / "index.json").read_text(encoding="utf-8")
+    )
+    assert list(index) == ["samples"]
+    assert set(index["samples"][0]) == documented_keys("### samples")
+    assert (run_dir / "samples" / "epoch_0005" / "note.txt").is_file()

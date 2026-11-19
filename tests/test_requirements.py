@@ -1,4 +1,5 @@
 import json
+import pickle
 from typing import Callable
 
 import pytest
@@ -380,3 +381,30 @@ def test_register_requirement_errors() -> None:
         )
     with pytest.raises(ValueError, match="除けません"):
         unregister_requirement("cuda")
+
+
+def test_missing_requirement_error_pickles() -> None:
+    """
+    MissingRequirementError が pickle で送れることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    error = MissingRequirementError(
+        "rl", ["gymnasium"],
+        {"kind": "pip", "extra": "rl", "packages": ["gymnasium>=1.0"],
+         "url": None},
+        "補足"
+    )
+
+    # 作り直しても属性とメッセージが同じ
+    copied = pickle.loads(pickle.dumps(error))
+    assert str(copied) == str(error)
+    assert copied.feature == "rl"
+    assert copied.missing == ["gymnasium"]
+    assert copied.note == "補足"

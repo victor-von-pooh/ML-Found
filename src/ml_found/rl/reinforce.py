@@ -67,6 +67,38 @@ class ReinforceStep:
 
         return advantage
 
+    def eval_chosen_probs(
+        self, model: nn.Module, batch: dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """
+        推論モードの方策で, 選んだ行動の確率を求める関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            方策のモデル
+        batch: dict[str, torch.Tensor]
+            RolloutLoader のバッチ
+
+        Returns
+        ----------
+        probs: torch.Tensor
+            1 歩ごとの選んだ行動の確率 (勾配は流さない)
+        """
+        # 推論モードにして勾配を記録せずに計算し, 元のモードに復帰
+        training = model.training
+        model.eval()
+        try:
+            with torch.no_grad():
+                log_probs = self.log_softmax(model(batch["observations"]))
+        finally:
+            model.train(training)
+        probs = log_probs.gather(
+            1, batch["actions"].unsqueeze(1)
+        ).squeeze(1).exp()
+
+        return probs
+
     def __call__(
         self, model: nn.Module, batch: dict[str, torch.Tensor], phase: str
     ) -> dict:
@@ -104,10 +136,12 @@ class ReinforceStep:
         entropy = -(log_probs.exp() * log_probs).sum(dim=-1).mean()
 
         # 探索で選んだ確率との比 (1 で打ち切る) で, 方策と違う分布で
-        # 集めた経験の重みの補正
-        ratio = (chosen.detach().exp() / batch["behavior_probs"]).clamp(
-            max=1.0
-        )
+        # 集めた経験の重みの補正. 行動を選んだときと同じ推論モードの
+        # 確率で比べるので, Dropout があっても探索の無い設定では比は 1
+        ratio = (
+            self.eval_chosen_probs(model, batch)
+            / batch["behavior_probs"]
+        ).clamp(max=1.0)
 
         # 基準付きの方策の勾配の損失
         advantage = self.advantages(batch["returns"])

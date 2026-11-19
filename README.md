@@ -69,7 +69,7 @@ entries = describe_requirements()  # 全ての機能の一覧 (JSON にできる
 ```
 
 - `describe_requirements(names=None, check=True)` は, 機能ごとに `name`, `description`, `checks` (確かめ方ごとの `kind`, `name`, `ok`, `error`), `match` (`all` か `any`), `available`, `install` (`kind` が `pip` か `guide`, `extra`, `packages`, `url`, `command`, `extra_command`), `note` を返す. 画面 (ML-Dashboard) のカードや, 問題の設定の受け渡し (ML-Quest) で, 足りないものを早めに知らせるのに使う. `check=False` では確かめない (`ok` と `available` が `None`. JSON では null)
-- 確かめ方は import せずにモジュールを探す (`importlib.util.find_spec`) ので, 一覧を作るだけで重いライブラリを読み込まない
+- 確かめ方は import せずにモジュールを探す (`importlib.util.find_spec`) ので, 一覧を作るだけで重いライブラリを読み込まない. ただし版は確かめない (古い版は使うときのエラーになる) のと, `a.b` のような名前では親のパッケージ `a` を import する
 - プロジェクトの機能は `register_requirement(name, description, checks, install, match, note)` で加えられる (`ml_found.utils`. ML-Found の機能の名前は上書きできない)
 
 ## 使い方
@@ -569,8 +569,8 @@ history = trainer.fit(train_loader, valid_loader)
 ```
 
 - **経験の記録**: `ExperienceBuffer` が 1 歩ごとの観測, 行動, 報酬, 実際にその行動を選んだ確率と安全の違反を貯め, エピソードを終えるときに割引した報酬の和を求める. `to_batch()` がテンソルの辞書にする
-- **エポック**: `RolloutLoader` は今の方策でエピソードを集め, `batch_episodes` ごとに 1 つのバッチを返す (バッチごとに 1 回更新するので, 次のバッチは更新した方策で集める). エポックの長さは `episodes` (エピソードの数) か `steps` (歩数. 達したエピソードの終わりまで) のどちらかで決める. 環境の乱数の種は最初の `reset` だけに渡し, 後は環境の乱数を続けて使う. `max_episode_steps` で 1 エピソードの歩数を切れる (打ち切ったエピソードも終わったものとして報酬の和を求める)
-- **探索**: `Exploration(temperature, epsilon)` で, 方策の分布を温度で平らにし, `epsilon` の割合で一様に選ぶ. 実際に選んだ確率を記録し, `ReinforceStep` は方策の確率との比 (1 で打ち切る) で重みを補正する (既定の温度 1, `epsilon` 0 では比は 1). 途中で変える場合は `add_callback` の関数で `train_loader.exploration` を差し替える
+- **エポック**: `RolloutLoader` は今の方策でエピソードを集め, `batch_episodes` ごとに 1 つのバッチを返す (バッチごとに 1 回更新するので, 次のバッチは更新した方策で集める). エポックの長さは `episodes` (エピソードの数) か `steps` (歩数. 達したエピソードの終わりまで) のどちらかで決める. 環境の乱数の種は最初の `reset` だけに渡し, 後は環境の乱数を続けて使う. `max_episode_steps` で 1 エピソードの歩数を切れる. 環境の打ち切り (TimeLimit など) と `max_episode_steps` で切ったエピソードも, 終わったもの (最後の歩の後の報酬を 0) として報酬の和を求める (モンテカルロの REINFORCE. 打ち切りの後の価値を足すのは, 価値の関数を持つ方法で行う)
+- **探索**: `Exploration(temperature, epsilon)` で, 方策の分布を温度で平らにし, `epsilon` の割合で一様に選ぶ. 実際に選んだ確率を記録し, `ReinforceStep` は方策の確率との比 (1 で打ち切る) で重みを補正する. 比の方策の確率は, 行動を選んだときと同じ推論モードで求める (Dropout があっても, 既定の温度 1, `epsilon` 0 では更新の前の比は 1. 損失の勾配は学習モードで求める). 途中で変える場合は `add_callback` の関数で `train_loader.exploration` を差し替える
 - **評価**: `EvaluationLoader` は学習とは別の環境で, 毎回 `seed`, `seed + 1`, ... の種で始めたエピソードを, 最もスコアの高い行動で動かす (エポックの間で比べられる). 全てのエピソードを 1 つのバッチにする
 - **指標**: エピソードごとの報酬の和 (`reward`), 歩数 (`length`), 安全の違反の数 (`violations`. 環境が `info` の `safety_key` (既定 `cost`) に 0 より大きい値を入れた歩の数) を, エピソードの数で重み付けして平均する. `success_key` (`is_success` など) を指定すると, 最後の歩の値から成功の割合 (`success`) も記録する. 学習では方策の損失 (`loss`) とエントロピー (`entropy`) も記録する
 - **損失**: `ReinforceStep` は, バッチの平均を基準 (baseline) にした REINFORCE. 学習の `loss` は方策の勾配の損失, 検証の `loss` は評価の報酬の和の平均の符号を反転した値 (意味が違うので, 監視する指標は `trainer.monitor: valid/reward` と `trainer.mode: max` にする)
@@ -605,7 +605,9 @@ result = policy.act(observation)
 
 - **行動の範囲**: 連続の行動 (Box) は `action_low` と `action_high` に clip する (空間の範囲との狭い方). 番号で選ぶ行動 (Discrete) は `allowed_actions` の中の最もスコアの高い行動にする. どちらも `status` が `clipped` になる
 - **止める条件**: 観測の要素ごとの範囲 (`observation_low`, `observation_high`. `None` は制限なし). 範囲の外の観測, 観測の形の違いと有限でない値, モデルの出力の大きさの違いと有限でない値, モデルのエラーは, 外れたときの動きにする
-- 範囲は有限の数か `None` (制限なし) で書く. nan は守りを黙って外すことになるので, 書き出しでも読み込みでもエラーにする
+- 範囲は有限の数か `None` (制限なし) で書く. nan は守りを黙って外すことになるので, 書き出しでも読み込みでもエラーにする. 守り, 空間, 外れたときの動きの知らない項目 (`observation_hihg` のような書き損じ) もエラーにする
+- 連続の行動は float32 で返す. 0.1 のような範囲は float32 に丸めると少し外に出るので, 外に出た要素は内側の隣の float32 に寄せる. float32 で無限大になる行動と観測 (1e39 など) は, 外れたときの動きにする
+- 書き出しでは `policy.pt` の sha256 を `policy.json` に書き, 読むときに確かめる (違えばエラー)
 - **外れたときの動き** (`fallback`): `stop` (行動を返さず止める. `status` が `stop`), `handover` (行動を返さず元の制御に戻す. `status` が `handover`), `action` (決めた行動. 連続の行動は既定で 0 の行動. `status` が `fallback`)
 - `apply_guards(spec, observation, output)` は, モデルの出力に守りを当てるだけの純粋な関数. 推論の段階 (ML-Inference) は, この関数と `policy.json` で同じ守りを当てられる
 - `load_policy` には, 書き出したときと同じ組み立てのモデルを渡す (重みは一式から読み, cpu で動かす). 一式に入るのはクラスの名前 (`model_class`) だけなので, 組み立て方 (隠れ層の次元数など) は必要なら `metadata` に書く

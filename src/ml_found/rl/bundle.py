@@ -1,4 +1,5 @@
 from datetime import datetime
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -20,6 +21,21 @@ HEADS = {"categorical", "deterministic"}
 
 # 外れたときの動き
 FALLBACK_KINDS = {"stop", "handover", "action"}
+
+# 空間, 守り, 外れたときの動きに書ける項目 (書き損じを見つけるため,
+# 他の項目はエラー)
+SPACE_KEYS = {
+    "discrete": {"type", "n", "start"},
+    "box": {"type", "shape", "low", "high"}
+}
+GUARD_KEYS = {
+    "action_low", "action_high", "allowed_actions", "observation_low",
+    "observation_high", "fallback"
+}
+FALLBACK_KEYS = {"kind", "action"}
+
+# 数として読める配列の種類 (真偽値, 整数, 小数)
+NUMERIC_KINDS = "biuf"
 
 
 def bounds_to_json(values: Any) -> list[Optional[float]]:
@@ -191,6 +207,15 @@ def check_space(spec: dict) -> None:
     ----------
     None
     """
+    # 辞書であることと, 種類ごとに書ける項目だけであることの確認
+    if not isinstance(spec, dict):
+        raise ValueError(f"空間は辞書にしてください: {spec!r}")
+    if spec.get("type") not in SPACE_KEYS:
+        raise ValueError(f"空間の type は discrete か box にしてください: {spec}")
+    unknown = sorted(set(spec) - SPACE_KEYS[spec["type"]])
+    if unknown:
+        raise ValueError(f"空間に知らない項目 {unknown} があります: {spec}")
+
     # 種類ごとに要る項目の確認
     if spec.get("type") == "discrete":
         if not is_int(spec.get("n")) or spec["n"] < 1:
@@ -199,8 +224,6 @@ def check_space(spec: dict) -> None:
         if not is_int(spec["start"]):
             raise ValueError(f"discrete の start は整数にしてください: {spec}")
         return
-    if spec.get("type") != "box":
-        raise ValueError(f"空間の type は discrete か box にしてください: {spec}")
     shape = spec.get("shape")
     if not isinstance(shape, list) or not all(
         is_int(size) and size >= 1 for size in shape
@@ -325,6 +348,19 @@ def check_guards(guards: dict, obs_spec: dict, act_spec: dict) -> None:
     ----------
     None
     """
+    # 守りと外れたときの動きは辞書で, 書ける項目だけ
+    if not isinstance(guards, dict):
+        raise ValueError(f"guards は辞書にしてください: {guards!r}")
+    unknown = sorted(set(guards) - GUARD_KEYS)
+    if unknown:
+        raise ValueError(f"guards に知らない項目 {unknown} があります")
+    fallback = guards.get("fallback")
+    if not isinstance(fallback, dict):
+        raise ValueError(f"guards の fallback は辞書にしてください: {fallback!r}")
+    unknown = sorted(set(fallback) - FALLBACK_KEYS)
+    if unknown:
+        raise ValueError(f"fallback に知らない項目 {unknown} があります")
+
     # 観測は box に限り, 止める条件の要素の数と向きを確認
     if obs_spec["type"] != "box":
         raise ValueError("観測の空間は box にしてください")
@@ -347,7 +383,6 @@ def check_guards(guards: dict, obs_spec: dict, act_spec: dict) -> None:
         check_box_guards(guards, act_spec)
 
     # 外れたときの動きの種類
-    fallback = guards.get("fallback") or {}
     if fallback.get("kind") not in FALLBACK_KINDS:
         raise ValueError(
             f"fallback は {sorted(FALLBACK_KINDS)} のどれかにしてください: "
@@ -433,6 +468,56 @@ def check_box_guards(guards: dict, act_spec: dict) -> None:
             raise ValueError(
                 f"fallback の行動 {action} は行動の範囲の中にしてください"
             )
+        if float32_inside(values, low, high) is None:
+            raise ValueError(
+                f"fallback の行動 {action} は float32 で行動の範囲の中に"
+                "表せません"
+            )
+
+
+def float32_inside(
+    values: np.ndarray, low: np.ndarray, high: np.ndarray
+) -> Optional[np.ndarray]:
+    """
+    行動を float32 にし, 丸めで範囲の外に出た要素を内側に寄せる関数
+
+    0.1 のような範囲は float32 で少し大きな値 (0.10000000149) になるので,
+    丸めた後に範囲を確かめ直し, 外に出た要素は内側の隣の float32 に寄せる
+
+    Parameters
+    ----------
+    values: np.ndarray
+        範囲の中の行動 (float64)
+    low: np.ndarray
+        行動の下限
+    high: np.ndarray
+        行動の上限
+
+    Returns
+    ----------
+    action: Optional[np.ndarray]
+        float32 の行動, 有限でないか範囲の中に表せない場合は None
+    """
+    # 大きすぎる値は無限大になるので, 警告を出さずに丸めて確認
+    with np.errstate(over="ignore"):
+        action = np.asarray(values, dtype=np.float64).astype(np.float32)
+    if not np.all(np.isfinite(action)):
+        action = None
+        return action
+
+    # 丸めで外に出た要素を, 内側の隣の float32 に移動
+    above = action.astype(np.float64) > high
+    action[above] = np.nextafter(action[above], np.float32(-np.inf))
+    below = action.astype(np.float64) < low
+    action[below] = np.nextafter(action[below], np.float32(np.inf))
+
+    # それでも外の要素 (範囲に float32 が無い場合) は表せない
+    widened = action.astype(np.float64)
+    if np.any((widened > high) | (widened < low)):
+        action = None
+        return action
+
+    return action
 
 
 def action_limits(
@@ -487,6 +572,8 @@ def check_spec(spec: dict) -> None:
     None
     """
     # 版が無いものと新しい版は, 守りを読み違えないように停止
+    if not isinstance(spec, dict):
+        raise ValueError("policy.json は辞書にしてください")
     version = spec.get("format_version")
     if not is_int(version) or version < 1:
         raise ValueError(
@@ -500,8 +587,8 @@ def check_spec(spec: dict) -> None:
         )
 
     # 出力の読み方と行動の空間の組み合わせ, 空間と守り
-    obs_spec = spec["observation_space"]
-    act_spec = spec["action_space"]
+    obs_spec = spec.get("observation_space")
+    act_spec = spec.get("action_space")
     check_space(obs_spec)
     check_space(act_spec)
     head = spec.get("head")
@@ -513,14 +600,71 @@ def check_spec(spec: dict) -> None:
             f"{act_spec['type']} の行動の head は {expected} にしてください: "
             f"{head!r}"
         )
-    check_guards(spec["guards"], obs_spec, act_spec)
+    check_guards(spec.get("guards"), obs_spec, act_spec)
 
-    # 重みは一式の中の決まったファイルだけ
+    # 重みは一式の中の決まったファイルだけで, 中身の sha256 を持つこと
     if spec.get("weights") != WEIGHTS_FILE:
         raise ValueError(
             f"policy.json の weights は {WEIGHTS_FILE} にしてください: "
             f"{spec.get('weights')!r}"
         )
+    digest = spec.get("weights_sha256")
+    if not isinstance(digest, str) or len(digest) != 64 or not all(
+        char in "0123456789abcdef" for char in digest
+    ):
+        raise ValueError(
+            "policy.json の weights_sha256 は 16 進の小文字 64 文字に"
+            f"してください: {digest!r}"
+        )
+
+
+def file_sha256(path: Path) -> str:
+    """
+    ファイルの中身の sha256 を求める関数
+
+    Parameters
+    ----------
+    path: Path
+        ファイルのパス
+
+    Returns
+    ----------
+    digest: str
+        16 進の小文字 64 文字
+    """
+    # 大きな重みでも少しずつ読んで計算
+    hasher = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(ReadChunk(file), b""):
+            hasher.update(chunk)
+    digest = hasher.hexdigest()
+
+    return digest
+
+
+class ReadChunk:
+    def __init__(self, file: Any, size: int = 1 << 20):
+        # 読むファイルと 1 回に読む大きさを保存
+        self.file = file
+        self.size = size
+
+    def __call__(self) -> bytes:
+        """
+        ファイルから次の塊を読む関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        chunk: bytes
+            読んだ塊, 終わりでは空
+        """
+        # 決めた大きさだけ読み込み
+        chunk = self.file.read(self.size)
+
+        return chunk
 
 
 def export_policy(
@@ -567,6 +711,7 @@ def export_policy(
         "action_space": act_spec,
         "guards": guards,
         "weights": WEIGHTS_FILE,
+        "weights_sha256": "0" * 64,
         "model_class": f"{model_class.__module__}.{model_class.__qualname__}",
         "created_at": datetime.now().astimezone().isoformat(),
         "metadata": metadata or {}
@@ -581,6 +726,7 @@ def export_policy(
         for key, value in model.state_dict().items()
     }
     torch.save(weights, directory / WEIGHTS_FILE)
+    spec["weights_sha256"] = file_sha256(directory / WEIGHTS_FILE)
     text = json.dumps(spec, ensure_ascii=False, indent=2, allow_nan=False)
     (directory / SPEC_FILE).write_text(text + "\n", encoding="utf-8")
 
@@ -606,8 +752,6 @@ def read_policy_spec(path: Union[str, Path]) -> dict[str, Any]:
         (Path(path) / SPEC_FILE).read_text(encoding="utf-8"),
         parse_constant=reject_constant
     )
-    if not isinstance(spec, dict):
-        raise ValueError("policy.json は辞書にしてください")
     check_spec(spec)
 
     return spec
@@ -634,18 +778,26 @@ def check_observation(spec: dict, observation: Any) -> list[str]:
     obs_spec = spec["observation_space"]
     size = space_size(obs_spec)
     try:
-        obs = np.asarray(observation, dtype=np.float64)
+        raw = np.asarray(observation)
+        obs = raw.astype(np.float64)
     except (TypeError, ValueError) as exc:
         reasons = [f"観測を数の配列にできない ({exc})"]
+        return reasons
+    if raw.dtype.kind not in NUMERIC_KINDS:
+        reasons = [f"観測が数の配列でない ({raw.dtype})"]
         return reasons
     if obs.shape not in (tuple(obs_spec["shape"]), (size,)):
         reasons = [
             f"観測の形 {obs.shape} が {tuple(obs_spec['shape'])} と違う"
         ]
         return reasons
+    # モデルには float32 で渡すので, 丸めた後も有限であることを確認
+    # (1e39 は float64 では有限でも float32 では無限大)
     obs = obs.reshape(-1)
-    if not np.all(np.isfinite(obs)):
-        reasons = ["観測に有限でない値がある"]
+    with np.errstate(over="ignore"):
+        obs32 = obs.astype(np.float32)
+    if not np.all(np.isfinite(obs)) or not np.all(np.isfinite(obs32)):
+        reasons = ["観測に有限でない値がある (float32 での丸めも含む)"]
         return reasons
 
     # 止める条件の範囲の外の要素
@@ -710,12 +862,16 @@ def to_action(spec: dict, value: Any) -> Union[int, np.ndarray]:
     action: Union[int, np.ndarray]
         discrete なら整数, box なら shape の形の float32 の配列
     """
-    # 空間の種類ごとの型
+    # 空間の種類ごとの型, box は float32 にしても範囲の中に収める
     act_spec = spec["action_space"]
     if act_spec["type"] == "discrete":
         action = int(value)
         return action
-    action = np.asarray(value, dtype=np.float32).reshape(act_spec["shape"])
+    low, high = action_limits(spec["guards"], act_spec)
+    inside = float32_inside(np.asarray(value, dtype=np.float64), low, high)
+    if inside is None:
+        raise ValueError(f"行動 {value} は float32 で範囲の中に表せません")
+    action = inside.reshape(act_spec["shape"])
 
     return action
 
@@ -834,10 +990,13 @@ def guard_box(spec: dict, values: np.ndarray) -> dict[str, Any]:
         )
         return result
 
-    # 範囲の中に clip して, 変えた要素を理由に記録
+    # 範囲の中に clip し, float32 にしても有限で範囲の中であることを確認
     clipped = np.clip(values, low, high)
-    if not np.all(np.isfinite(clipped)):
-        result = fallback_result(spec, ["clip した行動が有限でない"])
+    inside = float32_inside(clipped, low, high)
+    if inside is None:
+        result = fallback_result(
+            spec, ["clip した行動が float32 で有限な範囲の中に表せない"]
+        )
         return result
     changed = np.nonzero(clipped != values)[0]
     reasons = [
@@ -846,7 +1005,7 @@ def guard_box(spec: dict, values: np.ndarray) -> dict[str, Any]:
         for index in changed
     ]
     result = {
-        "action": to_action(spec, clipped),
+        "action": inside.reshape(act_spec["shape"]),
         "status": "clipped" if reasons else "ok",
         "reasons": reasons
     }
@@ -920,9 +1079,15 @@ def load_policy(path: Union[str, Path], model: nn.Module) -> GuardedPolicy:
     policy: GuardedPolicy
         act(observation) で行動を返す方策
     """
-    # 版と形を確かめてから重みを読み込み
+    # 版と形と, 重みのファイルの sha256 を確かめてから読み込み
     directory = Path(path)
     spec = read_policy_spec(directory)
+    digest = file_sha256(directory / spec["weights"])
+    if digest != spec["weights_sha256"]:
+        raise ValueError(
+            f"{spec['weights']} の sha256 が policy.json と違います "
+            "(書き出した後に重みが変わっています)"
+        )
     state = torch.load(
         directory / spec["weights"], map_location="cpu", weights_only=True
     )

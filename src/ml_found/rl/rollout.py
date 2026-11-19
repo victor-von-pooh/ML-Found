@@ -270,6 +270,30 @@ def check_discrete(env: Any) -> None:
         )
 
 
+def check_count(name: str, value: Any, optional: bool = False) -> None:
+    """
+    回数の引数が 1 以上の整数 (真偽値を除く) であることを確かめる関数
+
+    Parameters
+    ----------
+    name: str
+        引数の名前
+    value: Any
+        引数の値
+    optional: bool = False
+        None を許す場合は True
+
+    Returns
+    ----------
+    None
+    """
+    # bool は int の子なので除外
+    if optional and value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} は 1 以上の整数にしてください: {value!r}")
+
+
 class RolloutLoader:
     def __init__(
         self, env: Any, model: nn.Module, episodes: Optional[int] = None,
@@ -282,16 +306,14 @@ class RolloutLoader:
         # エポックの長さはエピソードの数か歩数のどちらか一方
         if (episodes is None) == (steps is None):
             raise ValueError("episodes と steps のどちらか一方を指定してください")
-        for name, value in (
-            ("episodes", episodes), ("steps", steps),
-            ("batch_episodes", batch_episodes)
+        check_count("episodes", episodes, optional=True)
+        check_count("steps", steps, optional=True)
+        check_count("batch_episodes", batch_episodes)
+        check_count("max_episode_steps", max_episode_steps, optional=True)
+        if isinstance(gamma, bool) or not isinstance(gamma, (int, float)) or (
+            not 0.0 <= gamma <= 1.0
         ):
-            if value is not None and (
-                not isinstance(value, int) or value < 1
-            ):
-                raise ValueError(
-                    f"{name} は 1 以上の整数にしてください: {value!r}"
-                )
+            raise ValueError(f"gamma は 0 以上 1 以下にしてください: {gamma!r}")
         check_discrete(env)
 
         # 環境, モデル, エポックの長さ, まとめるエピソードの数を保存
@@ -405,11 +427,11 @@ class EvaluationLoader:
         safety_key: Optional[str] = "cost",
         success_key: Optional[str] = None
     ):
-        # エピソードの数の確認と, 行動の形の確認
-        if not isinstance(episodes, int) or episodes < 1:
-            raise ValueError(
-                f"episodes は 1 以上の整数にしてください: {episodes!r}"
-            )
+        # エピソードの数, 乱数の種, 歩数の上限と, 行動の形の確認
+        check_count("episodes", episodes)
+        check_count("max_episode_steps", max_episode_steps, optional=True)
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ValueError(f"seed は整数にしてください: {seed!r}")
         check_discrete(env)
 
         # 評価用の環境, モデル, エピソードの数, 乱数の種を保存

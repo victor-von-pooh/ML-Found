@@ -22,6 +22,26 @@ class MissingRequirementError(ImportError):
         self.install = install
         self.note = note
 
+    def __reduce__(self) -> tuple:
+        """
+        pickle で送れるように, 作り直すための引数を返す関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        state: tuple
+            クラスと, コンストラクタの引数
+        """
+        # 別のプロセス (DataLoader の worker など) で作り直すための引数
+        state = (
+            type(self), (self.feature, self.missing, self.install, self.note)
+        )
+
+        return state
+
 
 def cuda_available() -> bool:
     """
@@ -124,6 +144,10 @@ INSTALL_KINDS = {"pip", "guide"}
 def module_found(name: str) -> bool:
     """
     モジュールを import せずに, 入っているかを確かめる関数
+
+    importlib.util.find_spec で探すので, 版は確かめない (版が古い場合は
+    使うときのエラーになる). a.b のような名前では, 親のパッケージ a は
+    import される
 
     Parameters
     ----------

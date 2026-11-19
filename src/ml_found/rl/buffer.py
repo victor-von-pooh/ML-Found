@@ -95,6 +95,11 @@ class ExperienceBuffer:
         """
         途中のエピソードを終え, 割引した報酬の和を求めて貯める関数
 
+        終了 (terminated) と打ち切り (truncated. TimeLimit や
+        max_episode_steps) を区別せず, 最後の歩の後の報酬を 0 として
+        求める (モンテカルロの REINFORCE). 打ち切りの後の価値を見積もって
+        足す方法は, 価値の関数を持つ方法 (Actor-Critic など) で行う
+
         Parameters
         ----------
         success: Optional[bool] = None

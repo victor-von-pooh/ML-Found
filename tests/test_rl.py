@@ -10,7 +10,7 @@ from torch import nn
 from ml_found.rl import (
     POLICY_FORMAT_VERSION, EvaluationLoader, ExperienceBuffer, Exploration,
     ReinforceStep, RolloutLoader, apply_guards, export_policy, load_policy,
-    make_env, make_guards, read_policy_spec
+    make_env, make_guards, read_policy_spec, space_to_dict
 )
 from ml_found.rl.rollout import behavior_probs
 from ml_found.training.trainer import Trainer
@@ -780,3 +780,209 @@ def test_policy_fallback_on_bad_input(tmp_path: Path) -> None:
         assert result["status"] == "stop"
         assert result["action"] is None
         assert result["reasons"]
+
+
+def test_box_actions_stay_inside_after_float32() -> None:
+    """
+    小数の範囲 (0.1, 2.4, 0.2095) でも, float32 の行動が範囲の外に
+    出ないことを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    bounds = [0.1, 2.4, 0.2095]
+    obs_space = Space(low=[-1.0], high=[1.0])
+    act_space = Space(low=[-5.0] * 3, high=[5.0] * 3)
+    spec = {
+        "format_version": 1, "head": "deterministic",
+        "observation_space": space_to_dict(obs_space),
+        "action_space": space_to_dict(act_space),
+        "guards": make_guards(
+            obs_space, act_space, action_low=[-value for value in bounds],
+            action_high=bounds, observation_low=[-1.0],
+            observation_high=[1.0], fallback="action",
+            fallback_action=bounds
+        )
+    }
+    high = np.array(bounds)
+
+    # 上に外れた出力と下に外れた出力の clip
+    for output, limit in ((high + 1.0, high), (-high - 1.0, -high)):
+        result = apply_guards(spec, [0.0], output)
+        action = result["action"]
+        assert action.dtype == np.float32
+        assert np.all(np.abs(action.astype(np.float64)) <= high)
+        assert np.allclose(action, limit, atol=1e-6)
+
+    # 範囲の端の決めた行動も内側
+    result = apply_guards(spec, [5.0], [0.0, 0.0, 0.0])
+    assert result["status"] == "fallback"
+    assert np.all(result["action"].astype(np.float64) <= high)
+
+
+def test_float32_overflow_falls_back() -> None:
+    """
+    float32 で無限大になる出力と観測が, 外れたときの動きになることを
+    確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    obs_space = Space(low=[-np.inf], high=[np.inf])
+    act_space = Space(low=[-np.inf], high=[np.inf])
+    spec = {
+        "format_version": 1, "head": "deterministic",
+        "observation_space": space_to_dict(obs_space),
+        "action_space": space_to_dict(act_space),
+        "guards": make_guards(obs_space, act_space)
+    }
+
+    # 制限の無い行動の 1e300 と, 1e39 の観測と, 文字の観測
+    assert apply_guards(spec, [0.0], [1e300])["status"] == "stop"
+    assert apply_guards(spec, [1e39], [0.0])["status"] == "stop"
+    assert apply_guards(spec, ["1.0"], [0.0])["status"] == "stop"
+    assert apply_guards(spec, [0.0], [0.5])["status"] == "ok"
+
+
+def test_spec_rejects_unknown_keys_and_bad_structure(
+    tmp_path: Path
+) -> None:
+    """
+    守り, 空間, 外れたときの動きの知らない項目と, 形の崩れた policy.json
+    を ValueError で拒むことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    obs_space = Space(low=[-1.0], high=[1.0])
+    with pytest.raises(ValueError, match="observation_hihg"):
+        guards = make_guards(obs_space, Space(n=2))
+        guards["observation_hihg"] = [0.5]
+        export_policy(
+            tmp_path / "typo", nn.Linear(1, 2), obs_space, Space(n=2), guards
+        )
+    directory = export_policy(
+        tmp_path / "policy", nn.Linear(1, 2), obs_space, Space(n=2)
+    )
+    path = directory / "policy.json"
+    spec = json.loads(path.read_text(encoding="utf-8"))
+
+    # 形の崩れたものは KeyError などではなく ValueError
+    broken_specs = []
+    for key, value in (
+        ("guards", []), ("observation_space", None),
+        ("action_space", {"type": "discrete", "n": 2, "nn": 3})
+    ):
+        broken = dict(spec)
+        broken[key] = value
+        broken_specs.append(broken)
+    broken = dict(spec)
+    broken["guards"] = dict(spec["guards"], fallback="stop")
+    broken_specs.append(broken)
+    broken = dict(spec)
+    broken["guards"] = dict(
+        spec["guards"], fallback={"kind": "stop", "acton": 0}
+    )
+    broken_specs.append(broken)
+    del broken_specs[0]["guards"]
+    for broken in broken_specs:
+        path.write_text(json.dumps(broken), encoding="utf-8")
+        with pytest.raises(ValueError):
+            read_policy_spec(directory)
+    path.write_text(json.dumps([1, 2]), encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_policy_spec(directory)
+
+
+def test_weights_sha256_checked(tmp_path: Path) -> None:
+    """
+    書き出した後に重みが変わると読み込みを止めることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    obs_space = Space(low=[-1.0], high=[1.0])
+    directory = export_policy(
+        tmp_path / "policy", nn.Linear(1, 2), obs_space, Space(n=2)
+    )
+    spec = read_policy_spec(directory)
+    assert len(spec["weights_sha256"]) == 64
+
+    # 別の重みで置き換えた policy.pt
+    torch.save(nn.Linear(1, 2).state_dict(), directory / "policy.pt")
+    with pytest.raises(ValueError, match="sha256"):
+        load_policy(directory, nn.Linear(1, 2))
+
+
+def test_ratio_is_one_with_dropout() -> None:
+    """
+    Dropout のあるモデルでも, 探索の無い設定では更新の前の比が 1 に
+    なることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(1, 8), nn.Dropout(0.5), nn.Linear(8, 2))
+    batch = next(iter(RolloutLoader(ToyEnv(), model, episodes=1)))
+
+    # 推論モードの確率は行動を選んだ確率と同じで, モデルは学習モードのまま
+    probs = ReinforceStep().eval_chosen_probs(model, batch)
+    assert torch.allclose(probs, batch["behavior_probs"], atol=1e-6)
+    assert model.training
+
+
+def test_loader_argument_checks() -> None:
+    """
+    回数の真偽値, 0 の歩数の上限, 範囲の外の割引率を作るときに拒むことを
+    確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    env = ToyEnv()
+    model = toy_model()
+    for kwargs in (
+        {"episodes": True}, {"episodes": 1, "batch_episodes": True},
+        {"episodes": 1, "max_episode_steps": 0},
+        {"episodes": 1, "gamma": 2.0}
+    ):
+        with pytest.raises(ValueError):
+            RolloutLoader(env, model, **kwargs)
+    for kwargs in (
+        {"episodes": False}, {"max_episode_steps": 0}, {"seed": None}
+    ):
+        with pytest.raises(ValueError):
+            EvaluationLoader(env, model, **kwargs)

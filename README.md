@@ -493,6 +493,56 @@ import torch
 model.load_state_dict(torch.load("outputs/wine/.../final_model.pt"))
 ```
 
+### 何の実験か, データ全体の評価, 見本
+
+実験のディレクトリに, 任意で次の 3 つを書ける (形は [docs/FORMAT.md](docs/FORMAT.md)). 書かなくても学習は変わらず, 書かなかった実験と今までの実験も同じく読める.
+
+- **`task.yaml`** (何の実験か): 受け持ち (`role`. `predict`, `generate`, `rank`, `group`, `effect`), 出力の形と意味 (`output`, `what`), 正解の種類と出どころ (`target.kind`, `target.origin`), 作り方 (`method`. `scratch`, `finetune` など) と元にした実験や重み (`base`), 学習に使ったデータセット (`dataset`). 値の名前は ML-Quest と ML-EDA のものを写す. 正解が今ある処理の出力 (`target.origin.type: process`) なら, 指標はその処理との一致で, モデルはその処理を超えられない. このことを指標と一緒に読めるようにするためのファイル
+- **`evaluations/<名前>.json`** (データ全体の評価): グループごとの表, 曲線, 比べる相手との差, 守る指標を, 名前と分割の付いた表として書く
+- **`samples/`** (見本): 画像, 文, 音, 点群の見本を, エポックと名前ごとに書き, `samples/index.json` に一覧を残す
+
+`task.yaml` は default の config に `task` を書くと, `start_experiment` が書く. `task.dataset` に ML-EDA が書き出したデータセット (`dataset.yaml` の版 2 かそのディレクトリ. 相対パスはプロジェクトから辿る) を書くと, 受け持ち, 正解の種類と出どころを埋める. 書いた項目は埋めた値より優先する (`target.origin` は欄ごとでなく丸ごと置き換え. null と書いた項目は書かなかったものとして扱い, 埋めた値を残す). 誤り (知らない項目, 選択肢に無い値, 版 2 でない `dataset.yaml`) は出力先を作る前に見つかる. ML-Found は ml_eda に頼らずに `dataset.yaml` を読み, 版 1 (列の正解. 正解の出どころを持たない) と知らない版では止まる. 辞書でない `task` と, `task.yaml` の項目 (`role`, `output`, `what`, `target`, `method`, `base`, `dataset`) を 1 つも持たない `task` は, プロジェクトが別の意味で使う項目として警告して使わない. `task.yaml` の項目と他の項目を混ぜた `task` は誤りになる (今まで `task` に自分の辞書を書いていたプロジェクトは, 名前を変える).
+
+```yaml
+# configs/default/train.yaml
+task:
+  dataset: outputs/dataset          # 受け持ち, 正解の種類と出どころを埋める
+  output: shape
+  what: 撮影ごとの物の表面の点群
+  method: scratch
+```
+
+スクリプトから書く場合は `write_task` を使う (後から書いた方で置き換える). 微調整では元にした実験 (`base.experiment`) か重み (`base.weights`. Hugging Face のモデルの名前など) を書く.
+
+```python
+from ml_found import save_evaluation, save_sample, task_from_dataset, write_task
+
+experiment = start_experiment(cfg, diff, PROJECT_DIR)
+task = task_from_dataset("outputs/dataset", project_dir=PROJECT_DIR)
+task.update({
+    "what": "文ごとの感情",
+    "method": "finetune",
+    "base": {"weights": "bert-base-uncased"}
+})
+write_task(experiment, task)
+```
+
+評価は学習の後に `save_evaluation(experiment, 名前, 表, 分割)` で書く. 表は行の辞書の並び, 列の名前から値の並びの辞書, 1 行の辞書, pandas の DataFrame (索引は使わないので, 要るなら `reset_index()` で列にする) のどれか. 値は数, 文字, 真偽値, None (テンソルと NumPy の数も可. nan と無限大は null). `description` (何の評価か), `kind="curve"` と `x` (曲線の横軸の列), `baseline` (比べる相手の名前), `guard=True` (守る指標の表), `epoch` (評価した重みのエポック) を添えられる. 実験の代わりに実験のディレクトリのパスを渡すと, 終えた実験にも後から書ける.
+
+```python
+save_evaluation(
+    experiment, "per_group",
+    {"group": ["a", "b"], "iou": [0.81, 0.64], "baseline_iou": [0.78, 0.70]},
+    "test", baseline="今の処理", guard=True
+)
+```
+
+評価と見本の名前は英数字と `_`, `.`, `@`, `-` だけで, 先頭は `.` 以外 (見本は `index.json` と, `samples/` の直下のファイルと同じ名前も不可).
+
+見本は `save_sample(experiment, 名前, 値, epoch=...)` で書く. 文字は文 (`.txt`), `pathlib.Path` はファイルをそのまま写す (種類は拡張子から), 配列とテンソルは `kind` を渡す. `image` は (高さ, 幅), (高さ, 幅, チャンネル), (チャンネル, 高さ, 幅) で, 小数は 0 から 1, 整数は 0 から 255 の値 (PNG). `audio` は (サンプル数,) か (チャンネル, サンプル数) で -1 から 1 の値と `sample_rate` (16 bit の WAV. チャンネルは 8 まで. (サンプル数, チャンネル) の配列は `.T` で入れ替える). `point_cloud` は (点の数, 3) で nan の無い座標 (PLY). 画像と音の nan と無限大, 整数の音 (型の最大値で割って小数にする) は誤り. 学習の途中では `on_epoch_end` の中で `epoch=self.epoch` を渡し (`samples/<名前>/epoch_0005.png` に置く), 学習の後はエポックを省く (`samples/<名前>/final.png`). 同じエポックと名前で書き直すと置き換える. `split` と `caption` (どちらも文字) も添えられる. 同じプロセスのスレッドからは同時に書けるが, 複数のプロセス (DDP のランクなど) から書く場合はランク 0 だけが書く. 前からプロジェクトが `samples/` の直下に置いていた番号付きの画像 (`samples/epoch_010.png`) はそのまま使え, `load_samples` も見本として返す (`legacy: true`).
+
+読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
+
 ### 強化学習
 
 Gymnasium の形の環境 (`reset(seed=...)` が `(観測, info)` を, `step(行動)` が `(観測, 報酬, 終了, 打ち切り, info)` を返すもの) とやり取りして, 行動を選ぶ方策を学習できる. 別の仕組みは作らず, 環境とのやり取りを「バッチを返す loader」にして, これまでの `Trainer` の step とエポックの決まりに乗せる. 使うには追加の依存 `rl` (Gymnasium) を入れる (上の「追加の依存」). 例は `examples/cartpole/` (CartPole を REINFORCE で学習し, 守りと一緒に書き出す).
@@ -644,6 +694,9 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | `last.pt` | 最後のエポックのチェックポイント, ベストモデルの重みも含む (`last_with_best: false` の場合は含まない). 再開に使う |
 | `final_model.pt` | ベストモデルの重みだけ (`restore_best: false` か `select_best: false` の場合は最後のエポックの重み. `eval_model` を上書きした場合はそのモデルの重み), cpu のテンソル |
 | `run.json` | 実験の状態 (`running`, `completed`, `stopped`, `failed`), 開始, 更新, 終了の時刻 (タイムゾーン付き) と所要時間 (`duration_sec`), 予定と終えたエポック数 (`fit` を呼び直した場合は前の `fit` までを含めた数), 再開した最初のエポック (`fit` を呼び直した場合は続きの最初のエポック), 監視する指標とその向き (`mode`), ベストモデルを選ぶか (`select_best`. `false` の場合はベストのエポックと値が `null`), ベストのエポックと値, Early Stopping で止めたエポック, `final_model.pt` の重み (`best`, `last`, エポックの途中で止めて戻せなかった場合 (`eval_model` を上書きし, そのモデルの状態を `extra_state_dict` で保存していない場合を含む) は `partial`), 乱数シード, デバイス, Optimizer ごとの名前 (名前付きの場合), クラスの名前, 受け持つ部分 (名前付きの場合), Scheduler のクラスの名前 (warmup を付けた場合は `SequentialLR(LinearLR, CosineAnnealingLR)` のように中のクラスも. `fit` を呼ぶまで作らない Scheduler は学習を始めるときに書く) (`optimizers`. `Trainer` の作成で失敗した場合は `null`), プロセスの ID とホスト名, エラーの内容, 形式の版. 学習を始めたときに作り, エポックごと (1 秒以上の間隔. 間隔の中の更新は次の進み具合の書き込みと一緒に書く), 再開したときと終了時に更新. `Trainer` の作成で失敗した場合と, `start_experiment` の後に `fit` の外 (データの読み込みやモデルの作成など) で処理されなかったエラーでスクリプトが止まった場合も `failed` (キーボードの割り込みは `stopped`) で書く |
+| `task.yaml` | 任意. 何の実験か (受け持ち, 出力の意味, 正解の種類と出どころ, 作り方, 元にしたもの, データセット). config の `task` か `write_task` で書く (「何の実験か, データ全体の評価, 見本」) |
+| `evaluations/` | 任意. `save_evaluation` で書いたデータ全体の評価 (`<名前>.json`) |
+| `samples/` | 任意. `save_sample` で書いた見本と一覧 (`index.json`) |
 | `progress.json` | 学習中だけ置かれる, 今のフェーズ (`train`, `train_eval`, `valid`), エポックと予定のエポック数 (`fit` を呼び直した場合は前の `fit` までを含めた数), エポックの中で終えたバッチの数と総数, 段階 (`stage`. `on_epoch_end` を継承した場合, その処理の間だけ `epoch_end`. 高価な評価の間を画面に知らせる), 経過時間, 更新時刻 (`updated_at`). 1 秒以上の間隔で上書きする (1 エポックが短い学習の邪魔にならないように, フェーズの始めと終わりも間隔を守る). 学習を終えると消す |
 
 ### エポックごとの結果を受け取る
@@ -705,7 +758,7 @@ echo now > outputs/wine/2026-11-12/10-00-00/STOP   # エポックの途中でも
 ML-Found/
 ├── src/ml_found/
 │   ├── config/             # config の型定義, 読み込み, 差分, 起動のしかた
-│   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録
+│   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録, 何の実験か, 評価と見本
 │   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, チェックポイント, 記録, 実験の状態
 │   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, 方策の一式と守り
 │   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿

@@ -205,7 +205,7 @@ history = trainer.fit([graph], [graph])
 | --- | --- | --- |
 | `step(batch, phase)` | バッチごと | `step_fn` を渡す代わりに書く |
 | `on_epoch_start(phase)` | エポックの学習または検証の前 | 予測を集める入れ物を用意する |
-| `on_epoch_end(phase)` | エポックの学習または検証の後 | AUC など, バッチの平均では求められない指標を辞書で返す. `train/` や `valid/` (評価し直しでは `train_eval/`) を付けて記録される |
+| `on_epoch_end(phase)` | エポックの学習または検証の後 | AUC など, バッチの平均では求められない指標を辞書で返す. `train/` や `valid/` (評価し直しでは `train_eval/`) を付けて記録される. `valid` では検証するエポックだけ呼ばれるので, 重い評価は `phase == "valid"` のときに書く (「検証の間隔」) |
 
 継承した中では `self.epoch` (今のエポック) と `self.global_step` (パラメータの更新回数) を参照できる.
 `step_fn` を渡す形では引数にエポックが渡らないので, エポックに応じて損失を変える場合 (KL annealing など) は継承して `self.epoch` を使う.
@@ -360,6 +360,31 @@ def step(model, batch, phase):
 - 拡散モデルのように損失に乱数を含む場合は, `trainer.valid_seed` を決めると毎エポック同じ乱数で検証し, ベストモデルの判定が乱数で揺れない. 検証の後は学習の乱数の状態に戻すので, 学習には影響しない. 固定するのは Python, NumPy, torch の全体の乱数なので, 自分の `generator` を渡した DataLoader や, ワーカーを使い回す DataLoader のワーカーの乱数には届かない. `register_rng` で登録した乱数 (下の「外部ライブラリの乱数」) は固定の対象になる
 - Dropout などで学習時と推論時の振る舞いが違うモデルでは, `train/` の指標は学習中の振る舞いの値になる. `trainer.eval_train: true` にすると, 各エポックの学習の後に学習用データを推論モード (勾配の計算なし, `valid_grad` と `valid_seed` は検証と同じに効く) で評価し直し, `train_eval/` を付けて記録する (`train_eval/loss` など). 学習用と検証用の指標を同じ条件で比べられる. 評価し直しの前後で乱数の状態 (全体の乱数, `register_rng` で登録した乱数, DataLoader と sampler に渡した `generator`) を戻すので, 並べ替える DataLoader でも学習そのものは変わらない. ただし `persistent_workers=True` の DataLoader では, 使い回すワーカーの中の乱数 (データ拡張など) が進むので学習の結果が変わる (学習を始めるときに警告が出る). `step` が評価し直しで返した `extra` は記録しない (学習中の値が残る). DataLoader の中のデータ拡張 (`Dataset` の変換など) は評価し直しにもかかるので, 拡張をかけない値が欲しい場合は, 拡張の無い学習用データの DataLoader で別に評価する. 時間は学習用データ 1 周分の推論だけ増える. `step` と `on_epoch_start`, `on_epoch_end` には `phase` に `train_eval` が渡るので, `phase == "train"` で学習かどうかを見分ける書き方にする. 監視する指標にも使える (`trainer.monitor: train_eval/loss`)
 
+### 検証の間隔
+
+FID, Chamfer 距離, 検索の再現率のように重い評価を毎エポック行わない場合は, `trainer.valid_every_n_epochs` で検証の間隔を空ける. 検証するのは, エポックの番号 (1 から数えた通しの番号) が間隔で割り切れるエポックと, 予定の最後のエポック (`trainer.epochs`. `fit` を呼び直した場合はその `fit` の最後) だけ. 例えば 7 エポックで間隔が 3 なら, エポック 3, 6, 7 を検証する. 既定の 1 では毎エポック検証する (これまでと同じ).
+
+```yaml
+trainer:
+  epochs: 100
+  valid_every_n_epochs: 5
+  monitor: valid/fid
+  early_stopping:
+    use: true
+    patience: 3   # 検証 3 回 (15 エポック) 改善しなければ止める
+```
+
+- 検証するエポック (判定するエポック) だけ, 検証, `eval_train` の評価し直し, 監視する指標の確認 (無いか nan や inf ならエラー), ベストモデルの判定, Early Stopping, ReduceLROnPlateau を行う. ベストモデルは判定したエポックの中から選ぶ. 検証用のデータを渡さない場合 (`train/loss` を監視する場合) も同じエポックだけ判定する
+- Early Stopping の `patience` と ReduceLROnPlateau の `patience` は, エポック数ではなく判定の回数で数える. 間隔が 5 で `patience: 3` なら, 15 エポック改善しなければ止まる
+- 判定しないエポックは, 学習の指標 (`train/`), 学習率, `extra` だけを記録する. `history.csv` の `valid/` と `train_eval/` の列は空になり, `History.get` では `None` になる. 学習曲線では記録のあるエポックだけを点で描く
+- `step` が `extra` で返した値は, 判定するエポックでは検証の値, 判定しないエポックでは学習の値が残る. 学習と検証の両方で返す値は `history.csv` で学習と検証の値が入れ替わって並ぶので, どちらか一方のフェーズだけで返すか, フェーズごとに別の名前にする
+- `extra` の名前が指標と同じ場合のエラーも, その指標が検証だけのもの (`valid/` だけにある名前) なら, 最初に判定するエポックまで出ない
+- ReduceLROnPlateau 以外の Scheduler (`scheduler.interval: epoch` の StepLR など) は, 判定しないエポックも毎エポック進める
+- 重い評価は `on_epoch_end` を継承して `phase == "valid"` のときに書く. `on_epoch_start` と `on_epoch_end` はフェーズごとに呼ばれるので, 検証しないエポックでは `valid` で呼ばれず, 重い評価も行われない. 評価の間は `progress.json` の段階が `epoch_end` になり, 画面に評価中と出る
+- 判定しないエポックで `STOP` や `add_callback` の関数で止めた場合は, 検証せずに止める. ベストモデルは最後に判定したエポックのまま (1 回も判定しないうちに止めた場合はベストモデルが無く, `final_model.pt` は最後のエポックの重み). 止めたエポックの `last.pt` は保存する
+- 監視する指標が無いか nan や inf のエラーは, 最初に判定するエポック (間隔が 5 ならエポック 5) まで出ない. 名前の誤りに早く気付くには, 初めは `trainer.epochs` を小さくして試す
+- エポックの番号は通しなので, 再開と `fit` の呼び直しでも同じエポックを判定する. 再開で間隔を変えると警告が出る (待つ回数は判定の回数のまま続く). ただし予定の最後のエポックは必ず判定するので, 途中のエポック数で止めた学習 (例えば `trainer.epochs: 4` で学習して 7 まで再開) では, その最後のエポック (4) も判定し, 通しで学習した場合より判定が 1 回多くなる (間隔で割り切れるエポック数で区切ると同じになる)
+
 ### 外部ライブラリの乱数
 
 ML-Found が固定と保存をするのは Python, NumPy, torch の全体の乱数だけなので, 独自の乱数生成器を持つライブラリ (qiskit など) は, `register_rng` で登録すると同じ扱いになる.
@@ -476,13 +501,14 @@ ML-Found が使う項目と既定値.
 | `trainer.valid_grad` | `false` | 検証時にも勾配を計算するかどうか |
 | `trainer.valid_seed` | `null` | 検証の前に乱数を固定するシード, 検証の後は学習の乱数の状態に戻す |
 | `trainer.eval_train` | `false` | 学習の後に学習用データを推論モードで評価し直し, `train_eval/` を付けて記録するかどうか |
+| `trainer.valid_every_n_epochs` | `1` | 検証するエポックの間隔 (1 以上の整数). エポックの番号が割り切れるエポックと予定の最後のエポックだけ検証 (`eval_train` の評価し直しも) し, ベストモデル, Early Stopping, ReduceLROnPlateau を判定する (「検証の間隔」) |
 | `trainer.manual_optimization` | `false` | ML-Found が逆伝播と更新を行わず, `step` の中で更新するかどうか |
 | `trainer.resume_scheduler` | `checkpoint` | 再開時に Scheduler の引数が config と違う場合に, 再開元の状態のまま (`checkpoint`) か, config の引数で作り直して同じステップ数まで進めるか (`config`) |
 | `trainer.resume_from` | `null` | 再開するチェックポイントのパス, 相対パスの場合はプロジェクトのディレクトリから辿る |
 | `trainer.progress_bar` | `true` | 進捗バーを表示するかどうか |
 | `trainer.progress_bar_batches` | `false` | エポックの中のバッチ単位の進捗バーも表示するかどうか (1 エポックが長い場合に使う) |
 | `trainer.early_stopping.use` | `false` | Early Stopping を使うかどうか |
-| `trainer.early_stopping.patience` | `10` | 改善しないまま待つエポック数 |
+| `trainer.early_stopping.patience` | `10` | 改善しないまま待つ回数. 判定するエポック (`valid_every_n_epochs` が 1 なら毎エポック) の回数で数える |
 | `trainer.early_stopping.min_delta` | `0.0` | これより小さい変化は改善とみなさない |
 | `trainer.checkpoint.save_best` | `true` | `best.pt` を保存するかどうか |
 | `trainer.checkpoint.save_last` | `true` | `last.pt` を保存するかどうか |
@@ -496,7 +522,7 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 
 監視する指標が nan や inf になった場合はエラーで止まる.
 監視する指標が最良値とちょうど同じ値の場合は改善とみなさないので, 正解率のように同じ値を取りやすい指標を監視すると, ベストモデルは最初にその値に達したエポックのままになり, Early Stopping も止まりやすい. `trainer.monitor_tiebreak` に `valid/loss` などを指定すると, 同じ値の場合はその指標で比べ, ベストモデルの判定と Early Stopping の両方に使う. バッチごとの平均の丸め誤差で同じ正解率がわずかに違う値になることがあるので, 相対誤差 1e-6 以内は同じ値とみなす. Early Stopping では, 最良値より悪くないが `min_delta` 未満の改善の場合も比べる指標で判定する (`min_delta` は Early Stopping だけに使い, ベストモデルの判定には使わない). 比べる指標が nan や inf になった場合もエラーで止まる. 再開するときは, 比べる指標と向きを再開元と同じにする (違う場合はエラー). この設定を入れる前のチェックポイントから再開した場合は, 次に監視する指標が改善するまで比べない.
-学習の途中で起きたエラーは `train.log` にも記録する. Optimizer と Scheduler のクラス名と引数 (名前, 必須の引数, 範囲を持つ値), `scheduler.interval`, ReduceLROnPlateau の組み合わせ, デバイス, `trainer.epochs` (1 以上の整数), `trainer.mode`, `trainer.checkpoint.every_n_epochs`, `trainer.monitor_tiebreak_mode`, `manual_optimization` と `grad_clip_norm`・`log_grad_norm` の組み合わせ, `select_best: false` と Early Stopping・`monitor_tiebreak` の組み合わせの誤り, `trainer.resume_scheduler` の値, `eval_train: false` で `train_eval/` の指標を監視する設定, `auto` と書けない引数の `auto` と, 存在しないか再開に使えない `resume_from` は, 出力先を作る前に見つかる. 範囲を持つ引数が配列 (Adam の `betas` など) の場合は要素ごとに確かめる. 範囲を持たない引数や自作のクラスの値の誤りも, 仮のパラメータで作ってみて見つける. それ以外の `Trainer` の作成のエラー (モデルをデバイスに移せない, 実際のパラメータでだけ起きる Optimizer の誤りなど) は, 出力先が作られた後なので, エラーを `train.log` に書き, `run.json` を `failed` にしてから投げ直す (継承したクラスが `super().__init__()` の後に行う処理のエラーは対象外). 作成の中身は `_build_parts` にあるので, 継承したクラスではこの名前を使わない. 自分で作った Optimizer や Scheduler を `Trainer` に渡す場合も, config の `optimizer` と `scheduler` の名前と組み合わせは確かめるので, 使わない設定も正しい値にしておく.
+学習の途中で起きたエラーは `train.log` にも記録する. Optimizer と Scheduler のクラス名と引数 (名前, 必須の引数, 範囲を持つ値), `scheduler.interval`, ReduceLROnPlateau の組み合わせ, デバイス, `trainer.epochs` (1 以上の整数), `trainer.mode`, `trainer.checkpoint.every_n_epochs`, `trainer.valid_every_n_epochs` (1 以上の整数), `trainer.monitor_tiebreak_mode`, `manual_optimization` と `grad_clip_norm`・`log_grad_norm` の組み合わせ, `select_best: false` と Early Stopping・`monitor_tiebreak` の組み合わせの誤り, `trainer.resume_scheduler` の値, `eval_train: false` で `train_eval/` の指標を監視する設定, `auto` と書けない引数の `auto` と, 存在しないか再開に使えない `resume_from` は, 出力先を作る前に見つかる. 範囲を持つ引数が配列 (Adam の `betas` など) の場合は要素ごとに確かめる. 範囲を持たない引数や自作のクラスの値の誤りも, 仮のパラメータで作ってみて見つける. それ以外の `Trainer` の作成のエラー (モデルをデバイスに移せない, 実際のパラメータでだけ起きる Optimizer の誤りなど) は, 出力先が作られた後なので, エラーを `train.log` に書き, `run.json` を `failed` にしてから投げ直す (継承したクラスが `super().__init__()` の後に行う処理のエラーは対象外). 作成の中身は `_build_parts` にあるので, 継承したクラスではこの名前を使わない. 自分で作った Optimizer や Scheduler を `Trainer` に渡す場合も, config の `optimizer` と `scheduler` の名前と組み合わせは確かめるので, 使わない設定も正しい値にしておく.
 
 `last.pt` と `best.pt` には, モデル, Optimizer, Scheduler, 記録の全て (列ごとの数の配列で持つので, エポックが多くても保存は軽い), 乱数の状態が入り, `last.pt` にはベストモデルの重みも入る (`best.pt` では今のモデルがベストモデルなので, 同じ重みを 2 つは持たない. `eval_model` を上書きした場合は別の重みなので持つ). 1 エポックが短い学習 (フルバッチなど) では保存が学習時間の大部分を占めることがあるので, `trainer.checkpoint.every_n_epochs` で `last.pt` の間隔を空けるか, 再開しない場合は `save_best` と `save_last` を `false` にする. `best.pt` は改善するたびに保存するので `every_n_epochs` では減らない (ベストモデルの重みは `last.pt` にも入るので, 再開だけなら `save_best: false` でもよい. ただし `last_with_best: false` と合わせると再開後にベストモデルに戻せないので, `start_experiment` で警告が出る). 大きなモデルでは 1 ファイルが数 GB になるので, 再開に使わない `best.pt` は `best_weights_only: true` で重みだけにし, `last_with_best: false` で `last.pt` からベストモデルの重みを外すと軽くなる (100 万個の引数のモデルと Adam で, 既定の `best.pt` 12 MB と `last.pt` 16 MB が, それぞれ 4 MB と 12 MB). 重みだけの `best.pt` は `weights_only` (true), `epoch`, `monitor`, `best_value`, `model` (重み) の辞書なので, `torch.load(...)["model"]` で読む (`eval_model` を上書きした場合はそのモデルの重み). 継承して加えた状態 (`extra_state_dict`) は入らない.
 
@@ -536,6 +562,7 @@ Python のコードでエポックごとの結果を受け取る場合は, `trai
 - `improved`: ベストモデルを更新したか
 - `best_epoch`, `best_value`: これまでのベストモデルのエポックと値 (ベストモデルを選ばない設定では `None`)
 - `early_stopping`: このエポックで Early Stopping が止めるか
+- `judged`: このエポックで検証し, ベストモデルなどを判定したか (`trainer.valid_every_n_epochs` が 2 以上の場合, 判定しないエポックの `record` には `valid/` の指標が無い)
 
 関数が真の値 (`True`, numpy の真偽値など) を返すと, `STOP` のファイルと同じく, そのエポックで学習を止める (`last.pt` を保存し, 状態は `stopped`. 予定の最後のエポックなら `completed`). 同じエポックで Early Stopping も止める場合は, Early Stopping として記録する. 関数の中のエラーは学習のエラーとして扱う (状態は `failed`). 呼ばれるのはそのエポックのチェックポイントを保存する前なので, 関数の中から読む `last.pt` と `best.pt` は前のエポックまでのもの. 関数の中の処理の間, `progress.json` の段階は `epoch_end` にならない (高価な評価は `on_epoch_end` を継承して書くと, 画面に評価中と出る).
 
@@ -556,7 +583,7 @@ history = trainer.fit(train_loader, valid_loader)
 
 学習中の実験のディレクトリに `STOP` という名前のファイルを置くと (中身が `now` 以外の場合), そのエポックを終えたところで学習を止める. 結果 (`final_model.pt` など) を保存し, 状態を `stopped` にする. `checkpoint.save_last` が true の場合は, 保存の間隔に関係なく `last.pt` も保存するので, そこから再開できる. 1 エポックが長い学習ですぐに止めたい場合は, 下のように `STOP` に `now` と書く. 予定の最後のエポックで置いた場合と, Early Stopping と同じエポックで止まった場合は `completed` になる. `STOP` は学習を止めた後も残るので, 同じ出力先で `fit` をやり直す場合は消しておく (同じ `Trainer` で `fit` を呼び直す場合は, ML-Found が消す).
 
-`STOP` に `now` と書くと, エポックの途中でも止める (バッチを終えるたびに, 前に確かめてから 1 秒以上空いていれば確かめる). 途中のエポックは捨てて記録に加えず, 最後に終えたエポックの状態に戻す. そのエポックの最後のフェーズ (検証, 検証しない場合は `eval_train` の評価し直しか学習) の最後のバッチで気付いた場合は, 中身の無い `STOP` と同じくエポックの区切りで止める.
+`STOP` に `now` と書くと, エポックの途中でも止める (バッチを終えるたびに, 前に確かめてから 1 秒以上空いていれば確かめる). 途中のエポックは捨てて記録に加えず, 最後に終えたエポックの状態に戻す. そのエポックの最後のフェーズ (検証, 検証しない場合は `eval_train` の評価し直しか学習. 判定しないエポックでは学習) の最後のバッチで気付いた場合は, 中身の無い `STOP` と同じくエポックの区切りで止める.
 
 - 前のエポックの `last.pt` (学習を始めたエポックなら始めた時点) から, モデル, Optimizer, Scheduler, 更新回数 (`global_step`), 乱数, 継承したクラスが加えた状態 (`extra_state_dict`) をメモリの上でも戻す. `last.pt` は, この `fit` で前のエポックに保存したもの (エポックと更新回数が合うもの) だけを使う. ただし学習の後に, 設定に応じてモデルの重みはベストモデルや `eval_model` の重みに置き換わる. 続きを学習する場合は, 同じ `Trainer` で `fit` を呼び直すか (「学習の再開」), `last.pt` から再開する
 - `final_model.pt` は, `restore_best` と `select_best` でベストモデルがあればその重み. そうでなければ戻した重み. `every_n_epochs` などで前のエポックの `last.pt` が無い場合と, `eval_model` を上書きしてそのモデルの状態を `extra_state_dict` で保存していない場合 (戻した後もそのモデルの重みが変わらない場合) は, 途中までの重みが残り, 警告が出て `run.json` の `final_weights` が `partial` になる

@@ -88,9 +88,11 @@ def plot_metric(records: list[dict], name: str, output_path: str) -> None:
             for record in records
             if record.get(key) is not None
         ]
+        # 数エポックおきの記録 (検証の間隔など) は, 1 点でも見えるように印
+        marker = "o" if len(points) < len(records) else None
         ax.plot(
             [epoch for epoch, _ in points], [value for _, value in points],
-            label=key
+            label=key, marker=marker
         )
 
     # 凡例を表示して保存

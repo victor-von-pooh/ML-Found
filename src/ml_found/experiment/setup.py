@@ -106,6 +106,17 @@ def check_trainer_config(cfg: DictConfig) -> None:
             f"{trainer_cfg.checkpoint.every_n_epochs}"
         )
 
+    # 検証の間隔は 1 以上の整数に制限
+    valid_every = trainer_cfg.valid_every_n_epochs
+    if (
+        not isinstance(valid_every, int) or isinstance(valid_every, bool)
+        or valid_every < 1
+    ):
+        raise ValueError(
+            "trainer.valid_every_n_epochs は 1 以上の整数にしてください: "
+            f"{valid_every}"
+        )
+
     # last.pt にベストモデルの重みを入れず best.pt も残さないと, 再開した
     # 学習でベストモデルに戻せないので警告
     checkpoint_cfg = trainer_cfg.checkpoint

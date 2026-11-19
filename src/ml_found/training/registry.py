@@ -130,6 +130,10 @@ CLASS_PARAM_NOTES: dict[tuple[str, str], dict[str, Any]] = {
         "description": "total_iters の後の学習率の倍率",
         "minimum": 0.0, "maximum": 1.0
     },
+    ("ReduceLROnPlateau", "patience"): {
+        "description": "改善しないのを待つ判定の回数 (判定は既定で毎エポック)",
+        "minimum": 0
+    },
     ("ReduceLROnPlateau", "factor"): {
         "description": "改善しないときに学習率に掛ける倍率",
         "minimum": 0.0, "maximum": 1.0, "exclusive_maximum": True

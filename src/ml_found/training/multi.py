@@ -193,7 +193,9 @@ class NamedSchedulers:
         # 名前と Scheduler を書いた順に保存
         self.schedulers = dict(schedulers)
 
-    def step(self, metric: Optional[float] = None) -> None:
+    def step(
+        self, metric: Optional[float] = None, judged: bool = True
+    ) -> None:
         """
         全ての Scheduler の学習率を 1 回更新する関数
 
@@ -201,13 +203,16 @@ class NamedSchedulers:
         ----------
         metric: Optional[float] = None
             ReduceLROnPlateau が改善を判定するための指標の値
+        judged: bool = True
+            指標で判定するエポックか. False の場合 (検証しないエポック) は
+            ReduceLROnPlateau だけ更新せず, 他の Scheduler は更新
 
         Returns
         ----------
         None
         """
         for scheduler in self.schedulers.values():
-            step_scheduler(scheduler, metric)
+            step_scheduler(scheduler, metric, judged)
 
     def state_dict(self) -> dict:
         """

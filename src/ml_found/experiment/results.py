@@ -1060,7 +1060,8 @@ def original_coordinates(
         (点の数, 3) の座標 (見本の PLY の頂点など)
     convention: Optional[dict]
         load_samples が返した項目の値の決まり (今の版の意味).
-        scale (無ければ 1) と shift (無ければ 0) を使う
+        scale (無ければ 1) と shift (無ければ 0) を使う.
+        newer_version が True の項目は None なので, 呼ぶ前に確かめる
 
     Returns
     ----------
@@ -1071,6 +1072,10 @@ def original_coordinates(
     if array.ndim != 2 or array.shape[1] != 3:
         raise ValueError(
             f"点群は (点の数, 3) の配列にしてください: {array.shape}"
+        )
+    if convention is not None and not isinstance(convention, dict):
+        raise ValueError(
+            f"convention は辞書か None にしてください: {convention!r}"
         )
     given = convention or {}
     scale_value = given.get("scale")
@@ -1190,7 +1195,7 @@ def save_sample(
             temp.unlink(missing_ok=True)
 
         # 同じエポックと名前の前の項目を置き換えた一覧の書き込み
-        # (古い版の一覧の項目は, 今の版の意味に写して書き直す)
+        # (古い版の一覧の項目は, 今の版の意味に写した上での書き直し)
         kept = []
         removed = []
         for item in samples:
@@ -1310,7 +1315,7 @@ def load_samples(run_dir: Union[str, os.PathLike]) -> list[dict]:
     samples = [upgrade_sample(item, version) for item in samples]
 
     # classes と convention の無い項目には null を補完.
-    # 新しい版の値の決まりは意味が変わったかもしれないので読まない
+    # 新しい版の値の決まりは, 意味が変わったかもしれないので読まない扱い
     for item in samples:
         if isinstance(item, dict):
             item.setdefault("classes", None)

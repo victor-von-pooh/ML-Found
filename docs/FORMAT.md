@@ -242,12 +242,12 @@ samples/
 | `split` | 文字か null | 見本の入力の分割 |
 | `caption` | 文字か null | 添える説明 |
 | `classes` | リストか null | `mask` の番号の表 (下). 他の種類は null |
-| `convention` | 辞書か null | 値の決まり (点群の座標の単位や正規化で引いた中心など. 下). 無ければ null |
+| `convention` | 辞書か null | 値の決まり (点群の座標の単位や正規化で足した量など. 下). 無ければ null |
 | `created_at` | 文字 | 書いた時刻 (タイムゾーン付きの ISO 8601) |
 
 - `classes` と `convention` は任意の項目. 読む側は無い場合を null と読む (`load_samples` は null を補って返す)
 - **版 1 と版 2 の違い**: 値の決まりの `shift` の向きだけ. 版 2 は ML-EDA の書き出しの `shift` と同じ向き (正規化した座標 = 元の座標 + shift). 版 1 は逆の向き (元の座標 = 値 × scale + shift) なので, 版 1 の `shift` の数の符号を反転すると版 2 の意味になる. `load_samples` は版 1 の一覧の `shift` を版 2 の意味に写して返し, `save_sample` は版 1 の一覧に書き足すとき前の項目も版 2 の意味に写して版 2 で書く
-- **新しい版の読み方 (`samples/index.json` だけの決まり)**: 知っている版より新しい一覧は, 他の項目は読める項目だけを使うが, `convention` は読まない (意味が変わったかもしれず, 座標を取り違えるため). `load_samples` は `convention` を null にし, 項目に `newer_version: true` を付ける (知っている版の一覧の項目は `newer_version: false`). `save_sample` は新しい版の一覧に書き足さずに止まる. 版が 1 以上の整数でない一覧 (文字, 真偽値など) は誤り (`load_samples` は一覧を読めないものとして直下の画像だけを返す)
+- **新しい版の読み方 (`samples/index.json` だけの決まり)**: 知っている版より新しい一覧は, 他の項目は読める項目だけを使うが, `convention` は読まない (意味が変わったかもしれず, 座標を取り違えるため). `load_samples` は `convention` を null にし, 項目に `newer_version: true` を付ける (知っている版の一覧の項目は `newer_version: false`). `save_sample` は新しい版の一覧に書き足さずに止まる. 版 2 の一覧に書き足すのは版 2 を知っている ML-Found だけにする (版を知らない ML-Found は `format_version` を書かずに一覧を書き直すので, 版 1 と読まれて `shift` の向きを取り違えるため. 実験を続けるときは同じかより新しい ML-Found を使う). 版が 1 以上の整数でない一覧 (文字, 真偽値など) は誤り (`load_samples` は一覧を読めないものとして直下の画像だけを返す)
 - **`mask` の番号の表** (`classes`): 並びの 1 つが 1 つの番号で, `id` (0 から 255 の整数), `name` (名前. 文字か null), `color` (PNG での色. `#rrggbb`). 書いた番号の全て (名前を渡した番号と, 配列に現れた番号) を番号の順に並べる. 色は決まった色の表 (PASCAL VOC と同じ, 番号のビットから作る 256 色. 0 は黒) から番号で選ぶので, 実験が違っても同じ番号は同じ色. 画面は PNG をそのまま出し, この表から凡例を作る
 - **値の決まり** (`convention`): 書いた側の補足で, 形は決めない (JSON の辞書). 点群では `units` (座標の単位. `m`, `mm` など), `shift` (正規化で足した量. ML-EDA と同じ向きで, 正規化した座標 = 元の座標 + shift. 数か軸ごとの 3 つの数), `scale` (正規化の後に割った大きさ. 数か軸ごとの 3 つの数. 元の座標は `値 × scale - shift`), `axes` (軸の向き. `y_up` など) を推奨する
 - ML-Found が配列から書く形: 画像は PNG (8 bit), 領域の番号は色分けした PNG (8 bit の RGB), 音は WAV (16 bit の PCM), 点群は PLY (ascii. 頂点の `x`, `y`, `z` だけ). ファイルを渡すと形を変えずに写す

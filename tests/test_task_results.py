@@ -1371,7 +1371,8 @@ def test_sample_shift_matches_eda(tmp_path: Path) -> None:
         (np.zeros(3), None),
         (np.zeros((2, 2)), None),
         (values, {"shift": [1.0, 2.0]}),
-        (values, {"scale": "x"})
+        (values, {"scale": "x"}),
+        (values, ["m"])
     ):
         with pytest.raises(ValueError):
             original_coordinates(points, given)

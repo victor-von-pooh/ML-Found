@@ -15,7 +15,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 - **版を変えない変更**: ファイル, 項目, 列を足す. 選択肢の値 (`task.yaml` の `output` や `target.origin.type`, 見本の `kind` など) を足す. 読む側は, 知らないファイル, 項目, 列を無視し, 知らない選択肢の値は分からないもの (`unknown` や `file` の扱い) として読む (言い切りの元にしない)
 - **版を上げる変更**: ファイル, 項目, 列を消す. 名前, 意味, 値の型を変える
 - **読む側**: 知っている版より新しいファイルは, 読める項目だけを使い, 新しい版の ML-Found の出力であることを利用者に知らせる (読むのを止めない)
-- 版を書く前の ML-Found が作った `source.yaml` には `format_version` が無い. 中身は版 1 と同じ形なので, 版 1 として読む
+- `format_version` の無い `source.yaml` は版 1 として読む (中身は版 1 と同じ形)
 
 ## プロジェクトの形 (版 1)
 
@@ -82,7 +82,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `samples/` | 任意. `save_sample` で書いた場合 | 見本の出力と一覧 `samples/index.json` (下の「samples」) |
 | `policy/` | 任意. 強化学習の方策を `export_policy` で書き出した場合 | 方策の一式 (下の「方策の一式」). 独自の版を持つ |
 
-- `task.yaml`, `evaluations/`, `samples/` は任意のファイル (2026-11-19 に足した. 版 1 のまま). これらを足す前の ML-Found が作った実験と, 書かなかった実験には無い. 読む側は, 無い場合を「分からない」として扱う
+- `task.yaml`, `evaluations/`, `samples/` は版 1 の任意のファイル. 書かなかった実験には無い. 読む側は, 無い場合を「分からない」として扱う
 - プロジェクトが実験のディレクトリに自分のファイル (生成した画像, 写したモデルの定義など) を足してよい. 読む側は, 知らないファイルを無視する. 学習曲線とプロジェクトの画像は, 上の名前で見分ける
 - 書きかけを読まないように, ML-Found は一時ファイル (`*.tmp`, `.run.json.*.tmp` など) に書いてから置き換える. 一時ファイルが一瞬見えることがあるので, 読む側は無視する
 
@@ -129,7 +129,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `phase` | 文字 | 今のフェーズ (`train`, `train_eval`, `valid`) |
 | `epoch`, `total_epochs` | 整数 | 今のエポックと予定のエポック数 |
 | `batch`, `total_batches` | 整数, 整数か null | エポックの中で終えたバッチの数と総数 (分からない場合は null) |
-| `stage` | 文字 | フェーズの中の段階. `batches` (バッチを回している) か `epoch_end` (エポックの終わりの処理 `on_epoch_end` を継承した場合だけ, その間. FID など高価な評価が入りうる). 処理を終えると `batches` に戻す. 無ければ `batches` と読む (この項目を足す前の ML-Found が書いたファイル. 版は同じ 1). `add_callback` の関数の処理の間は `epoch_end` にならない |
+| `stage` | 文字 | フェーズの中の段階. `batches` (バッチを回している) か `epoch_end` (エポックの終わりの処理 `on_epoch_end` を継承した場合だけ, その間. FID など高価な評価が入りうる). 処理を終えると `batches` に戻す. 無ければ `batches` と読む (版 1 のファイルにも無い場合がある). `add_callback` の関数の処理の間は `epoch_end` にならない |
 | `elapsed_sec` | 数 | 経過時間 (秒) |
 | `updated_at` | 文字 | 更新した時刻 (タイムゾーン付きの ISO 8601). 1 秒以上の間隔で上書きする |
 
@@ -164,7 +164,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | --- | --- | --- |
 | `format_version` | 整数 | 形式の版 (1) |
 | `role` | 文字か null | 受け持ち. `predict` (予測する), `generate` (作る), `rank` (並べる), `group` (まとめる), `effect` (効果を見積もる) |
-| `output` | 文字か null | 出力の形. `class`, `value`, `distribution`, `region`, `shape`, `text`, `image`, `table`, `ranking`, `cluster`, `effect` (ML-Quest の出力の形), `action` (続けて選ぶ行動. 強化学習の方策. 2026-11-20 に足した) |
+| `output` | 文字か null | 出力の形. `class`, `value`, `distribution`, `region`, `shape`, `text`, `image`, `table`, `ranking`, `cluster`, `effect` (ML-Quest の出力の形), `action` (続けて選ぶ行動. 強化学習の方策) |
 | `what` | 文字か null | 出力の意味 (何を出すか. 人が読む文) |
 | `target` | 辞書 | 正解. `kind` (正解の種類. `mask`, `point_cloud`, `column` など. 方策は `reward` (環境の報酬) を推奨. 文字か null), `origin` (正解の出どころ. 下) |
 | `method` | 文字か null | 作り方. `rule` (規則), `pretrained` (既製のモデルをそのまま), `head` (既製の特徴の上に頭だけ学習), `partial` (一部を微調整), `finetune` (全体を微調整), `scratch` (一から学習) |
@@ -175,12 +175,12 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 
 | 欄 | 型 | 中身 |
 | --- | --- | --- |
-| `type` | 文字 | `process` (今ある処理の出力), `annotation` (人が付けた), `measurement` (測った), `synthetic` (作った正確な正解), `environment` (環境の報酬. シミュレータなど. 2026-11-20 に足した. ML-EDA の `dataset.yaml` には無い値), `unknown` (分からない. 既定) |
+| `type` | 文字 | `process` (今ある処理の出力), `annotation` (人が付けた), `measurement` (測った), `synthetic` (作った正確な正解), `environment` (環境の報酬. シミュレータなど. ML-EDA の `dataset.yaml` には無い値), `unknown` (分からない. 既定) |
 | `name` | 文字か null | 正解を作った処理 (か道具) の名前 |
 | `settings` | 任意か null | その処理の設定 |
 
 - パス (`base.experiment`, `dataset.path`) は, `source.yaml` と同じく, プロジェクトの中ならプロジェクトからの相対パス (区切りは `/`), 外なら絶対パス
-- 読む側は, `target.origin.type` が `process` なら「指標はその処理との一致を測り, その処理を超えられない」, `annotation` なら「付けた人との一致」, `environment` なら「環境の報酬で測る. 実機での結果は別に確かめる」と指標の横に書く (ML-Found の `describe_origin` が文を返す). 知らない値は `unknown` として説明する (値を足す前の ML-Found も同じ)
+- 読む側は, `target.origin.type` が `process` なら「指標はその処理との一致を測り, その処理を超えられない」, `annotation` なら「付けた人との一致」, `environment` なら「環境の報酬で測る. 実機での結果は別に確かめる」と指標の横に書く (ML-Found の `describe_origin` が文を返す). 知らない値は `unknown` として説明する
 - **方策の実験の例**: `role: effect`, `output: action`, `target.kind: reward`, `target.origin.type: environment`, `target.origin.name` に環境の名前 (`CartPole-v1` など), `method: scratch`. 方策は問題の設定 (ML-Quest) では効果の見積もりの扱いなので `role` は `effect`
 - **`format_version` は 1 以上の整数**. 文字 (`'2'`), 小数 (`2.0`), 真偽値, 無い場合は誤りとして止まる (版 1 として読み違えないため)
 - **新しい版の読み方 (`task.yaml` だけの決まり)**: 知っている版より新しい `task.yaml` は, 他の項目は読める項目だけを使うが, `target.origin` は分からないもの (`unknown`) として扱い, 新しい版であることを画面で知らせる (`load_task` は `target.origin` を `unknown` に置き換え, 返す辞書に `newer_version: true` を足す. `describe_origin` に版を渡すと言い切らない文を返す). `task.yaml` は「この処理を超えられない」のような言い切りの元なので, 意味の変わったかもしれない欄から言い切ると誤った説明になる (他のファイルは表示が欠けるだけで, 誤りは言わない)
@@ -223,12 +223,12 @@ samples/
 │   └── final.png         # 学習の後の見本 (エポックを渡さない場合)
 ├── caption/
 │   └── epoch_0005.txt
-└── epoch_010.png         # 前からの形 (プロジェクトが直下に置いた番号付きの画像)
+└── epoch_010.png         # 直下の番号付きの画像 (プロジェクトが置いたもの)
 ```
 
 - **ML-Found が持つもの**: `samples/index.json` と, `samples/<名前>/` の中の `epoch_<番号>.<拡張子>` と `final.<拡張子>`. ML-Found は `samples/` の直下に `index.json` の他のファイルを書かない
-- **前からの形**: ML-Found の形より前に, プロジェクト (GAN や拡散の生成画像など) が `samples/` の直下に置いた番号付きの画像 (`samples/epoch_010.png`) もそのまま正しい. 読む側は, 一覧の項目に加えて, 直下の画像 (名前が `<前の部分><番号>.<png, jpg, jpeg, gif, webp>`) を見本として読む. 名前は番号の前の部分から末尾の `_`, `.`, `-` を除いたもの (空か `epoch` なら `samples`), エポックは番号. 見本の名前が直下のファイルとぶつかる場合 (`epoch_010.png` という名前など) と, 名前が `index.json` の場合は誤り
-- 名前ごとのディレクトリにしたのは, ML-Dashboard の画像の推移 (同じディレクトリで番号の前の部分が同じ画像を 1 つの並びにする) が, 前からの形とも混ぜずに名前ごとの並びにするため
+- **直下の番号付きの画像**: プロジェクト (GAN や拡散の生成画像など) が `samples/` の直下に置いた番号付きの画像 (`samples/epoch_010.png`) も正しい形. 読む側は, 一覧の項目に加えて, 直下の画像 (名前が `<前の部分><番号>.<png, jpg, jpeg, gif, webp>`) を見本として読む. 名前は番号の前の部分から末尾の `_`, `.`, `-` を除いたもの (空か `epoch` なら `samples`), エポックは番号. 見本の名前が直下のファイルとぶつかる場合 (`epoch_010.png` という名前など) と, 名前が `index.json` の場合は誤り
+- 名前ごとのディレクトリに分けるのは, ML-Dashboard の画像の推移 (同じディレクトリで番号の前の部分が同じ画像を 1 つの並びにする) が, 直下の番号付きの画像とも混ぜずに名前ごとの並びにするため
 
 `index.json` は `{"samples": [...]}` で, 並びの 1 つが 1 つの見本 (書いた順).
 
@@ -236,7 +236,7 @@ samples/
 | --- | --- | --- |
 | `epoch` | 整数か null | エポック (学習の後は null) |
 | `name` | 文字 | 見本の名前 (同じエポックの中で 1 つ. 評価の名前と同じ決まり) |
-| `kind` | 文字 | `image` (PNG など), `text` (UTF-8 の文), `audio` (WAV など), `point_cloud` (PLY), `mask` (領域の番号を色分けした PNG. 2026-11-20 に足した), `file` (その他). 読む側は知らない種類を `file` として扱う |
+| `kind` | 文字 | `image` (PNG など), `text` (UTF-8 の文), `audio` (WAV など), `point_cloud` (PLY), `mask` (領域の番号を色分けした PNG), `file` (その他). 読む側は知らない種類を `file` として扱う |
 | `file` | 文字 | `samples/` からの相対パス (区切りは `/`) |
 | `split` | 文字か null | 見本の入力の分割 |
 | `caption` | 文字か null | 添える説明 |
@@ -244,12 +244,12 @@ samples/
 | `convention` | 辞書か null | 値の決まり (点群の座標の単位や正規化で引いた中心など. 下). 無ければ null |
 | `created_at` | 文字 | 書いた時刻 (タイムゾーン付きの ISO 8601) |
 
-- `classes` と `convention` は 2026-11-20 に足した (版 1 のまま). 足す前の ML-Found が書いた項目には無いので, 読む側は無い場合を null と読む (`load_samples` は null を補って返す)
+- `classes` と `convention` は版 1 の任意の項目. 読む側は無い場合を null と読む (`load_samples` は null を補って返す)
 - **`mask` の番号の表** (`classes`): 並びの 1 つが 1 つの番号で, `id` (0 から 255 の整数), `name` (名前. 文字か null), `color` (PNG での色. `#rrggbb`). 書いた番号の全て (名前を渡した番号と, 配列に現れた番号) を番号の順に並べる. 色は決まった色の表 (PASCAL VOC と同じ, 番号のビットから作る 256 色. 0 は黒) から番号で選ぶので, 実験が違っても同じ番号は同じ色. 画面は PNG をそのまま出し, この表から凡例を作る
 - **値の決まり** (`convention`): 書いた側の補足で, 形は決めない (JSON の辞書). 点群では `units` (座標の単位. `m`, `mm` など), `shift` (正規化で引いた中心の座標. 元の座標は `値 × scale + shift`), `scale` (正規化で割った大きさ), `axes` (軸の向き. `y_up` など) を推奨する
 - ML-Found が配列から書く形: 画像は PNG (8 bit), 領域の番号は色分けした PNG (8 bit の RGB), 音は WAV (16 bit の PCM), 点群は PLY (ascii. 頂点の `x`, `y`, `z` だけ). ファイルを渡すと形を変えずに写す
 - 同じエポックと名前で書き直すと, ファイルと一覧の項目を置き換える
-- 一覧に無いファイル (書きかけの一時ファイル `.<名前>.*.tmp` など) は無視する. ただし直下の番号付きの画像は上の「前からの形」として読む
+- 一覧に無いファイル (書きかけの一時ファイル `.<名前>.*.tmp` など) は無視する. ただし直下の番号付きの画像は上の「直下の番号付きの画像」として読む
 - 一覧の書き換えは同じプロセスの中では 1 つずつ行う. 複数のプロセス (DDP のランクなど) から同じ実験に書くと一覧の項目が落ちるので, 1 つのプロセス (ランク 0) だけが書く
 - ML-Found が書く `task.yaml`, `evaluations/`, `samples/` のファイルは, `config.yaml` と同じ権限 (umask に従う) で作る
 

@@ -631,7 +631,7 @@ def load_task(run_dir: Union[str, os.PathLike]) -> Optional[dict]:
     ----------
     task: Optional[dict]
         task.yaml の中身, 無いか読めない場合は None
-        (task.yaml を足す前の ML-Found が作った実験と, 書かなかった実験).
+        (task.yaml を書かなかった実験など).
         新しい版では target.origin を unknown に置き換え, newer_version を
         True にする
     """

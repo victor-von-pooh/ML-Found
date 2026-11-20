@@ -312,7 +312,7 @@ def test_plateau_skipped_but_step_lr_runs(tmp_path: Path) -> None:
 def test_step_scheduler_judged_flag() -> None:
     """
     判定しない場合に ReduceLROnPlateau だけを進めず, 指標の無い判定は
-    これまで通りエラーにすることを確かめる関数
+    エラーにすることを確かめる関数
 
     Parameters
     ----------

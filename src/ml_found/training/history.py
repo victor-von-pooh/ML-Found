@@ -300,7 +300,7 @@ class History:
         ----------
         None
         """
-        # 以前の形 (辞書のリスト) のチェックポイントはそのまま置き換え
+        # 辞書のリストの形 (records) のチェックポイントはそのまま置き換え
         if "records" in state:
             self.records = [dict(record) for record in state["records"]]
             return

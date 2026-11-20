@@ -25,7 +25,7 @@ PyTorch のモデルを config から自動で学習させる基盤のライブ�
 | 実験のディレクトリ (`config.yaml`, `source.yaml`, `run.json`, `progress.json`, `history.csv`, `final_model.pt` など) | 持つ (ML-Dashboard と ML-Inference が読む) | 版 1. ファイルごとの版は FORMAT.md |
 | 何の実験か (`task.yaml`), データ全体の評価 (`evaluations/`), 見本 (`samples/`) | 持つ (ML-Dashboard が読む) | FORMAT.md の「task.yaml」「evaluations」「samples」. 見本の一覧は版 2 (点群の `shift` は ML-EDA の書き出しと同じ向き). 版 1 も読む |
 | 方策の一式 (`policy/`) | 持つ (`policy.json` と `apply_guards` で, 他の段階も同じ守りを当てられる) | 版 1 |
-| ML-EDA が書き出したデータセット (`dataset.yaml`) | 読む (`task.dataset` から受け持ちと正解を埋める. ml_eda には頼らない) | 版 2 だけ. 版 1 と知らない版では止まる |
+| ML-EDA が書き出したデータセット (`dataset.yaml`) | 読む (`task.dataset` から受け持ちと正解を埋める. ml_eda には頼らない) | 版 2 と 3 (版 3 は版 2 に項目の中身の手順を足したもので, 受け持ちと正解は同じ形). 版 1 と知らない版では止まる |
 | 受け持ち, 出力の形, 正解の種類と出どころの値の名前 | ML-Quest と ML-EDA の名前を写す | 無し |
 | 追加の依存の登録簿 (`describe_requirements`, `environment_packages`) と, Optimizer と Scheduler の登録簿 (`describe_optimizers`, `describe_schedulers`) | 持つ (ML-Dashboard と ML-Quest が読む. ML-Quest の骨組みは, 学習のスクリプトが import する段階のライブラリ (`eda`, `modelcontrol`, `inference`) だけを config の `requires` に書く) | 無し (関数の戻り値) |
 
@@ -447,7 +447,7 @@ model.load_state_dict(torch.load("outputs/wine/.../final_model.pt"))
 - **`evaluations/<名前>.json`** (データ全体の評価): グループごとの表, 曲線, 比べる相手との差, 守る指標を, 名前と分割の付いた表として書く
 - **`samples/`** (見本): 画像, 文, 音, 点群の見本を, エポックと名前ごとに書き, `samples/index.json` に一覧を残す
 
-`task.yaml` は default の config に `task` を書くと, `start_experiment` が書く. `task.dataset` に ML-EDA が書き出したデータセット (`dataset.yaml` の版 2 かそのディレクトリ. 相対パスはプロジェクトから辿る) を書くと, 受け持ち, 正解の種類と出どころを埋める. 書いた項目は埋めた値より優先する (`target.origin` は欄ごとでなく丸ごと置き換え. null と書いた項目は書かなかったものとして扱い, 埋めた値を残す). 誤り (知らない項目, 選択肢に無い値, 版 2 でない `dataset.yaml`) は出力先を作る前に見つかる. ML-Found は ml_eda に頼らずに `dataset.yaml` を読み, 版 1 (列の正解. 正解の出どころを持たない) と知らない版では止まる. 辞書でない `task` と, `task.yaml` の項目 (`role`, `output`, `what`, `target`, `method`, `base`, `dataset`) を 1 つも持たない `task` は, プロジェクトが別の意味で使う項目として警告して使わない. `task.yaml` の項目と他の項目を混ぜた `task` は誤りになる (今まで `task` に自分の辞書を書いていたプロジェクトは, 名前を変える).
+`task.yaml` は default の config に `task` を書くと, `start_experiment` が書く. `task.dataset` に ML-EDA が書き出したデータセット (`dataset.yaml` の版 2 か 3 かそのディレクトリ. 相対パスはプロジェクトから辿る) を書くと, 受け持ち, 正解の種類と出どころを埋める. 書いた項目は埋めた値より優先する (`target.origin` は欄ごとでなく丸ごと置き換え. null と書いた項目は書かなかったものとして扱い, 埋めた値を残す). 誤り (知らない項目, 選択肢に無い値, 版 2 と 3 でない `dataset.yaml`) は出力先を作る前に見つかる. ML-Found は ml_eda に頼らずに `dataset.yaml` を読み, 版 1 (列の正解. 正解の出どころを持たない) と知らない版では止まる. 辞書でない `task` と, `task.yaml` の項目 (`role`, `output`, `what`, `target`, `method`, `base`, `dataset`) を 1 つも持たない `task` は, プロジェクトが別の意味で使う項目として警告して使わない. `task.yaml` の項目と他の項目を混ぜた `task` は誤りになる (今まで `task` に自分の辞書を書いていたプロジェクトは, 名前を変える).
 
 ```yaml
 # configs/default/train.yaml

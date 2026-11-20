@@ -1,6 +1,6 @@
 # 設計
 
-ML-Found の今の設計と決まりをまとめる. 使い方の始め方は [README.md](../README.md), 他のリポジトリと受け渡すファイルの形は [FORMAT.md](FORMAT.md), まだやっていないことは [TODO.md](../TODO.md) にある.
+ML-Found の今の設計と決まりをまとめる. まだやっていないことは [TODO.md](../TODO.md) にある.
 
 ## 1. 役割と位置づけ
 
@@ -29,7 +29,39 @@ PyTorch のモデルを config から自動で学習させる基盤のライブ�
 | 受け持ち, 出力の形, 正解の種類と出どころの値の名前 | ML-Quest と ML-EDA の名前を写す | 無し |
 | 追加の依存の登録簿 (`describe_requirements`) と, Optimizer と Scheduler の登録簿 (`describe_optimizers`, `describe_schedulers`) | 持つ (ML-Dashboard と ML-Quest が読む) | 無し (関数の戻り値) |
 
-## 3. 追加の依存
+## 3. 用語
+
+| 用語 | 意味 |
+| --- | --- |
+| プロジェクト (project) | config と学習のスクリプトを持つディレクトリ. ML-Found を submodule として取り込む. 形は [FORMAT.md](FORMAT.md) の「プロジェクトの形」 |
+| config | 学習の設定. 既定の `configs/default/train.yaml` と, そこからの差分の `configs/experiment/train.yaml` を重ね, 「項目=値」で上書きする |
+| 実験 (experiment) | 1 回の学習. 出力先 `<output_dir>/<name>/<日付>/<時刻>/` (実験のディレクトリ) に config, 記録, チェックポイント, 状態を残す (下の「出力」) |
+| step | 1 バッチの計算 (順伝播, 損失, 指標) をする関数 `step(model, batch, phase)`. プロジェクトが書く (下の「学習スクリプトと step の決まり」) |
+| チェックポイント (checkpoint) | 再開に使う `last.pt` と, ベストモデルの `best.pt`. モデル, Optimizer, Scheduler, 記録, 乱数の状態を持つ |
+| ベストモデル (best) | 監視する指標 (`trainer.monitor`) が最も良いエポックの重み. 学習の後の `final_model.pt` は既定でこの重み |
+| 方策の一式 (policy) | 強化学習で学習した方策の重み, 組み立て直しの引数, 守りの書き出し (`policy/`. 下の「方策の書き出しと守り」) |
+| 追加の依存 (requirement) | 任意の機能に要るライブラリと, その確かめ方と入れ方の登録簿の 1 項目 (下の「追加の依存」) |
+
+## 4. コードの置き場所
+
+```
+ML-Found/
+├── src/ml_found/
+│   ├── config/             # config の型定義, 読み込み, 差分, 起動のしかた
+│   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録, 何の実験か, 評価と見本
+│   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, チェックポイント, 記録, 実験の状態
+│   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, 方策の一式と守り, 守り付きの評価
+│   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿
+├── examples/
+│   ├── minibatch/          # wine データセットの分類, DataLoader で学習する例
+│   ├── fullbatch/          # グラフのノード分類, マスクで学習と検証を分ける例
+│   └── cartpole/           # CartPole の方策の学習と, 守りと一緒の書き出し (追加の依存 rl)
+├── tests/
+├── CODING_STYLE.md         # コーディングスタイルの基準
+└── pyproject.toml
+```
+
+## 5. 追加の依存
 
 任意の機能に要るライブラリは本体の依存に含めず, 追加の依存 (pip の extras) として要るときだけ入れる. ML-Found は機能ごとに「要るもの, 入っているかの確かめ方, 入れ方」の一覧 (登録簿) を持ち, 足りないまま使うと, 次の一手 (pip のコマンドか公式の手順) を案内して止まる.
 
@@ -66,7 +98,7 @@ requires: [rl]
 - プロジェクトの機能 (`register_requirement`) の名前も書ける. ただし `start_experiment` の前に登録する. 画面は自分のプロセスで登録されない名前を注意にするだけで止めないので, 足りなければ `start_experiment` が止める
 - 書いた名前だけを確かめるので, 書き忘れは見つけられない (そのときは学習のスクリプトの `require` や `make_env` が止める)
 
-## 4. config の決まり
+## 6. config の決まり
 
 default には ML-Found の項目とプロジェクト固有の項目を書く.
 ML-Found の項目は, 書かなかったものが既定値になる.
@@ -96,7 +128,7 @@ adam = next(spec for spec in describe_optimizers() if spec["name"] == "Adam")
 print([(param["name"], param["default"]) for param in adam["params"]])
 ```
 
-## 5. 学習スクリプトと step の決まり
+## 7. 学習スクリプトと step の決まり
 
 上書きは experiment の後に重なり, experiment と同じく default にある項目だけを書けて, `diff.yaml` にも残る. 上書きでクラス名を変えると, default と experiment に書いた前のクラスの引数は捨てられる. 値は YAML として読むので, `scheduler.name=null` で使わない設定にできる. 項目の削除 (`~`) や追加 (`+`) の書き方には対応していない.
 独自の引数 (`--seed` など) を持つ学習スクリプトは, 自分の parser に `add_config_arguments(parser)` で `--experiment` と上書きを加え, 読み込んだ引数を `load_config_from_args(project_dir, args)` に渡す. パスや上書きを自分で決める場合は `load_config(default_path, experiment_path, overrides)` を使う.
@@ -113,7 +145,7 @@ print([(param["name"], param["default"]) for param in adam["params"]])
 - 重み付き平均してよいのは, 損失, MAE, 正解率のように「サンプルごとの値の平均」になる指標だけ. RMSE, AUC, F1 のようにエポック全体から求める指標は, 下の `on_epoch_end` で求める
 - 平均せずに記録だけしたい値 (KL の重みのようなスケジュールの値など) は, 戻り値の `extra` に「名前: 値」の辞書で入れる. `train/` や `valid/` を付けずに, エポックの最後に返した値を `history.csv` の列に記録する (学習率の `lr` と同じ扱い. `epoch`, `lr` と, `optimizers` の場合の `lr_<名前>` は使えない). 検証でも返した場合は検証の値が残る (`trainer.eval_train` の評価し直しで返した値は記録しない). 名前は空でない文字列で, `/`, カンマ, `=`, `epoch`, `lr` と, 指標と同じ名前 (`loss` など, 学習曲線で混ざるため) は使えない. 値は数か 1 つの値のテンソル. `extra` という名前の指標は返せない
 
-## 6. フルバッチ学習
+## 8. フルバッチ学習
 
 グラフ全体のように 1 度に全データを流す場合は, 要素が 1 つのリストを渡す.
 学習用と検証用で同じデータを使い, `phase` でマスクを使い分ける.
@@ -129,7 +161,7 @@ history = trainer.fit([graph], [graph])
 
 `trainer.eval_train: true` と使う場合は, `phase` に `train_eval` も渡るので, `train` のマスクに読み替える (`"train" if phase == "train_eval" else phase`).
 
-## 7. 継承して細かく変える
+## 9. 継承して細かく変える
 
 `Trainer` を継承すると, 次のメソッドを上書きできる.
 
@@ -206,7 +238,7 @@ Optimizer や Scheduler を自分で作る場合は `Trainer(model, experiment, 
 渡した Scheduler にも, config で作った場合と同じく `scheduler.interval` と ReduceLROnPlateau の確認が行われる.
 自分で作った Scheduler は `config.yaml` に残らない (`train.log` にはクラス名と状態が残る).
 
-## 8. Scheduler の総ステップ数と warmup
+## 10. Scheduler の総ステップ数と warmup
 
 `OneCycleLR` の総ステップ数 (`total_steps`, または `epochs` と `steps_per_epoch`) は, 書かなければ `fit` が学習を始めるときに補う. `steps_per_epoch` は `scheduler.interval: step` なら学習用データのバッチ数 (`len(train_loader)`), `epoch` なら 1 (1 エポックに 1 回進めるため), `epochs` は `trainer.epochs` にする. 補った値は `config.yaml` と `train.log` に残る. そのため config から作る `OneCycleLR` は `fit` を呼ぶまで作られない (`trainer.scheduler` は `None`). `scheduler.interval: step` で `len()` を持たない `train_loader` では補えないのでエラーになり, `total_steps` か `steps_per_epoch` を書く. `OneCycleLR` は, 補ったかどうかに関係なく, 総ステップ数が `trainer.epochs` とバッチ数から求めた予定より少ないと学習を始める前にエラーに, 多いと警告にする (学習率が下がりきらない). 再開した場合は再開元の総ステップ数が使われるので, `trainer.epochs` やバッチ数を変えて再開した場合や, 補った値の入った `config.yaml` を default にして条件を変えた場合も, この確認で分かる. エポック数を増やして再開する場合は, `trainer.resume_scheduler: config` にすると, 補い直した総ステップ数で作り直して続きを学習する (下の「学習の再開」を参照).
 
@@ -231,14 +263,14 @@ cfg.scheduler.params.steps_per_epoch = len(train_loader)
 experiment = start_experiment(cfg, diff, str(project_dir))
 ```
 
-## 9. 更新の手順
+## 11. 更新の手順
 
 - 勾配法の Optimizer は `zero_grad`, `loss.backward()`, 勾配のクリッピング, `optimizer.step()` の順に更新する
 - LBFGS のように `step` に closure が必要な Optimizer は自動で見分け, 同じバッチで損失と勾配を計算し直す closure を渡す. 見分ける順は, クラスの属性 `requires_closure` (自作の Optimizer が `True` か `False` で宣言), torch の Optimizer の仕様 (LBFGS. `describe_optimizers()` の `requires_closure` と同じ), `step` の `closure` が既定値の無い引数かどうか. 自作の Optimizer で `closure` に既定値があるのに実際には必要な場合は, クラスの本体に `requires_closure = True` と書く (property や `__init__` の中で付けた属性は見ない). closure は `step` を何度も呼ぶので, `step` で予測を貯めるなどの処理は, closure の中では `self.in_closure` が `True` になることを使って飛ばす
 - Nelder-Mead 法のような勾配を使わない Optimizer は, クラスの本体に `uses_gradients = False` と書く. ML-Found は学習でも勾配を計算せず (逆伝播しない), 今のパラメータの損失を求める closure を `step` に渡す (`step` は勾配の記録を止めて呼ぶので, パラメータを直接書き換えてよい). `trainer.grad_clip_norm` と `log_grad_norm` とは一緒に使えない (config で指定した場合は出力先を作る前にエラー). `trainer.valid_grad` は検証だけに効く. `manual_optimization: true` の場合はそちらが優先され, 学習でも勾配を記録して `step` の中で自分で更新する. 登録簿の仕様にも `uses_gradients` を返す
 - 複数の Optimizer を使う場合は, 下の「複数の Optimizer」のように config の `optimizers` に名前付きで書く. 更新の順番が込み入る場合 (識別器を更新した後の値で生成器の損失を求めるなど) は, `trainer.manual_optimization: true` にして `step` の中で更新する. ML-Found は逆伝播, 勾配のクリッピング, 更新を行わず (`grad_clip_norm` と `log_grad_norm` と同時に使うとエラー), 更新回数と Scheduler (`interval` に応じて step ごとかエポックごと) だけを進める. `step` は勾配の流れない損失 (`loss.detach()`) を返してよい
 
-## 10. 複数の Optimizer
+## 12. 複数の Optimizer
 
 GAN (生成器と識別器) や強化学習の Actor-Critic のように, モデルの部分ごとに別の損失と別の Optimizer で更新する場合は, `optimizer` と `scheduler` の代わりに `optimizers` に名前付きで書く.
 
@@ -288,13 +320,13 @@ def step(model, batch, phase):
 - **使えないもの**: closure が必要な Optimizer (LBFGS など), 勾配を使わない Optimizer (`manual_optimization` でも不可), `Trainer` に渡す自分で作った Optimizer と Scheduler. 確かめるのは出力先を作る前 (`modules` の書き方, 一番上の `scheduler`, `interval` の違い, `resume_scheduler: config` も同じ)
 - **`trainer.manual_optimization: true`**: ML-Found は更新を行わない. `step` は名前ごとの損失の辞書 (`loss_<名前>` と合計を記録) か, 1 つの損失を返す. 更新の順番が込み入る場合 (識別器を更新した後の値で生成器の損失を求めるなど) に使う
 
-## 11. 検証の設定
+## 13. 検証の設定
 
 - PINN のように検証でも入力に対する微分を使う場合は, `trainer.valid_grad: true` にする
 - 拡散モデルのように損失に乱数を含む場合は, `trainer.valid_seed` を決めると毎エポック同じ乱数で検証し, ベストモデルの判定が乱数で揺れない. 検証の後は学習の乱数の状態に戻すので, 学習には影響しない. 固定するのは Python, NumPy, torch の全体の乱数なので, 自分の `generator` を渡した DataLoader や, ワーカーを使い回す DataLoader のワーカーの乱数には届かない. `register_rng` で登録した乱数 (下の「外部ライブラリの乱数」) は固定の対象になる
 - Dropout などで学習時と推論時の振る舞いが違うモデルでは, `train/` の指標は学習中の振る舞いの値になる. `trainer.eval_train: true` にすると, 各エポックの学習の後に学習用データを推論モード (勾配の計算なし, `valid_grad` と `valid_seed` は検証と同じに効く) で評価し直し, `train_eval/` を付けて記録する (`train_eval/loss` など). 学習用と検証用の指標を同じ条件で比べられる. 評価し直しの前後で乱数の状態 (全体の乱数, `register_rng` で登録した乱数, DataLoader と sampler に渡した `generator`) を戻すので, 並べ替える DataLoader でも学習そのものは変わらない. ただし `persistent_workers=True` の DataLoader では, 使い回すワーカーの中の乱数 (データ拡張など) が進むので学習の結果が変わる (学習を始めるときに警告が出る). `step` が評価し直しで返した `extra` は記録しない (学習中の値が残る). DataLoader の中のデータ拡張 (`Dataset` の変換など) は評価し直しにもかかるので, 拡張をかけない値が欲しい場合は, 拡張の無い学習用データの DataLoader で別に評価する. 時間は学習用データ 1 周分の推論だけ増える. `step` と `on_epoch_start`, `on_epoch_end` には `phase` に `train_eval` が渡るので, `phase == "train"` で学習かどうかを見分ける書き方にする. 監視する指標にも使える (`trainer.monitor: train_eval/loss`)
 
-## 12. 検証の間隔
+## 14. 検証の間隔
 
 FID, Chamfer 距離, 検索の再現率のように重い評価を毎エポック行わない場合は, `trainer.valid_every_n_epochs` で検証の間隔を空ける. 検証するのは, エポックの番号 (1 から数えた通しの番号) が間隔で割り切れるエポックと, 予定の最後のエポック (`trainer.epochs`. `fit` を呼び直した場合はその `fit` の最後) だけ. 例えば 7 エポックで間隔が 3 なら, エポック 3, 6, 7 を検証する. 既定の 1 では毎エポック検証する.
 
@@ -319,7 +351,7 @@ trainer:
 - 監視する指標が無いか nan や inf のエラーは, 最初に判定するエポック (間隔が 5 ならエポック 5) まで出ない. 名前の誤りに早く気付くには, 初めは `trainer.epochs` を小さくして試す
 - エポックの番号は通しなので, 再開と `fit` の呼び直しでも同じエポックを判定する. 再開で間隔を変えると警告が出る (待つ回数は判定の回数のまま続く). ただし予定の最後のエポックは必ず判定するので, 途中のエポック数で止めた学習 (例えば `trainer.epochs: 4` で学習して 7 まで再開) では, その最後のエポック (4) も判定し, 通しで学習した場合より判定が 1 回多くなる (間隔で割り切れるエポック数で区切ると同じになる)
 
-## 13. 外部ライブラリの乱数
+## 15. 外部ライブラリの乱数
 
 ML-Found が固定と保存をするのは Python, NumPy, torch の全体の乱数だけなので, 独自の乱数生成器を持つライブラリ (qiskit など) は, `register_rng` で登録すると同じ扱いになる.
 
@@ -353,7 +385,7 @@ experiment = start_experiment(cfg, diff, str(project_dir))
 - 再開元と今で登録した乱数が違う場合は, 戻せない乱数を警告し, `train.log` にも残す. 再開元に状態が無い乱数は, `start_experiment` でシードから固定した最初の状態から使い直すので, 続けて学習した場合とは一致しない
 - 外部ライブラリの乱数から作ったテンソルは, `step` の中でバッチと同じデバイスに移す (`.to(x.device)` など)
 
-## 14. 学習の再開
+## 16. 学習の再開
 
 `trainer.resume_from` に前回の `last.pt` を指定すると, モデル, Optimizer, Scheduler, 記録, Early Stopping, 乱数 (`register_rng` で登録したものを含む) の状態を戻して続きのエポックから学習する.
 
@@ -389,7 +421,7 @@ trainer.fit(train_loader, valid_loader)   # エポック 4 から 6 (続き)
 - 学習の前の確認 (`OneCycleLR` の総ステップ数など) でエラーになった場合は, モデルの重みなどを変えない. 前の `fit` が学習を始める前に止まった場合は, 続きではなく最初の `fit` として扱う (`resume_from` も使う)
 - Optimizer を差し替えたい場合 (一部を凍結した後に全体を学習するなど) は, 新しい `Trainer` を作る
 
-## 15. 学習後のモデル
+## 17. 学習後のモデル
 
 `fit` の後の `trainer.model` はベストモデルの重みになっている (`trainer.restore_best: true` かつ `select_best: true` の場合). `eval_model` を上書きした場合は, そのモデルの重み (EMA の重みなど) になる.
 後から使う場合は `final_model.pt` を読み込む. `final_model.pt` は cpu のテンソルで保存するので, 学習したデバイスに関わらず読み込める.
@@ -402,7 +434,7 @@ import torch
 model.load_state_dict(torch.load("outputs/wine/.../final_model.pt"))
 ```
 
-## 16. 何の実験か, データ全体の評価, 見本
+## 18. 何の実験か, データ全体の評価, 見本
 
 実験のディレクトリに, 任意で次の 3 つを書ける (形は [docs/FORMAT.md](FORMAT.md)). 書かなくても学習は変わらず, 書かなかった実験も同じく読める.
 
@@ -481,7 +513,7 @@ save_sample(experiment, "cloud", points, kind="point_cloud",
 
 読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
 
-## 17. 強化学習
+## 19. 強化学習
 
 Gymnasium の形の環境 (`reset(seed=...)` が `(観測, info)` を, `step(行動)` が `(観測, 報酬, 終了, 打ち切り, info)` を返すもの) とやり取りして, 行動を選ぶ方策を学習できる. 別の仕組みは作らず, 環境とのやり取りを「バッチを返す loader」にして, `Trainer` の step とエポックの決まりに乗せる. 使うには追加の依存 `rl` (Gymnasium) を入れる (上の「追加の依存」). 例は `examples/cartpole/` (CartPole を REINFORCE で学習し, 守りと一緒に書き出す).
 
@@ -519,7 +551,7 @@ history = trainer.fit(train_loader, valid_loader)
 - 再開 (`resume_from`) では, モデルと Optimizer は戻るが, 環境の状態と環境の乱数は戻らない
 - `eval_model` を上書きした場合は, `EvaluationLoader` に渡すモデルもそのモデルにする (loader は渡されたモデルで行動を選ぶ)
 
-## 18. 方策の書き出しと守り
+## 20. 方策の書き出しと守り
 
 学習した方策は, 重み, 観測と行動の空間, 守り (行動の範囲, 止める条件, 外れたときの動き) を 1 つのディレクトリ (方策の一式) に書き出す. 置き場は実験のディレクトリの `policy/` を推奨する (形と版は [docs/FORMAT.md](FORMAT.md) の「policy/」).
 
@@ -588,7 +620,7 @@ save_evaluation(experiment, "guarded_episodes", rows, "simulator",
 - `max_steps` で 1 エピソードの歩数を切れる. `seed=None` は環境の乱数の続き
 - 推論の段階 (ML-Inference) と画面でも, 同じ数え方 (`stop` と `handover` で終える) にする
 
-## 19. config の項目
+## 21. config の項目
 
 ML-Found が使う項目と既定値.
 
@@ -651,7 +683,7 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 
 `experiment.device: auto` は小さなモデルでも GPU を選ぶ (Apple Silicon の Mac では CPU 版の PyTorch でも `mps`). パラメータが少ないモデルや, 中で cpu を使うモデル (外部ライブラリの計算など) は `cpu` を明示した方が速いことがある.
 
-## 20. 出力
+## 22. 出力
 
 実験ごとに `<output_dir>/<name>/<日付>/<時刻>/` が作られる.
 他のシステム (ML-Dashboard など) と受け渡すプロジェクトと実験のディレクトリの形と, その版の決まりは [docs/FORMAT.md](FORMAT.md) にまとめた.
@@ -730,21 +762,11 @@ echo now > outputs/wine/2026-11-12/10-00-00/STOP   # エポックの途中でも
 
 プロセスが強制終了された場合は `running` のまま残るので, 同じ端末であれば `run.json` の `hostname` と `pid` のプロセスが動いているかで見分ける. 別の端末からは, `progress.json` の `updated_at` が長く更新されていないかで見分ける.
 
-## 21. ディレクトリ構成
+## 23. 安全
 
-```
-ML-Found/
-├── src/ml_found/
-│   ├── config/             # config の型定義, 読み込み, 差分, 起動のしかた
-│   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録, 何の実験か, 評価と見本
-│   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, チェックポイント, 記録, 実験の状態
-│   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, 方策の一式と守り, 守り付きの評価
-│   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿
-├── examples/
-│   ├── minibatch/          # wine データセットの分類, DataLoader で学習する例
-│   ├── fullbatch/          # グラフのノード分類, マスクで学習と検証を分ける例
-│   └── cartpole/           # CartPole の方策の学習と, 守りと一緒の書き出し (追加の依存 rl)
-├── tests/
-├── CODING_STYLE.md         # コーディングスタイルの基準
-└── pyproject.toml
-```
+- チェックポイント, 重み, 方策の一式の重みは `torch.load(weights_only=True)` で読む (任意のコードを動かせる `pickle` を読まない)
+- config は OmegaConf で, ML-EDA の `dataset.yaml` と `task.yaml` は `yaml.safe_load` で読む
+- Optimizer と Scheduler の名前に `.` を含めると, そのモジュールを import して自作のクラスを読む. config は学習のスクリプトと同じく, 信頼できるものだけを使う
+- 評価と見本の名前は英数字と `_ . @ -` だけ (先頭は `.` 以外). 名前から実験のディレクトリの外にファイルを書かない
+- `source.yaml` には, コマンドラインの他の引数を残さない (秘密の値を含み得るため)
+- ML-Found はネットワークを使わない. 追加の依存の入れ方は, コマンドと公式の手順の URL を示すだけで, 自分では入れない

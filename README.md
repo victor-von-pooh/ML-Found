@@ -1,6 +1,6 @@
 # ML-Found
 
-「機械学習を全て GUI 上で行う」ための段階のうち, モデルの学習・評価の段階の学習を受け持つライブラリ. PyTorch のモデルを config から学習させる. 画面は [ML-Dashboard](https://github.com/victor-von-pooh/ML-Dashboard) が使う.
+「機械学習を全て GUI 上で行う」うちの「モデルの学習・評価」の段階のライブラリ. PyTorch のモデルを config から学習させ, 実験ごとの記録を残す. 画面のアプリ [ML-Dashboard](https://github.com/victor-von-pooh/ML-Dashboard) が使う.
 
 ## できること
 
@@ -149,10 +149,11 @@ python train.py --experiment configs/experiment/examples/my.yaml trainer.epochs=
 
 ## 文書
 
-- [docs/DESIGN.md](docs/DESIGN.md): 今の設計と決まり (config, 学習の決まり, 出力)
+- [docs/DESIGN.md](docs/DESIGN.md): 今の設計と決まり, 他のリポジトリとの約束 (プロジェクトと実験のディレクトリ)
 - [docs/FORMAT.md](docs/FORMAT.md): 他のリポジトリと受け渡すプロジェクトと実験のディレクトリの形と版
-- [TODO.md](TODO.md): まだやっていないこと
+- [TODO.md](TODO.md): まだやっていないこと (優先度の順)
 - [CODING_STYLE.md](CODING_STYLE.md): コードの書き方
+- [CLAUDE.md](CLAUDE.md): このリポジトリで作業するときの方針
 
 ## ライセンス
 

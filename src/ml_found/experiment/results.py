@@ -22,6 +22,11 @@ SAMPLES_DIR = "samples"
 # 見本の一覧のファイルの名前
 SAMPLES_INDEX = "index.json"
 
+# 見本の一覧 (samples/index.json) の形式の版 (無い一覧は版 1).
+# 版 2 の値の決まりの shift は ML-EDA と同じ向き
+# (正規化した座標 = 元の座標 + shift). 版 1 は逆の向き
+SAMPLES_FORMAT_VERSION = 2
+
 # 学習の後の見本 (エポックを渡さない場合) のファイルの名前 (拡張子の前)
 FINAL_STEM = "final"
 
@@ -950,9 +955,9 @@ def write_sample_file(
         )
 
 
-def read_samples_index(path: Path) -> list[dict]:
+def read_samples_index(path: Path) -> tuple[list[dict], int]:
     """
-    見本の一覧を読む関数
+    見本の一覧と形式の版を読む関数
 
     Parameters
     ----------
@@ -961,18 +966,140 @@ def read_samples_index(path: Path) -> list[dict]:
 
     Returns
     ----------
-    samples: list[dict]
-        見本の項目の並び, ファイルが無ければ空
+    result: tuple[list[dict], int]
+        見本の項目の並び (ファイルが無ければ空) と形式の版
+        (ファイルが無ければ今の版, 版の無い一覧は 1)
     """
     if not path.is_file():
-        samples: list[dict] = []
-        return samples
+        result = ([], SAMPLES_FORMAT_VERSION)
+        return result
     data = json.loads(path.read_text(encoding="utf-8"))
     samples = data.get("samples") if isinstance(data, dict) else None
     if not isinstance(samples, list):
         raise ValueError(f"見本の一覧の形が正しくありません: {path}")
+    version = data.get("format_version", 1)
+    if (
+        not isinstance(version, int) or isinstance(version, bool)
+        or version < 1
+    ):
+        raise ValueError(
+            f"{path} の format_version が 1 以上の整数ではありません: "
+            f"{version!r}"
+        )
+    result = (samples, version)
 
-    return samples
+    return result
+
+
+def negate_shift(value: Any) -> Any:
+    """
+    shift の数 (入れ子のリストの中を含む) の符号を反転する関数
+
+    Parameters
+    ----------
+    value: Any
+        版 1 の shift (数か, 数のリスト)
+
+    Returns
+    ----------
+    negated: Any
+        符号を反転した値. 数でない値 (文字, 真偽値, None) はそのまま
+    """
+    if isinstance(value, list):
+        negated = [negate_shift(item) for item in value]
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        negated = -value
+    else:
+        negated = value
+
+    return negated
+
+
+def upgrade_sample(item: Any, version: int) -> Any:
+    """
+    古い版の一覧の項目の値の決まりを, 今の版の意味に写す関数
+
+    Parameters
+    ----------
+    item: Any
+        一覧の項目
+    version: int
+        一覧の形式の版
+
+    Returns
+    ----------
+    upgraded: Any
+        版 1 の shift (元の座標 = 値 × scale + shift) の符号を反転し,
+        今の版 (正規化した座標 = 元の座標 + shift) にした項目の写し.
+        今の版の項目と, 辞書でない項目はそのまま
+    """
+    convention = item.get("convention") if isinstance(item, dict) else None
+    if (
+        version >= SAMPLES_FORMAT_VERSION
+        or not isinstance(convention, dict) or "shift" not in convention
+    ):
+        upgraded = item
+        return upgraded
+    upgraded = dict(item)
+    upgraded["convention"] = dict(
+        convention, shift=negate_shift(convention["shift"])
+    )
+
+    return upgraded
+
+
+def original_coordinates(
+    points: Any, convention: Optional[dict]
+) -> np.ndarray:
+    """
+    点群の見本の座標を, 値の決まりから正規化の前の座標に戻す関数
+
+    Parameters
+    ----------
+    points: Any
+        (点の数, 3) の座標 (見本の PLY の頂点など)
+    convention: Optional[dict]
+        load_samples が返した項目の値の決まり (今の版の意味).
+        scale (無ければ 1) と shift (無ければ 0) を使う.
+        newer_version が True の項目は None なので, 呼ぶ前に確かめる
+
+    Returns
+    ----------
+    original: np.ndarray
+        元の座標 (値 × scale - shift)
+    """
+    array = np.asarray(points, dtype=float)
+    if array.ndim != 2 or array.shape[1] != 3:
+        raise ValueError(
+            f"点群は (点の数, 3) の配列にしてください: {array.shape}"
+        )
+    if convention is not None and not isinstance(convention, dict):
+        raise ValueError(
+            f"convention は辞書か None にしてください: {convention!r}"
+        )
+    given = convention or {}
+    scale_value = given.get("scale")
+    shift_value = given.get("shift")
+    try:
+        scale = np.asarray(
+            1.0 if scale_value is None else scale_value, dtype=float
+        )
+        shift = np.asarray(
+            0.0 if shift_value is None else shift_value, dtype=float
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "convention の scale と shift は数か 3 つの数のリストに"
+            f"してください: {given!r}"
+        ) from error
+    if scale.shape not in ((), (3,)) or shift.shape not in ((), (3,)):
+        raise ValueError(
+            "convention の scale と shift は数か 3 つの数のリストに"
+            f"してください: {given!r}"
+        )
+    original = array * scale - shift
+
+    return original
 
 
 def save_sample(
@@ -1051,7 +1178,13 @@ def save_sample(
     with SAMPLES_LOCK:
         folder = sample_folder(root, name)
         path = folder / f"{stem}{suffix}"
-        samples = read_samples_index(index_path)
+        samples, version = read_samples_index(index_path)
+        if version > SAMPLES_FORMAT_VERSION:
+            raise ValueError(
+                f"{index_path} の版 {version} は, この ML-Found が知っている"
+                f"版 {SAMPLES_FORMAT_VERSION} より新しいです. ML-Found を"
+                "新しくしてください"
+            )
 
         # 一時ファイルに書いてから置き換え (書きかけを読ませないため)
         temp = new_temp(path)
@@ -1062,13 +1195,14 @@ def save_sample(
             temp.unlink(missing_ok=True)
 
         # 同じエポックと名前の前の項目を置き換えた一覧の書き込み
+        # (古い版の一覧の項目は, 今の版の意味に写した上での書き直し)
         kept = []
         removed = []
         for item in samples:
             if item.get("epoch") == epoch and item.get("name") == name:
                 removed.append(root / str(item.get("file", "")))
                 continue
-            kept.append(item)
+            kept.append(upgrade_sample(item, version))
         kept.append({
             "epoch": epoch,
             "name": name,
@@ -1080,7 +1214,9 @@ def save_sample(
             "convention": checked_convention,
             "created_at": now_iso()
         })
-        write_json_file(index_path, {"samples": kept})
+        write_json_file(index_path, {
+            "format_version": SAMPLES_FORMAT_VERSION, "samples": kept
+        })
 
         # 一覧を書けた後に, 拡張子の違う前の見本のファイルを削除
         for old in removed:
@@ -1124,7 +1260,8 @@ def legacy_samples(root: Path) -> list[dict]:
             "classes": None,
             "convention": None,
             "created_at": None,
-            "legacy": True
+            "legacy": True,
+            "newer_version": False
         })
     samples.sort(key=legacy_order)
 
@@ -1164,19 +1301,28 @@ def load_samples(run_dir: Union[str, os.PathLike]) -> list[dict]:
     samples: list[dict]
         一覧の項目 (書いた順) と, samples/ の直下の番号付きの画像
         (ML-Found の形より前のプロジェクトのもの. legacy が True).
-        samples/ が無い実験は空. 一覧が読めない場合は直下の画像だけ
+        samples/ が無い実験は空. 一覧が読めない場合は直下の画像だけ.
+        convention は今の版の意味 (古い版の shift は符号を反転).
+        新しい版の一覧の項目は convention を None にし,
+        newer_version を True にする
     """
     root = Path(run_dir) / SAMPLES_DIR
     try:
-        samples = read_samples_index(root / SAMPLES_INDEX)
+        samples, version = read_samples_index(root / SAMPLES_INDEX)
     except (OSError, ValueError):
-        samples = []
-    samples = samples + legacy_samples(root)
+        samples, version = [], SAMPLES_FORMAT_VERSION
+    newer = version > SAMPLES_FORMAT_VERSION
+    samples = [upgrade_sample(item, version) for item in samples]
 
-    # classes と convention の無い項目には null を補完
+    # classes と convention の無い項目には null を補完.
+    # 新しい版の値の決まりは, 意味が変わったかもしれないので読まない扱い
     for item in samples:
         if isinstance(item, dict):
             item.setdefault("classes", None)
             item.setdefault("convention", None)
+            item["newer_version"] = newer
+            if newer:
+                item["convention"] = None
+    samples = samples + legacy_samples(root)
 
     return samples

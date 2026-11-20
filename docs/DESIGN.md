@@ -23,7 +23,7 @@ PyTorch のモデルを config から自動で学習させる基盤のライブ�
 | --- | --- | --- |
 | プロジェクトの形 (`configs/default`, `configs/experiment`, 学習のスクリプト) | 持つ (ML-Dashboard と ML-Quest の骨組みが使う) | 版 1 |
 | 実験のディレクトリ (`config.yaml`, `source.yaml`, `run.json`, `progress.json`, `history.csv`, `final_model.pt` など) | 持つ (ML-Dashboard と ML-Inference が読む) | 版 1. ファイルごとの版は FORMAT.md |
-| 何の実験か (`task.yaml`), データ全体の評価 (`evaluations/`), 見本 (`samples/`) | 持つ (ML-Dashboard が読む) | FORMAT.md の「task.yaml」「evaluations」「samples」 |
+| 何の実験か (`task.yaml`), データ全体の評価 (`evaluations/`), 見本 (`samples/`) | 持つ (ML-Dashboard が読む) | FORMAT.md の「task.yaml」「evaluations」「samples」. 見本の一覧は版 2 (点群の `shift` は ML-EDA の書き出しと同じ向き). 版 1 も読む |
 | 方策の一式 (`policy/`) | 持つ (`policy.json` と `apply_guards` で, 他の段階も同じ守りを当てられる) | 版 1 |
 | ML-EDA が書き出したデータセット (`dataset.yaml`) | 読む (`task.dataset` から受け持ちと正解を埋める. ml_eda には頼らない) | 版 2 だけ. 版 1 と知らない版では止まる |
 | 受け持ち, 出力の形, 正解の種類と出どころの値の名前 | ML-Quest と ML-EDA の名前を写す | 無し |
@@ -507,7 +507,7 @@ save_evaluation(
 
 評価と見本の名前は英数字と `_`, `.`, `@`, `-` だけで, 先頭は `.` 以外 (見本は `index.json` と, `samples/` の直下のファイルと同じ名前も不可).
 
-見本は `save_sample(experiment, 名前, 値, epoch=...)` で書く. 文字は文 (`.txt`), `pathlib.Path` はファイルをそのまま写す (種類は拡張子から), 配列とテンソルは `kind` を渡す. `image` は (高さ, 幅), (高さ, 幅, チャンネル), (チャンネル, 高さ, 幅) で, 小数は 0 から 1, 整数は 0 から 255 の値 (PNG). `audio` は (サンプル数,) か (チャンネル, サンプル数) で -1 から 1 の値と `sample_rate` (16 bit の WAV. チャンネルは 8 まで. (サンプル数, チャンネル) の配列は `.T` で入れ替える). `point_cloud` は (点の数, 3) で nan の無い座標 (PLY). `mask` は (高さ, 幅) の領域の番号 (0 から 255 の整数か真偽値) で, 決まった色の表 (PASCAL VOC と同じ. 0 は黒) で色分けした PNG を書き, 番号ごとの名前と色の表を一覧の `classes` に残す (名前は `classes` に名前のリストか番号から名前の辞書で渡す). 小数の配列は確率の取り違えとして誤り (argmax で番号にする). 画像と音の nan と無限大, 整数の音 (型の最大値で割って小数にする) は誤り. 学習の途中では `on_epoch_end` の中で `epoch=self.epoch` を渡し (`samples/<名前>/epoch_0005.png` に置く), 学習の後はエポックを省く (`samples/<名前>/final.png`). 同じエポックと名前で書き直すと置き換える. `split` と `caption` (どちらも文字) も添えられる. 値の決まり (点群の座標の単位, 正規化で引いた中心など) は, `caption` の文でなく `convention` (JSON にできる辞書) に書く (画面が元の座標に戻せるように). 同じプロセスのスレッドからは同時に書けるが, 複数のプロセス (DDP のランクなど) から書く場合はランク 0 だけが書く. 前からプロジェクトが `samples/` の直下に置いていた番号付きの画像 (`samples/epoch_010.png`) はそのまま使え, `load_samples` も見本として返す (`legacy: true`).
+見本は `save_sample(experiment, 名前, 値, epoch=...)` で書く. 文字は文 (`.txt`), `pathlib.Path` はファイルをそのまま写す (種類は拡張子から), 配列とテンソルは `kind` を渡す. `image` は (高さ, 幅), (高さ, 幅, チャンネル), (チャンネル, 高さ, 幅) で, 小数は 0 から 1, 整数は 0 から 255 の値 (PNG). `audio` は (サンプル数,) か (チャンネル, サンプル数) で -1 から 1 の値と `sample_rate` (16 bit の WAV. チャンネルは 8 まで. (サンプル数, チャンネル) の配列は `.T` で入れ替える). `point_cloud` は (点の数, 3) で nan の無い座標 (PLY). `mask` は (高さ, 幅) の領域の番号 (0 から 255 の整数か真偽値) で, 決まった色の表 (PASCAL VOC と同じ. 0 は黒) で色分けした PNG を書き, 番号ごとの名前と色の表を一覧の `classes` に残す (名前は `classes` に名前のリストか番号から名前の辞書で渡す). 小数の配列は確率の取り違えとして誤り (argmax で番号にする). 画像と音の nan と無限大, 整数の音 (型の最大値で割って小数にする) は誤り. 学習の途中では `on_epoch_end` の中で `epoch=self.epoch` を渡し (`samples/<名前>/epoch_0005.png` に置く), 学習の後はエポックを省く (`samples/<名前>/final.png`). 同じエポックと名前で書き直すと置き換える. `split` と `caption` (どちらも文字) も添えられる. 値の決まり (点群の座標の単位, 正規化で足した量など) は, `caption` の文でなく `convention` (JSON にできる辞書) に書く (画面が元の座標に戻せるように). 点群の `shift` は ML-EDA の書き出しの `shift` と同じ向き (正規化した座標 = 元の座標 + shift) で, ML-EDA の値をそのまま写せる. `scale` は正規化の後に割った大きさ. 同じプロセスのスレッドからは同時に書けるが, 複数のプロセス (DDP のランクなど) から書く場合はランク 0 だけが書く. 前からプロジェクトが `samples/` の直下に置いていた番号付きの画像 (`samples/epoch_010.png`) はそのまま使え, `load_samples` も見本として返す (`legacy: true`).
 
 ```python
 save_sample(experiment, "seg", pred_mask, kind="mask",
@@ -515,6 +515,8 @@ save_sample(experiment, "seg", pred_mask, kind="mask",
 save_sample(experiment, "cloud", points, kind="point_cloud",
             convention={"units": "m", "shift": [0.1, 0.0, 0.5], "scale": 1.0})
 ```
+
+`original_coordinates(点群, 項目["convention"])` は, `load_samples` が返した点群の見本の座標を元の座標 (`値 × scale - shift`) に戻す (画面が符号を取り違えないため). `samples/index.json` は形式の版 (`format_version`. 今は 2) を持ち, 版の無い一覧 (版 1. `shift` が逆の向き) は `load_samples` が今の意味に写して返す. 新しい版の一覧の見本は, `convention` を null にし, `newer_version: true` を付けて返す (docs/FORMAT.md の「samples」).
 
 読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
 

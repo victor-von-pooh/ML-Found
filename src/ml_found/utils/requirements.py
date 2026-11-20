@@ -476,6 +476,43 @@ def require(feature: str) -> None:
     )
 
 
+def environment_packages(
+    names: list[str], include_found: bool = True
+) -> list[str]:
+    """
+    プロジェクトの環境に pip で入れるものの指定の一覧を返す関数
+
+    学習のプロジェクトの仮想環境を作るとき (画面の ML-Dashboard など) に,
+    ML-Found 自身と, 要る機能のうち pip で入るものを 1 回の pip install で
+    入れられる形にする. pip で入らない機能 (install の kind が guide) は
+    含めないので, describe_requirements の入れ方で案内する. 同じ指定は
+    文字が同じものだけを 1 回にまとめる. 登録簿に無い名前は ValueError
+
+    Parameters
+    ----------
+    names: list[str]
+        要る機能の名前 (config の requires など)
+    include_found: bool = True
+        ML-Found 自身 (git の main) を先頭に含める場合は True
+
+    Returns
+    ----------
+    packages: list[str]
+        pip に渡す指定 (書いた順. 同じ指定は 1 回だけ)
+    """
+    # 名前を先に全て確かめてから, 書いた順に pip の指定を集約
+    specs = [get_spec(name) for name in names]
+    packages = [FOUND_PACKAGE] if include_found else []
+    for spec in specs:
+        if spec["install"]["kind"] != "pip":
+            continue
+        for package in spec["install"]["packages"]:
+            if package not in packages:
+                packages.append(package)
+
+    return packages
+
+
 def check_definition(
     checks: list[dict], match: str, install: dict
 ) -> None:
@@ -586,45 +623,3 @@ def unregister_requirement(name: str) -> None:
 
 # ML-Found が持つ機能の名前
 BUILTIN_NAMES = frozenset(REQUIREMENTS)
-
-
-
-def environment_packages(
-    names: list[str], include_found: bool = True
-) -> list[str]:
-    """
-    プロジェクトの環境に pip で入れるものの指定の一覧を返す関数
-
-    学習のプロジェクトの仮想環境を作るとき (画面の ML-Dashboard など) に,
-    ML-Found 自身と, 要る機能のうち pip で入るものを 1 回の pip install で
-    入れられる形にする. pip で入らない機能 (install の kind が guide) は
-    含めないので, describe_requirements の入れ方で案内する
-
-    Parameters
-    ----------
-    names: list[str]
-        要る機能の名前 (config の requires など)
-    include_found: bool = True
-        ML-Found 自身 (git の main) を先頭に含める場合は True
-
-    Returns
-    ----------
-    packages: list[str]
-        pip に渡す指定 (書いた順. 同じ指定は 1 回だけ)
-
-    Raises
-    ----------
-    ValueError
-        登録簿に無い名前がある場合
-    """
-    # 名前を先に全て確かめてから, 書いた順に pip の指定を集約
-    specs = [get_spec(name) for name in names]
-    packages = [FOUND_PACKAGE] if include_found else []
-    for spec in specs:
-        if spec["install"]["kind"] != "pip":
-            continue
-        for package in spec["install"]["packages"]:
-            if package not in packages:
-                packages.append(package)
-
-    return packages

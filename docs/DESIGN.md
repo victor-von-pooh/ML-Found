@@ -27,7 +27,7 @@ PyTorch のモデルを config から自動で学習させる基盤のライブ�
 | 方策の一式 (`policy/`) | 持つ (`policy.json` と `apply_guards` で, 他の段階も同じ守りを当てられる) | 版 1 |
 | ML-EDA が書き出したデータセット (`dataset.yaml`) | 読む (`task.dataset` から受け持ちと正解を埋める. ml_eda には頼らない) | 版 2 だけ. 版 1 と知らない版では止まる |
 | 受け持ち, 出力の形, 正解の種類と出どころの値の名前 | ML-Quest と ML-EDA の名前を写す | 無し |
-| 追加の依存の登録簿 (`describe_requirements`, `environment_packages`) と, Optimizer と Scheduler の登録簿 (`describe_optimizers`, `describe_schedulers`) | 持つ (ML-Dashboard と ML-Quest が読む. ML-Quest の骨組みは config の `requires` に `eda`, `modelcontrol`, `inference` を書く) | 無し (関数の戻り値) |
+| 追加の依存の登録簿 (`describe_requirements`, `environment_packages`) と, Optimizer と Scheduler の登録簿 (`describe_optimizers`, `describe_schedulers`) | 持つ (ML-Dashboard と ML-Quest が読む. ML-Quest の骨組みは, 学習のスクリプトが import する段階のライブラリ (`eda`, `modelcontrol`, `inference`) だけを config の `requires` に書く) | 無し (関数の戻り値) |
 
 ## 3. 用語
 

@@ -5,12 +5,6 @@
 
 ## 優先度 高
 
-### 点群の見本の shift の向きを ML-EDA とそろえる
-- 何を: 見本の値の決まり (`convention`) の推奨の `shift` を, ML-EDA の書き出しの `shift` と同じ向き (正規化した座標 = 元の座標 + shift) にする. 見本の形 (`samples/index.json`) の版を上げ, 古い版の見本は今の向き (元の座標 = 値 × scale + shift) として読む. docs/FORMAT.md の「samples」と `tests/test_format.py` も直す
-- なぜ: 今は ML-Found の推奨が「元の座標 = 値 × scale + shift」で, ML-EDA の `shift` (正規化した座標 = 元の座標 + shift) と同じ名前で向きが逆. データの分析の段階の値をそのまま写すと, 画面が元の座標に戻すときに符号を取り違える
-- 終わりの条件: 新しい版の見本の `shift` が ML-EDA と同じ向きで書かれ, 古い版の見本も元の座標に正しく戻せることをテストで確かめる. 版が上がったことを ML-Dashboard が読み分けられる
-- つながり: ML-EDA (書き出しの `shift`. ML-EDA の docs/DESIGN.md の約束の表がこの項目を指す), ML-Dashboard の「点群の見本を元の座標で出す」
-
 ### 追加の依存の登録簿に段階のライブラリを足す
 - 何を: 追加の依存の登録簿に, ML-Quest が書き出す骨組みの学習のスクリプトが使う ML-EDA (`ml_eda`), ML-ModelControl (`ml_modelcontrol`), ML-Inference (`ml_inference`) を足し, 入れ方を書く
 - なぜ: 骨組みの学習のスクリプトはこの 3 つを使うが, 登録簿に無いので `describe_requirements` で確かめられず, ML-Dashboard が入れ方を案内できない. 足りない環境では学習の途中の import の誤りで止まる

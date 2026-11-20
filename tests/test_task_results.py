@@ -626,7 +626,7 @@ def test_save_sample_errors(
 
 def test_old_run_without_optional_files(tmp_path: Path) -> None:
     """
-    任意のファイルを持たない実験 (足す前の ML-Found が作った実験) を
+    任意のファイルを持たない実験 (task を書かなかった実験など) を
     読めて, 再開にも使えることを確かめる関数
 
     Parameters
@@ -638,7 +638,7 @@ def test_old_run_without_optional_files(tmp_path: Path) -> None:
     ----------
     None
     """
-    # task を書かない今までの実験
+    # task を書かない実験
     first = make_experiment(tmp_path)
     fit_briefly(first)
     for name in (TASK_FILE, "evaluations", "samples"):
@@ -1245,7 +1245,7 @@ def test_save_sample_convention(tmp_path: Path) -> None:
 
 def test_load_samples_fills_new_fields(tmp_path: Path) -> None:
     """
-    classes と convention を足す前の一覧の項目にも null を補うことを
+    classes と convention の無い一覧の項目にも null を補うことを
     確かめる関数
 
     Parameters
@@ -1257,7 +1257,7 @@ def test_load_samples_fills_new_fields(tmp_path: Path) -> None:
     ----------
     None
     """
-    # 前の ML-Found が書いた形の一覧
+    # classes と convention の無い形の一覧
     experiment = make_experiment(tmp_path)
     root = experiment.run_dir / "samples"
     (root / "note").mkdir(parents=True)

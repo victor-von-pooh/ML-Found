@@ -192,7 +192,7 @@ def test_history_state_dict_columns() -> None:
     assert counts_restored.records == [{"epoch": 1, "n": 7, "acc": 0.5}]
     assert isinstance(counts_restored.records[0]["n"], int)
 
-    # 以前の形 (辞書のリスト) も読める
+    # 辞書のリストの形 (records) も読める
     old = History()
     old.load_state_dict({"records": [{"epoch": 1, "train/loss": 0.5}]})
     assert old.records == [{"epoch": 1, "train/loss": 0.5}]

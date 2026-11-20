@@ -398,8 +398,8 @@ def load_evaluations(run_dir: Union[str, os.PathLike]) -> list[dict]:
     Returns
     ----------
     evaluations: list[dict]
-        名前の順の評価. evaluations/ が無い実験 (足す前の ML-Found が作った
-        実験など) は空
+        名前の順の評価. evaluations/ が無い実験 (評価を書かなかった実験など)
+        は空
     """
     # 一時ファイル (. で始まる) と読めないファイルは無視
     folder = Path(run_dir) / EVALUATIONS_DIR
@@ -1173,7 +1173,7 @@ def load_samples(run_dir: Union[str, os.PathLike]) -> list[dict]:
         samples = []
     samples = samples + legacy_samples(root)
 
-    # classes と convention を足す前の項目には null を補完
+    # classes と convention の無い項目には null を補完
     for item in samples:
         if isinstance(item, dict):
             item.setdefault("classes", None)

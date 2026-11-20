@@ -328,7 +328,7 @@ scheduler:
     T_max: auto        # warmup の後の残りのステップ数
   warmup_ratio: 0.1    # 学習全体の 1 割で学習率を上げる
 ```
-自分で値を決める場合は, これまで通り `load_config` の後, `start_experiment` の前に config に書き込むと `config.yaml` にも残る.
+自分で値を決める場合は, `load_config` の後, `start_experiment` の前に config に書き込むと `config.yaml` にも残る.
 
 ```python
 cfg, diff = load_project_config(str(project_dir))
@@ -510,7 +510,7 @@ model.load_state_dict(torch.load("outputs/wine/.../final_model.pt"))
 
 ### 何の実験か, データ全体の評価, 見本
 
-実験のディレクトリに, 任意で次の 3 つを書ける (形は [docs/FORMAT.md](docs/FORMAT.md)). 書かなくても学習は変わらず, 書かなかった実験と今までの実験も同じく読める.
+実験のディレクトリに, 任意で次の 3 つを書ける (形は [docs/FORMAT.md](docs/FORMAT.md)). 書かなくても学習は変わらず, 書かなかった実験も同じく読める.
 
 - **`task.yaml`** (何の実験か): 受け持ち (`role`. `predict`, `generate`, `rank`, `group`, `effect`), 出力の形と意味 (`output`. 方策は `action`. `what`), 正解の種類と出どころ (`target.kind`, `target.origin`), 作り方 (`method`. `scratch`, `finetune` など) と元にした実験や重み (`base`), 学習に使ったデータセット (`dataset`). 値の名前は ML-Quest と ML-EDA のものを写す. 正解が今ある処理の出力 (`target.origin.type: process`) なら, 指標はその処理との一致で, モデルはその処理を超えられない. 環境の報酬で学習した方策 (`environment`) なら, 指標はシミュレータなどの環境の報酬で, 実機での結果は別に確かめる. このことを指標と一緒に読めるようにするためのファイル
 - **`evaluations/<名前>.json`** (データ全体の評価): グループごとの表, 曲線, 比べる相手との差, 守る指標を, 名前と分割の付いた表として書く
@@ -589,7 +589,7 @@ save_sample(experiment, "cloud", points, kind="point_cloud",
 
 ### 強化学習
 
-Gymnasium の形の環境 (`reset(seed=...)` が `(観測, info)` を, `step(行動)` が `(観測, 報酬, 終了, 打ち切り, info)` を返すもの) とやり取りして, 行動を選ぶ方策を学習できる. 別の仕組みは作らず, 環境とのやり取りを「バッチを返す loader」にして, これまでの `Trainer` の step とエポックの決まりに乗せる. 使うには追加の依存 `rl` (Gymnasium) を入れる (上の「追加の依存」). 例は `examples/cartpole/` (CartPole を REINFORCE で学習し, 守りと一緒に書き出す).
+Gymnasium の形の環境 (`reset(seed=...)` が `(観測, info)` を, `step(行動)` が `(観測, 報酬, 終了, 打ち切り, info)` を返すもの) とやり取りして, 行動を選ぶ方策を学習できる. 別の仕組みは作らず, 環境とのやり取りを「バッチを返す loader」にして, `Trainer` の step とエポックの決まりに乗せる. 使うには追加の依存 `rl` (Gymnasium) を入れる (上の「追加の依存」). 例は `examples/cartpole/` (CartPole を REINFORCE で学習し, 守りと一緒に書き出す).
 
 ```python
 from ml_found import Trainer, load_project_config, start_experiment

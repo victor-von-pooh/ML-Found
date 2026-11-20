@@ -1521,7 +1521,7 @@ def test_stop_file_without_now(tmp_path: Path) -> None:
     trainer.run_status.progress_interval = 0.0
     history = trainer.fit(make_loader(n=64, batch_size=16))
 
-    # これまで通り, 1 エポック目を終えてから止める
+    # 1 エポック目を終えてから止める
     assert history.get("epoch") == [1]
     assert calls["train"] == 4
 

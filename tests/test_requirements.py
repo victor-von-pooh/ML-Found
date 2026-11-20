@@ -417,8 +417,8 @@ def test_missing_requirement_error_pickles() -> None:
          "github.com/victor-von-pooh/ML-EDA.git"),
         ("modelcontrol", ["ml_modelcontrol"], "ml-modelcontrol @ git+"
          "https://github.com/victor-von-pooh/ML-ModelControl.git"),
-        ("inference", ["ml_inference"], "ml-inference @ git+https://"
-         "github.com/victor-von-pooh/ML-Inference.git")
+        ("inference", ["ml_inference", "pyarrow"], "ml-inference @ git+"
+         "https://github.com/victor-von-pooh/ML-Inference.git")
     ]
 )
 def test_ml_library_features(

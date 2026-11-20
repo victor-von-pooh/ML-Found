@@ -141,7 +141,7 @@ experiment で書けるのは default にある項目の値だけで, 項目の�
 クラス名を変えた場合は default の引数は捨てられる.
 `start_experiment` は出力先を作る前に, `optimizer.params` と `scheduler.params` の名前がクラスの引数にあるか (typo の確認), 必須の引数 (`StepLR` の `step_size` など) があるか, 値が登録簿の範囲 (下の `describe_optimizers()` などで返すもの. 例: `lr` は 0 以上, `ReduceLROnPlateau` の `factor` は 0 以上 1 未満) に入るかを確かめる. 範囲は意味のある値の範囲で, PyTorch の確認より狭いものもある (`momentum` は 1 以下など). 補間 (`${...}`) は解決した値で確かめ, 範囲を持つ引数に引用符で囲んだ数や真偽値を書いた場合もエラーにする. 値の範囲は torch のクラスだけを確かめ, 自作のクラスは確かめない. 任意の名前の引数 (`**kwargs`) や位置だけの引数を受け取る自作のクラスは確かめない. 最後に, 学習と同じデバイスの仮のパラメータで Optimizer と Scheduler を実際に作ってみて (データの量で決まる引数は仮の値で補う), 範囲を持たない引数の値や自作のクラスの値の誤り (PyTorch やクラスが作るときに出すエラー) も見つける. 値の決まっていない引数 (`???`) がある場合は, 作ってみる確認はしない (解決できない補間は, その前の確認でエラーになる). 自分で作った Optimizer や Scheduler を `Trainer` に渡す場合も, config の引数は確かめるので, 使わない引数は消しておく.
 
-選べる Optimizer と Scheduler とその引数 (種類, 既定値, 必須か, 説明, 範囲. 範囲の端を含まない場合は `exclusive_minimum` と `exclusive_maximum` が true. 実装の都合で使う引数は `advanced` が true) と, そのまま使えるか (`supported`, 使えない理由は `note`), closure が必要か (`requires_closure`, Optimizer のみ), 勾配を使うか (`uses_gradients`, Optimizer のみ) は `describe_optimizers()` と `describe_schedulers()` で取得できる. ダッシュボードの入力フォームなどに使う.
+選べる Optimizer と Scheduler とその引数 (種類, 既定値, 必須か, 説明, 範囲. 範囲の端を含まない場合は `exclusive_minimum` と `exclusive_maximum` が true. 実装の都合で使う引数は `advanced` が true) と, そのまま使えるか (`supported`, 使えない理由は `note`), closure が必要か (`requires_closure`, Optimizer のみ), 勾配を使うか (`uses_gradients`, Optimizer のみ) は `describe_optimizers()` と `describe_schedulers()` で取得できる. ダッシュボードの入力フォームなどに使う. Muon と SparseAdam は, そのままでは使えないので `supported` が false で理由を返す. 他の Scheduler を組み合わせるものと関数を受け取るもの (`SequentialLR`, `ChainedScheduler`, `LambdaLR`, `MultiplicativeLR`) は返さない.
 
 プロジェクトで作った Optimizer は, `register_optimizer` で登録すると, config の `optimizer.name` に名前だけで書け, `describe_optimizers()` にも加わる (ダッシュボードの登録簿は, ダッシュボードのプロセスで登録しないと出ない). 範囲を渡した引数は, torch のクラスと同じく出力先を作る前に確かめる. `start_experiment` の前に登録する (再開するスクリプトでも登録する). 登録できるのはプロジェクトのクラスだけで, torch のクラスや torch の名前と同じ名前, 同じクラスの別の名前は使えない. `param_notes` は引数ごとに `description`, `minimum`, `maximum`, `exclusive_minimum`, `exclusive_maximum` を項目に持つ辞書で, 任意の名前の引数 (`**kwargs`) を受け取るクラスには範囲を渡せない. `unregister_optimizer(name)` で外せる. ダッシュボードから起動する場合は, ダッシュボードのプロセスでは登録されないので, config の名前は `custom_optim.Lion` のようにモジュールのパスで書く.
 
@@ -309,7 +309,7 @@ class EMATrainer(Trainer):
 ```
 
 `on_epoch_end` は勾配の計算を止める範囲の外で呼ばれる (検証の後でも勾配の計算が有効). 中で推論する場合は `torch.no_grad()` を書く.
-指標を返さない場合 (画像を保存するだけ, など) は空の辞書を返す. `step` の指標と同じ名前は使えない (以前は `on_epoch_end` の値で黙って上書きしていたが, エラーにした).
+指標を返さない場合 (画像を保存するだけ, など) は空の辞書を返す. `step` の指標と同じ名前は使えない (エラー).
 Optimizer や Scheduler を自分で作る場合は `Trainer(model, experiment, step, optimizer, scheduler)` のように渡す.
 渡した Scheduler にも, config で作った場合と同じく `scheduler.interval` と ReduceLROnPlateau の確認が行われる.
 自分で作った Scheduler は `config.yaml` に残らない (`train.log` にはクラス名と状態が残る).
@@ -318,7 +318,7 @@ Optimizer や Scheduler を自分で作る場合は `Trainer(model, experiment, 
 
 学習全体で決まる他の Scheduler の引数 (`CosineAnnealingLR` の `T_max`, `LinearLR`, `ConstantLR`, `PolynomialLR` の `total_iters`) は, 値に `auto` と書くと, `fit` が学習を始めるときに学習全体のステップ数で補う. `scheduler.interval: step` ならエポック数 × 学習用データのバッチ数, `epoch` ならエポック数. 補った値は `config.yaml` と `train.log` に残る. `auto` と書けるのはこれらのクラス (と継承したクラス) の引数だけで, 他の引数 (範囲を持たない `eta_min` などや, Optimizer の引数も) に書くと出力先を作る前にエラーになる. warmup のように学習の一部の長さを表す値には使えない (`auto` は学習全体の長さ). `OneCycleLR` と同じく, Scheduler は `fit` を呼ぶまで作られない (`trainer.scheduler` は `None`). エポック数などを変えて再開すると補う値が再開元と変わるので, 既定の `trainer.resume_scheduler: checkpoint` ではエラーになり, `config` にすると補い直した値で作り直す. 補った値の入った `config.yaml` を default にすると, `auto` ではなく数値になるので, エポック数を変える場合は `auto` に書き直す.
 
-学習の始めに学習率を少しずつ上げる warmup は, `scheduler.warmup_steps` (回数, `interval` の単位) か `scheduler.warmup_ratio` (学習全体のステップ数に対する割合) で書く. 学習率は最初の値の `scheduler.warmup_start_factor` (既定 0.01) 倍から線形に上げ, その後は `scheduler.name` の Scheduler に続ける (`SequentialLR` で組み合わせる). `auto` と書いた引数は, warmup の後の残りのステップ数で補う. `warmup_ratio` は `fit` が学習を始めるときに回数に直し, `config.yaml` の `warmup_steps` に残す. `scheduler.name` が無い場合は warmup だけで, その後の学習率は一定. ReduceLROnPlateau, OneCycleLR, CyclicLR とは組み合わせられない (エラー). `warmup_ratio` を使う場合も, Scheduler は `fit` を呼ぶまで作られない. warmup が学習全体のステップ数以上の場合と, 割合が小さく 0 回になった場合は警告する. 再開では, warmup の有無を変えた場合 (Scheduler の組み立てが変わる) と, 割合から補った回数が再開元と変わった場合は, 既定ではエラーになり, `trainer.resume_scheduler: config` にすると作り直す.
+学習の始めに学習率を少しずつ上げる warmup は, `scheduler.warmup_steps` (回数, `interval` の単位) か `scheduler.warmup_ratio` (学習全体のステップ数に対する割合) で書く. 学習率は最初の値の `scheduler.warmup_start_factor` (既定 0.01) 倍から線形に上げ, その後は `scheduler.name` の Scheduler に続ける (`SequentialLR` で組み合わせる). `auto` と書いた引数は, warmup の後の残りのステップ数で補う. `warmup_ratio` は `fit` が学習を始めるときに回数に直し, `config.yaml` の `warmup_steps` に残す. `scheduler.name` が無い場合は warmup だけで, その後の学習率は一定. ReduceLROnPlateau, OneCycleLR, CyclicLR とは組み合わせられない (エラー). warmup の他に複数の Scheduler を組み合わせる設定 (config に `SequentialLR` を書く形) は, warmup と 1 つの Scheduler で実用の大半に足りるので対応しない. `warmup_ratio` を使う場合も, Scheduler は `fit` を呼ぶまで作られない. warmup が学習全体のステップ数以上の場合と, 割合が小さく 0 回になった場合は警告する. 再開では, warmup の有無を変えた場合 (Scheduler の組み立てが変わる) と, 割合から補った回数が再開元と変わった場合は, 既定ではエラーになり, `trainer.resume_scheduler: config` にすると作り直す.
 
 ```yaml
 scheduler:

@@ -4,7 +4,7 @@ from typing import Callable
 
 import pytest
 
-from ml_found import describe_requirements, require
+from ml_found import describe_requirements, environment_packages, require
 from ml_found.utils import requirements
 from ml_found.utils.requirements import (
     MissingRequirementError, register_requirement, unregister_requirement
@@ -408,3 +408,91 @@ def test_missing_requirement_error_pickles() -> None:
     assert copied.feature == "rl"
     assert copied.missing == ["gymnasium"]
     assert copied.note == "補足"
+
+
+@pytest.mark.parametrize(
+    "feature, module, package",
+    [
+        ("eda", "ml_eda", "ml-eda @ git+https://github.com/"
+         "victor-von-pooh/ML-EDA.git"),
+        ("modelcontrol", "ml_modelcontrol", "ml-modelcontrol @ git+https://"
+         "github.com/victor-von-pooh/ML-ModelControl.git"),
+        ("inference", "ml_inference", "ml-inference @ git+https://"
+         "github.com/victor-von-pooh/ML-Inference.git")
+    ]
+)
+def test_ml_library_features(
+    monkeypatch: pytest.MonkeyPatch, feature: str, module: str,
+    package: str
+) -> None:
+    """
+    段階ごとのライブラリの機能が, import の名前で確かめ, git から pip で
+    入れる案内になることを確かめる関数
+
+    Parameters
+    ----------
+    monkeypatch: pytest.MonkeyPatch
+        モジュールを隠すのに使う
+    feature: str
+        機能の名前
+    module: str
+        確かめる import の名前
+    package: str
+        pip に渡す指定
+
+    Returns
+    ----------
+    None
+    """
+    entry = describe_requirements([feature], check=False)[0]
+
+    # import の名前の確かめ方と, git の URL の pip の入れ方
+    assert entry["checks"] == [
+        {"kind": "module", "name": module, "ok": None, "error": None}
+    ]
+    assert entry["install"]["kind"] == "pip"
+    assert entry["install"]["packages"] == [package]
+    assert entry["install"]["command"] == f'pip install "{package}"'
+    assert entry["install"]["extra"] is None
+    assert entry["install"]["extra_command"] is None
+
+    # 無ければ pip のコマンドを添えて止まる
+    hide_modules(monkeypatch, {module})
+    with pytest.raises(MissingRequirementError) as error:
+        require(feature)
+    assert error.value.missing == [module]
+    assert f'pip install "{package}"' in str(error.value)
+
+
+def test_environment_packages() -> None:
+    """
+    環境に入れる pip の指定が, ML-Found 自身と pip で入る機能の順になる
+    ことを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    packages = environment_packages(["eda", "rl", "cuda", "mujoco"])
+
+    # ML-Found が先頭, 同じ指定は 1 回, pip で入らない cuda は含めない
+    assert packages == [
+        "ml-found @ git+https://github.com/victor-von-pooh/ML-Found.git",
+        "ml-eda @ git+https://github.com/victor-von-pooh/ML-EDA.git",
+        "gymnasium>=1.0", "mujoco"
+    ]
+
+    # ML-Found 自身を除く場合と, 何も要らない場合
+    assert environment_packages(["inference"], include_found=False) == [
+        "ml-inference @ git+https://github.com/victor-von-pooh/"
+        "ML-Inference.git"
+    ]
+    assert environment_packages([], include_found=False) == []
+
+    # 登録簿に無い名前はエラー
+    with pytest.raises(ValueError, match="登録済み"):
+        environment_packages(["eda", "unknown"])

@@ -27,7 +27,7 @@ PyTorch のモデルを config から自動で学習させる基盤のライブ�
 | 方策の一式 (`policy/`) | 持つ (`policy.json` と `apply_guards` で, 他の段階も同じ守りを当てられる) | 版 1 |
 | ML-EDA が書き出したデータセット (`dataset.yaml`) | 読む (`task.dataset` から受け持ちと正解を埋める. ml_eda には頼らない) | 版 2 だけ. 版 1 と知らない版では止まる |
 | 受け持ち, 出力の形, 正解の種類と出どころの値の名前 | ML-Quest と ML-EDA の名前を写す | 無し |
-| 追加の依存の登録簿 (`describe_requirements`) と, Optimizer と Scheduler の登録簿 (`describe_optimizers`, `describe_schedulers`) | 持つ (ML-Dashboard と ML-Quest が読む) | 無し (関数の戻り値) |
+| 追加の依存の登録簿 (`describe_requirements`, `environment_packages`) と, Optimizer と Scheduler の登録簿 (`describe_optimizers`, `describe_schedulers`) | 持つ (ML-Dashboard と ML-Quest が読む. ML-Quest の骨組みは, 学習のスクリプトが import する段階のライブラリ (`eda`, `modelcontrol`, `inference`) だけを config の `requires` に書く) | 無し (関数の戻り値) |
 
 ## 3. 用語
 
@@ -71,6 +71,9 @@ ML-Found/
 | `mujoco` | `gymnasium` と `mujoco` (モジュールが見つかるか) | `pip install -e "./ML-Found[mujoco]"`. 描画には OpenGL が要る ([公式の手順](https://mujoco.readthedocs.io/en/stable/python.html)) |
 | `ros2` | `rclpy` か `ros2` のコマンドのどちらか | pip では入らない. [公式の手順](https://docs.ros.org/) で入れ, setup のスクリプトを source してから Python を起動する |
 | `cuda` | `torch.cuda.is_available()` | NVIDIA のドライバと, [PyTorch の手順](https://pytorch.org/get-started/locally/) で CUDA 付きの PyTorch |
+| `eda` | `ml_eda` (ML-EDA. データセットの読み込みと前処理) | `pip install "ml-eda @ git+https://github.com/victor-von-pooh/ML-EDA.git"` |
+| `modelcontrol` | `ml_modelcontrol` (ML-ModelControl. モデルの定義から作る) | `pip install "ml-modelcontrol @ git+https://github.com/victor-von-pooh/ML-ModelControl.git"` |
+| `inference` | `ml_inference` (ML-Inference. 学習したモデルで予測し, 判断に使う) | `pip install "ml-inference @ git+https://github.com/victor-von-pooh/ML-Inference.git"` (ML-EDA と ML-ModelControl も一緒に入る) |
 
 ```python
 from ml_found import MissingRequirementError, describe_requirements, require
@@ -85,6 +88,8 @@ entries = describe_requirements()  # 全ての機能の一覧 (JSON にできる
 - `describe_requirements(names=None, check=True)` は, 機能ごとに `name`, `description`, `checks` (確かめ方ごとの `kind`, `name`, `ok`, `error`), `match` (`all` か `any`), `available`, `install` (`kind` が `pip` か `guide`, `extra`, `packages`, `url`, `command`, `extra_command`), `note` を返す. 画面 (ML-Dashboard) のカードや, 問題の設定の受け渡し (ML-Quest) で, 足りないものを早めに知らせるのに使う. `check=False` では確かめない (`ok` と `available` が `None`. JSON では null)
 - 確かめ方は import せずにモジュールを探す (`importlib.util.find_spec`) ので, 一覧を作るだけで重いライブラリを読み込まない. ただし版は確かめない (古い版は使うときのエラーになる) のと, `a.b` のような名前では親のパッケージ `a` を import する
 - プロジェクトの機能は `register_requirement(name, description, checks, install, match, note)` で加えられる (`ml_found.utils`. ML-Found の機能の名前は上書きできない)
+- `environment_packages(names, include_found=True)` は, プロジェクトの仮想環境を作るときに 1 回の `pip install` に渡す指定の一覧を返す. 先頭が ML-Found 自身 (`ml-found @ git+https://github.com/victor-von-pooh/ML-Found.git`. `include_found=False` で除く) で, 続けて機能の pip の指定を書いた順に並べる (同じ指定は 1 回). pip で入らない機能 (`ros2`, `cuda`) は含めないので, `describe_requirements` の入れ方で案内する. 登録簿に無い名前はエラー. 画面 (ML-Dashboard) がプロジェクトの環境を作るときに使う
+- 段階ごとのライブラリ (`eda`, `modelcontrol`, `inference`) は PyPI に公開していないので, git のリポジトリから入れる. ML-Found の追加の依存 (`extra`) にはしない (ML-Found が他の段階のライブラリに頼らないため)
 
 学習に要る機能は, config の一番上の `requires` に機能の名前のリストで書ける (例: `requires: [rl]`). `start_experiment` は出力先を作る前に, 書いた順に `require` で確かめ, 足りなければ入れ方を示す `MissingRequirementError` で止まる. 画面 (ML-Dashboard) は同じ項目を読み, 足りないまま学習を起動しないので, 画面から始めても端末から始めても同じ決まりで止まる.
 

@@ -175,7 +175,10 @@ REQUIREMENTS: dict[str, dict[str, Any]] = {
     },
     "inference": {
         "description": "推論 (ML-Inference. 学習したモデルで予測し, 判断に使う)",
-        "checks": [{"kind": "module", "name": "ml_inference"}],
+        "checks": [
+            {"kind": "module", "name": "ml_inference"},
+            {"kind": "module", "name": "pyarrow"}
+        ],
         "match": "all",
         "install": {
             "kind": "pip",
@@ -185,7 +188,10 @@ REQUIREMENTS: dict[str, dict[str, Any]] = {
             ],
             "url": f"{GITHUB}/ML-Inference"
         },
-        "note": "ML-Inference は ML-EDA と ML-ModelControl も一緒に入れる"
+        "note": (
+            "ML-Inference は ML-EDA (parquet を読む pyarrow を含む) と "
+            "ML-ModelControl も一緒に入れる"
+        )
     }
 }
 

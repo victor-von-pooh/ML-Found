@@ -140,7 +140,7 @@ REQUIREMENTS: dict[str, dict[str, Any]] = {
     },
     "eda": {
         "description": "データの分析 (ML-EDA. データセットの読み込みと前処理)",
-        # 書き出したデータセットは parquet なので, 読む pyarrow も確かめる
+        # 書き出したデータセットは parquet なので, 読む pyarrow の確かめも
         "checks": [
             {"kind": "module", "name": "ml_eda"},
             {"kind": "module", "name": "pyarrow"}

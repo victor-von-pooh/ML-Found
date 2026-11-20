@@ -62,6 +62,12 @@ def cuda_available() -> bool:
     return available
 
 
+# 「機械学習を全て GUI 上で行う」ためのライブラリを置く場所
+GITHUB = "https://github.com/victor-von-pooh"
+
+# ML-Found 自身を pip で入れるときの指定
+FOUND_PACKAGE = f"ml-found @ git+{GITHUB}/ML-Found.git"
+
 # 機能ごとの要るもの, 確かめ方, 入れ方の登録簿
 # checks の kind は module (import できるか), command (コマンドがあるか),
 # function (関数が True を返すか). match は all (全て要る) か any (どれか 1 つ)
@@ -131,6 +137,48 @@ REQUIREMENTS: dict[str, dict[str, Any]] = {
             "NVIDIA のドライバを入れ, 公式の手順で CUDA 付きの PyTorch を"
             "入れ直す. Mac の GPU は CUDA ではなく mps (experiment.device) を使う"
         )
+    },
+    "eda": {
+        "description": "データの分析 (ML-EDA. データセットの読み込みと前処理)",
+        "checks": [{"kind": "module", "name": "ml_eda"}],
+        "match": "all",
+        "install": {
+            "kind": "pip",
+            "extra": None,
+            "packages": [
+                f"ml-eda @ git+{GITHUB}/ML-EDA.git"
+            ],
+            "url": f"{GITHUB}/ML-EDA"
+        },
+        "note": None
+    },
+    "modelcontrol": {
+        "description": "モデルの組み立て (ML-ModelControl. モデルの定義から作る)",
+        "checks": [{"kind": "module", "name": "ml_modelcontrol"}],
+        "match": "all",
+        "install": {
+            "kind": "pip",
+            "extra": None,
+            "packages": [
+                f"ml-modelcontrol @ git+{GITHUB}/ML-ModelControl.git"
+            ],
+            "url": f"{GITHUB}/ML-ModelControl"
+        },
+        "note": None
+    },
+    "inference": {
+        "description": "推論 (ML-Inference. 学習したモデルで予測し, 判断に使う)",
+        "checks": [{"kind": "module", "name": "ml_inference"}],
+        "match": "all",
+        "install": {
+            "kind": "pip",
+            "extra": None,
+            "packages": [
+                f"ml-inference @ git+{GITHUB}/ML-Inference.git"
+            ],
+            "url": f"{GITHUB}/ML-Inference"
+        },
+        "note": "ML-Inference は ML-EDA と ML-ModelControl も一緒に入れる"
     }
 }
 
@@ -539,3 +587,44 @@ def unregister_requirement(name: str) -> None:
 # ML-Found が持つ機能の名前
 BUILTIN_NAMES = frozenset(REQUIREMENTS)
 
+
+
+def environment_packages(
+    names: list[str], include_found: bool = True
+) -> list[str]:
+    """
+    プロジェクトの環境に pip で入れるものの指定の一覧を返す関数
+
+    学習のプロジェクトの仮想環境を作るとき (画面の ML-Dashboard など) に,
+    ML-Found 自身と, 要る機能のうち pip で入るものを 1 回の pip install で
+    入れられる形にする. pip で入らない機能 (install の kind が guide) は
+    含めないので, describe_requirements の入れ方で案内する
+
+    Parameters
+    ----------
+    names: list[str]
+        要る機能の名前 (config の requires など)
+    include_found: bool = True
+        ML-Found 自身 (git の main) を先頭に含める場合は True
+
+    Returns
+    ----------
+    packages: list[str]
+        pip に渡す指定 (書いた順. 同じ指定は 1 回だけ)
+
+    Raises
+    ----------
+    ValueError
+        登録簿に無い名前がある場合
+    """
+    # 名前を先に全て確かめてから, 書いた順に pip の指定を集約
+    specs = [get_spec(name) for name in names]
+    packages = [FOUND_PACKAGE] if include_found else []
+    for spec in specs:
+        if spec["install"]["kind"] != "pip":
+            continue
+        for package in spec["install"]["packages"]:
+            if package not in packages:
+                packages.append(package)
+
+    return packages

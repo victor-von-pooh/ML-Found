@@ -13,7 +13,7 @@
 - **ベストモデルと再開**: 監視する指標が最も良いモデルを保存して最後に戻す. Early Stopping, 勾配クリッピング, チェックポイントからの再開にも対応する
 - **Lightning などに依存しない**: 素の PyTorch だけで書いている
 - **強化学習と方策の書き出し (任意)**: Gymnasium の形の環境とのやり取りを loader にして, 同じ `Trainer` で方策を学習し, 守り (行動の範囲, 止める条件, 外れたときの動き) と一緒に書き出せる
-- **追加の依存の案内**: 任意の機能 (強化学習, MuJoCo, ROS 2, CUDA) ごとに, 要るもの, 入っているかの確かめ方, 入れ方の一覧を持ち, 足りなければ次の一手を案内して止まる
+- **追加の依存の案内**: 任意の機能 (強化学習, MuJoCo, ROS 2, CUDA, 他の段階のライブラリ ML-EDA, ML-ModelControl, ML-Inference) ごとに, 要るもの, 入っているかの確かめ方, 入れ方の一覧を持ち, 足りなければ次の一手を案内して止まる
 
 ## 導入
 
@@ -49,7 +49,7 @@ pytest
 python examples/minibatch/train.py   # fullbatch, cartpole も同じ
 ```
 
-任意の機能 (強化学習, MuJoCo, ROS 2, CUDA) に要るもの (追加の依存) と入れ方は [docs/DESIGN.md](docs/DESIGN.md) の「追加の依存」.
+任意の機能 (強化学習, MuJoCo, ROS 2, CUDA, 他の段階のライブラリ) に要るもの (追加の依存) と入れ方は [docs/DESIGN.md](docs/DESIGN.md) の「追加の依存」.
 
 ## 使い方
 

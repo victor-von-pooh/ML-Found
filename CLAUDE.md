@@ -4,21 +4,30 @@ ML-Found で作業するときの方針をまとめる.
 
 ## このリポジトリの目的
 
-PyTorch のモデルを config から学習させる基盤のライブラリ. 使い方は [README.md](README.md), 今後の予定は [TODO.md](TODO.md) にまとめる.
+PyTorch のモデルを config から学習させる基盤のライブラリ. 設計は [docs/DESIGN.md](docs/DESIGN.md) にまとめる.
 
-- プロジェクト (config とスクリプトを持つディレクトリ) から submodule として使う. 学習の画面 (ML-Dashboard) が必要とする API (実験の状態の書き出し, 登録簿, config の確認, 中断など) はこのライブラリが返す. 画面に固有のものは入れない
+- プロジェクト (config とスクリプトを持つディレクトリ) から submodule として使う
+- GUI のアプリ (ML-Dashboard) が必要とする情報 (実験の状態の書き出し, 登録簿, config の確認, 中断など) はこのライブラリが返す. 画面に固有のものは入れない
 - モデルの組み立て (ML-ModelControl) と推論は対象外
 
 ## コードの書き方
 
 - [CODING_STYLE.md](CODING_STYLE.md) に従う (日本語の NumPy 形式の docstring, コメントは体言止め, 79 文字以内, `torch.nn.functional` を使わないなど)
-- ドキュメントとコードのコメントでは, 「機械学習を全て GUI 上で行う」という目的のために開発しているリポジトリ (今は ML-Found, ML-Dashboard, ML-ModelControl, ML-CreateArchitecture, ML-EDA, ML-Fathom, ML-Inference, ML-Provide, ML-Quest, ML-Pathfinder, ML_tester) 以外に触れない. ローカルのディレクトリ構成やパスも書かない
+- ドキュメントとコードのコメントでは, 「機械学習を全て GUI 上で行う」という目的のために開発しているリポジトリ (今は ML-Found, ML-Dashboard, ML-ModelControl, ML-CreateArchitecture, ML-EDA, ML-Fathom, ML-Inference, ML-Provide, ML-Quest, ML-Pathfinder, ML_tester) 以外に触れない. ローカルのディレクトリ構成やパスも書かない. 外部のライブラリ (PyTorch, Gymnasium など) には触れてよい
+
+## 文書
+
+- README.md: 何をするライブラリか, 導入, 使い方
+- docs/DESIGN.md: 今の設計と決まり. 節には番号を付け, 先頭は「1. 役割と位置づけ」「2. 他のリポジトリとの約束」(持つファイルの形と読むファイルの形, それぞれの版)「3. 用語」. 「安全」と「課題の型への広げ方」(ある場合) を最後に置く
+- TODO.md: まだやっていないこと. 優先度の順に並べ, 終えたら消す. まだやっていないことは TODO.md だけに書き, README.md と docs/DESIGN.md には書かない
+- 文書には今の形と決まりだけを書く. 日付, 経緯 (以前は ..., ... に改めた), 終えたことの記録は書かない
+- 決まりはこのリポジトリの文書に書く. 他のリポジトリの文書に頼らない (例や確かめの場として指すのはよい)
 
 ## 進める流れ
 
-1. 方針を変える場合や新しい機能を加える場合は, 先に README.md と TODO.md を直す. プロジェクトや実験のディレクトリの形 (他のシステムとの約束) を変える場合は, [docs/FORMAT.md](docs/FORMAT.md) の版の決まりに従い, 文書と `tests/test_format.py` も直す
-2. テストを書き, `pytest` を通す
-3. **セルフレビュー**: 複数のエージェントを並行して動かし, バグ, 既存のプロジェクトとの互換, CODING_STYLE.md への準拠を確認する
+1. 方針を変える場合や新しい機能を加える場合は, 先に docs/DESIGN.md を直す (使い方が変わる場合は README.md も). 終えた TODO.md の項目は消す. プロジェクトや実験のディレクトリの形 (他のシステムとの約束) を変える場合は, [docs/FORMAT.md](docs/FORMAT.md) の版の決まりに従い, 文書と `tests/test_format.py` も直す
+2. テストを書き, `pytest` を通す (準備は `pip install -e ".[dev]"`)
+3. **セルフレビュー**: 複数のエージェントを並行して動かし, バグ, 設計との食い違い, CODING_STYLE.md への準拠を確認する. 既存のプロジェクトとの互換も確かめる
 4. 指摘を直し, 直した内容と残した指摘をユーザーに報告する
 
 ## git

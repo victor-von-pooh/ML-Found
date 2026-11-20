@@ -13,7 +13,8 @@ from torch import nn
 
 from ml_found import (
     describe_origin, load_evaluations, load_samples, load_task,
-    save_evaluation, save_sample, task_from_dataset, write_task
+    original_coordinates, save_evaluation, save_sample, task_from_dataset,
+    write_task
 )
 from ml_found.experiment.setup import Experiment
 from ml_found.experiment.task import TASK_FILE
@@ -1227,6 +1228,7 @@ def test_save_sample_convention(tmp_path: Path) -> None:
     entry = load_samples(experiment.run_dir)[0]
     assert entry["convention"] == convention
     assert entry["classes"] is None
+    assert entry["newer_version"] is False
 
     # JSON にできない値, 辞書でない値, mask でない種類の classes は誤り
     for kwargs in (
@@ -1273,3 +1275,189 @@ def test_load_samples_fills_new_fields(tmp_path: Path) -> None:
     entry = load_samples(experiment.run_dir)[0]
     assert entry["classes"] is None and entry["convention"] is None
     assert entry["name"] == "note"
+
+
+def write_index(root: Path, data: dict) -> None:
+    """
+    点群の見本のファイルと, 渡した形の一覧を置く関数
+
+    Parameters
+    ----------
+    root: Path
+        samples/ のディレクトリ
+    data: dict
+        index.json に書く辞書
+
+    Returns
+    ----------
+    None
+    """
+    (root / "cloud").mkdir(parents=True)
+    (root / "cloud" / "final.ply").write_text("ply\n", encoding="utf-8")
+    (root / "index.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def cloud_entry(convention: dict) -> dict:
+    """
+    点群の見本の一覧の項目を返す関数
+
+    Parameters
+    ----------
+    convention: dict
+        値の決まり
+
+    Returns
+    ----------
+    entry: dict
+        学習の後の点群の見本の項目
+    """
+    entry = {
+        "epoch": None, "name": "cloud", "kind": "point_cloud",
+        "file": "cloud/final.ply", "split": None, "caption": None,
+        "classes": None, "convention": convention,
+        "created_at": "2026-11-19T00:00:00+09:00"
+    }
+
+    return entry
+
+
+def test_sample_shift_matches_eda(tmp_path: Path) -> None:
+    """
+    今の版の shift が ML-EDA と同じ向き (正規化した座標 = 元の座標 +
+    shift) で, original_coordinates が元の座標に戻すことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # ML-EDA の正規化 (中心を原点に) の後に scale で割った点群
+    original = np.array([[1.0, 2.0, 3.0], [1.5, 2.0, 2.0]])
+    shift = [-1.0, -2.0, -3.0]
+    scale = 2.0
+    values = (original + np.array(shift)) / scale
+    experiment = make_experiment(tmp_path)
+    convention = {"units": "m", "shift": shift, "scale": scale}
+    save_sample(experiment, "cloud", values, kind="point_cloud",
+                convention=convention)
+    index = json.loads(
+        (experiment.run_dir / "samples" / "index.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert index["format_version"] == 2
+    assert index["samples"][0]["convention"]["shift"] == shift
+    entry = load_samples(experiment.run_dir)[0]
+    np.testing.assert_allclose(
+        original_coordinates(values, entry["convention"]), original
+    )
+
+    # 値の決まりが無ければ値のまま. 軸ごとの scale も使える
+    np.testing.assert_allclose(original_coordinates(values, None), values)
+    np.testing.assert_allclose(
+        original_coordinates(values, {"shift": None, "scale": None}), values
+    )
+    np.testing.assert_allclose(
+        original_coordinates(values, {"scale": [1.0, 2.0, 1.0]}),
+        values * np.array([1.0, 2.0, 1.0])
+    )
+
+    # 点群でない形と, 形の合わない shift は誤り
+    for points, given in (
+        (np.zeros(3), None),
+        (np.zeros((2, 2)), None),
+        (values, {"shift": [1.0, 2.0]}),
+        (values, {"scale": "x"})
+    ):
+        with pytest.raises(ValueError):
+            original_coordinates(points, given)
+
+
+def test_old_sample_shift_still_reads(tmp_path: Path) -> None:
+    """
+    版の無い (版 1 の) 一覧の shift (元の座標 = 値 × scale + shift) を,
+    今の意味に写して読み, 書き足しても元の座標が変わらないことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 版 1 の向きで書いた見本
+    original = np.array([[1.0, 2.0, 3.0], [1.5, 2.0, 2.0]])
+    old_shift = [1.0, 2.0, 3.0]
+    scale = 2.0
+    values = (original - np.array(old_shift)) / scale
+    experiment = make_experiment(tmp_path)
+    root = experiment.run_dir / "samples"
+    old = {"units": "m", "shift": old_shift, "scale": scale}
+    write_index(root, {"samples": [cloud_entry(old)]})
+    entry = load_samples(experiment.run_dir)[0]
+    assert entry["convention"]["shift"] == [-1.0, -2.0, -3.0]
+    assert entry["convention"]["units"] == "m"
+    assert entry["newer_version"] is False
+    np.testing.assert_allclose(
+        original_coordinates(values, entry["convention"]), original
+    )
+
+    # 書き足すと一覧は今の版になり, 前の項目も今の意味で残る
+    save_sample(experiment, "note", "見本の文")
+    index = json.loads((root / "index.json").read_text(encoding="utf-8"))
+    assert index["format_version"] == 2
+    assert index["samples"][0]["convention"]["shift"] == [-1.0, -2.0, -3.0]
+    entry = load_samples(experiment.run_dir)[0]
+    np.testing.assert_allclose(
+        original_coordinates(values, entry["convention"]), original
+    )
+
+    # 数でない shift と, 入れ子の数
+    nested = {"shift": [[1, -2], "x", None, True, 0.5]}
+    other = make_experiment(tmp_path / "other")
+    write_index(other.run_dir / "samples", {"samples": [cloud_entry(nested)]})
+    entry = load_samples(other.run_dir)[0]
+    assert entry["convention"]["shift"] == [[-1, 2], "x", None, True, -0.5]
+
+
+def test_newer_samples_index(tmp_path: Path) -> None:
+    """
+    新しい版の一覧は値の決まりを読まずに知らせ, 書き足さないことと,
+    版が整数でない一覧は読めないことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    root = experiment.run_dir / "samples"
+    entry = cloud_entry({"shift": [1.0, 0.0, 0.0]})
+    write_index(root, {"format_version": 3, "samples": [entry]})
+    loaded = load_samples(experiment.run_dir)[0]
+    assert loaded["convention"] is None
+    assert loaded["newer_version"] is True
+    assert loaded["name"] == "cloud"
+    with pytest.raises(ValueError, match="新しい"):
+        save_sample(experiment, "note", "見本の文")
+
+    # 文字や真偽値の版は誤り (版 1 として読み違えないため)
+    for version in ("2", True, 0):
+        (root / "index.json").write_text(
+            json.dumps({"format_version": version, "samples": [entry]}),
+            encoding="utf-8"
+        )
+        assert load_samples(experiment.run_dir) == []
+        with pytest.raises(ValueError, match="format_version"):
+            save_sample(experiment, "note", "見本の文")

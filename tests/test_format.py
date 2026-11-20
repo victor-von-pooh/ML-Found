@@ -12,7 +12,8 @@ from torch import nn
 from ml_found.config.loader import load_project_config
 from ml_found.config.source import SOURCE_FORMAT_VERSION
 from ml_found.experiment.results import (
-    load_evaluations, load_samples, save_evaluation, save_sample
+    SAMPLES_FORMAT_VERSION, load_evaluations, load_samples, save_evaluation,
+    save_sample
 )
 from ml_found.experiment.setup import start_experiment
 from ml_found.experiment.task import TASK_FORMAT_VERSION, load_task
@@ -349,6 +350,7 @@ def test_optional_files_match_format(
     index = json.loads(
         (run_dir / "samples" / "index.json").read_text(encoding="utf-8")
     )
-    assert list(index) == ["samples"]
+    assert list(index) == ["format_version", "samples"]
+    assert index["format_version"] == SAMPLES_FORMAT_VERSION == 2
     assert set(index["samples"][0]) == documented_keys("### samples")
     assert (run_dir / "samples" / "note" / "epoch_0005.txt").is_file()

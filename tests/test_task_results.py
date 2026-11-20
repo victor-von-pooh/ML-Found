@@ -107,16 +107,51 @@ def test_task_from_dataset(tmp_path: Path) -> None:
     assert relative == task
 
 
+def test_task_from_dataset_version_3(tmp_path: Path) -> None:
+    """
+    中身の手順を持つ dataset.yaml の版 3 からも同じ形で写し, 学習すると
+    task.yaml に版 3 を書くことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 版 2 と版の他は同じ中身
+    folder = write_dataset(tmp_path / "data", 3)
+    task = task_from_dataset(folder)
+    other = task_from_dataset(write_dataset(tmp_path / "other", 2))
+    assert task["dataset"]["format_version"] == 3
+    assert task["role"] == other["role"]
+    assert task["target"] == other["target"]
+
+    # config の task から書いた task.yaml
+    experiment = make_experiment(tmp_path, "task:\n  dataset: data\n")
+    written = load_task(experiment.run_dir)
+    assert written["target"]["kind"] == "point_cloud"
+    assert written["target"]["origin"]["type"] == "process"
+    assert written["dataset"] == {
+        "path": "data", "name": "clouds", "format_version": 3
+    }
+    fit_briefly(experiment)
+    assert load_task(experiment.run_dir) == written
+
+
 @pytest.mark.parametrize(
     ("version", "message"),
-    [(1, "版 1"), (3, "読めません"), (None, "読めません"),
-     ("2", "読めません")]
+    [(1, "版 1"), (4, "読めません"), (None, "読めません"),
+     ("2", "読めません"), (2.0, "読めません"), (True, "読めません")]
 )
 def test_task_from_dataset_versions(
     tmp_path: Path, version: object, message: str
 ) -> None:
     """
-    dataset.yaml の版が 2 でなければはっきり止まることを確かめる関数
+    dataset.yaml の版が整数の 2 か 3 でなければはっきり止まることを確かめる
+    関数
 
     Parameters
     ----------

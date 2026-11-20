@@ -18,8 +18,9 @@ TASK_FILE = "task.yaml"
 # task.yaml の形式の版 (項目の意味を変えるか消す場合に上げる. docs/FORMAT.md)
 TASK_FORMAT_VERSION = 1
 
-# 読める ML-EDA の dataset.yaml の版 (正解の出どころを持つ版)
-DATASET_FORMAT_VERSION = 2
+# 読める ML-EDA の dataset.yaml の版 (正解の出どころを持つ版. 版 3 は
+# 版 2 に項目の中身の手順を足したもので, 受け持ちと正解は同じ形)
+DATASET_FORMAT_VERSIONS = (2, 3)
 
 # 受け持ち, 出力の形, 作り方の値 (ML-Quest の問題の設定の値を写したもの.
 # action は強化学習の方策の出力の形として足した値)
@@ -224,7 +225,7 @@ def read_dataset_yaml(path: Path) -> dict:
 
 def check_dataset_version(info: dict, file: Path) -> None:
     """
-    dataset.yaml の版が読める版 (2) であることを確かめる関数
+    dataset.yaml の版が読める版 (2 か 3) であることを確かめる関数
 
     Parameters
     ----------
@@ -237,12 +238,13 @@ def check_dataset_version(info: dict, file: Path) -> None:
     ----------
     None
     """
-    # 版 1 は列の正解のデータセットで, 正解の出どころが無いので停止
-    # 知らない版も読み違えないように停止
+    # 整数の版だけ (task.yaml の dataset.format_version に写すため). 版 1
+    # は列の正解のデータセットで, 正解の出どころが無いので停止. 知らない版
+    # も読み違えないように停止
     version = info.get("format_version")
-    if version == DATASET_FORMAT_VERSION:
+    if type(version) is int and version in DATASET_FORMAT_VERSIONS:
         return
-    if version == 1:
+    if type(version) is int and version == 1:
         raise ValueError(
             f"{file} は版 1 (列の正解) の dataset.yaml なので, 受け持ちと"
             "正解の出どころを持ちません. task の role と target を直接"
@@ -250,8 +252,9 @@ def check_dataset_version(info: dict, file: Path) -> None:
         )
     raise ValueError(
         f"{file} の版 ({version!r}) は読めません. 読めるのは ML-EDA の"
-        f"dataset.yaml の版 {DATASET_FORMAT_VERSION} だけです (新しい版なら"
-        " ML-Found を更新してください)"
+        "dataset.yaml の版 "
+        f"{' と '.join(str(v) for v in DATASET_FORMAT_VERSIONS)} だけです"
+        " (新しい版なら ML-Found を更新してください)"
     )
 
 
@@ -259,7 +262,7 @@ def task_from_dataset(
     path: Union[str, os.PathLike], project_dir: Optional[str] = None
 ) -> dict:
     """
-    ML-EDA の dataset.yaml (版 2) から task.yaml の中身を埋める関数
+    ML-EDA の dataset.yaml (版 2 か 3) から task.yaml の中身を埋める関数
 
     Parameters
     ----------
@@ -301,7 +304,7 @@ def task_from_dataset(
         "dataset": {
             "path": file.parent.as_posix(),
             "name": info.get("name"),
-            "format_version": DATASET_FORMAT_VERSION
+            "format_version": info["format_version"]
         }
     }
 

@@ -159,7 +159,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 
 ### task.yaml
 
-何の実験かを書く. 指標が何との一致かを, 実験のディレクトリだけから読めるようにするため (正解が今ある処理の出力なら, 測れるのはその処理との一致で, モデルはその処理を超えられない). 値の名前は, 問題の設定 (ML-Quest) とデータの書き出し (ML-EDA の `dataset.yaml` の版 2) のものを写す. 全ての項目を書き, 分からない値は null.
+何の実験かを書く. 指標が何との一致かを, 実験のディレクトリだけから読めるようにするため (正解が今ある処理の出力なら, 測れるのはその処理との一致で, モデルはその処理を超えられない). 値の名前は, 問題の設定 (ML-Quest) とデータの書き出し (ML-EDA の `dataset.yaml` の版 2 と 3) のものを写す. 全ての項目を書き, 分からない値は null.
 
 | 項目 | 型 | 中身 |
 | --- | --- | --- |
@@ -170,9 +170,9 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `target` | 辞書 | 正解. `kind` (正解の種類. `mask`, `point_cloud`, `column` など. 方策は `reward` (環境の報酬) を推奨. 文字か null), `origin` (正解の出どころ. 下) |
 | `method` | 文字か null | 作り方. `rule` (規則), `pretrained` (既製のモデルをそのまま), `head` (既製の特徴の上に頭だけ学習), `partial` (一部を微調整), `finetune` (全体を微調整), `scratch` (一から学習) |
 | `base` | 辞書 | 元にしたもの. `experiment` (元にした実験のディレクトリ), `weights` (元にした重みの名前か場所. Hugging Face のモデルの名前など, 書いた文字のまま). どちらも文字か null. `scratch` では両方 null |
-| `dataset` | 辞書 | 学習に使ったデータセット. `path` (ML-EDA が書き出したディレクトリ), `name`, `format_version` (その `dataset.yaml` の版). どれも null がありうる |
+| `dataset` | 辞書 | 学習に使ったデータセット. `path` (ML-EDA が書き出したディレクトリ), `name`, `format_version` (その `dataset.yaml` の版. 2 か 3). どれも null がありうる |
 
-`target.origin` の欄 (ML-EDA の `dataset.yaml` の版 2 の `target.origin` と同じ).
+`target.origin` の欄 (ML-EDA の `dataset.yaml` の版 2 と 3 の `target.origin` と同じ).
 
 | 欄 | 型 | 中身 |
 | --- | --- | --- |

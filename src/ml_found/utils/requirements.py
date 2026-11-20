@@ -140,17 +140,24 @@ REQUIREMENTS: dict[str, dict[str, Any]] = {
     },
     "eda": {
         "description": "データの分析 (ML-EDA. データセットの読み込みと前処理)",
-        "checks": [{"kind": "module", "name": "ml_eda"}],
+        # 書き出したデータセットは parquet なので, 読む pyarrow も確かめる
+        "checks": [
+            {"kind": "module", "name": "ml_eda"},
+            {"kind": "module", "name": "pyarrow"}
+        ],
         "match": "all",
         "install": {
             "kind": "pip",
             "extra": None,
             "packages": [
-                f"ml-eda @ git+{GITHUB}/ML-EDA.git"
+                f"ml-eda[parquet] @ git+{GITHUB}/ML-EDA.git"
             ],
             "url": f"{GITHUB}/ML-EDA"
         },
-        "note": None
+        "note": (
+            "ML-EDA (ML-Fathom) が書き出すデータセットは parquet なので, "
+            "読むための pyarrow (追加の依存 parquet) も入れる"
+        )
     },
     "modelcontrol": {
         "description": "モデルの組み立て (ML-ModelControl. モデルの定義から作る)",

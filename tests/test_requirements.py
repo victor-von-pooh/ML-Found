@@ -411,18 +411,18 @@ def test_missing_requirement_error_pickles() -> None:
 
 
 @pytest.mark.parametrize(
-    "feature, module, package",
+    "feature, modules, package",
     [
-        ("eda", "ml_eda", "ml-eda @ git+https://github.com/"
-         "victor-von-pooh/ML-EDA.git"),
-        ("modelcontrol", "ml_modelcontrol", "ml-modelcontrol @ git+https://"
-         "github.com/victor-von-pooh/ML-ModelControl.git"),
-        ("inference", "ml_inference", "ml-inference @ git+https://"
+        ("eda", ["ml_eda", "pyarrow"], "ml-eda[parquet] @ git+https://"
+         "github.com/victor-von-pooh/ML-EDA.git"),
+        ("modelcontrol", ["ml_modelcontrol"], "ml-modelcontrol @ git+"
+         "https://github.com/victor-von-pooh/ML-ModelControl.git"),
+        ("inference", ["ml_inference"], "ml-inference @ git+https://"
          "github.com/victor-von-pooh/ML-Inference.git")
     ]
 )
 def test_ml_library_features(
-    monkeypatch: pytest.MonkeyPatch, feature: str, module: str,
+    monkeypatch: pytest.MonkeyPatch, feature: str, modules: list[str],
     package: str
 ) -> None:
     """
@@ -435,8 +435,8 @@ def test_ml_library_features(
         モジュールを隠すのに使う
     feature: str
         機能の名前
-    module: str
-        確かめる import の名前
+    modules: list[str]
+        確かめる import の名前 (ML-EDA は parquet を読む pyarrow も)
     package: str
         pip に渡す指定
 
@@ -449,6 +449,7 @@ def test_ml_library_features(
     # import の名前の確かめ方と, git の URL の pip の入れ方
     assert entry["checks"] == [
         {"kind": "module", "name": module, "ok": None, "error": None}
+        for module in modules
     ]
     assert entry["install"]["kind"] == "pip"
     assert entry["install"]["packages"] == [package]
@@ -457,10 +458,10 @@ def test_ml_library_features(
     assert entry["install"]["extra_command"] is None
 
     # 無ければ pip のコマンドを添えて止まる
-    hide_modules(monkeypatch, {module})
+    hide_modules(monkeypatch, set(modules))
     with pytest.raises(MissingRequirementError) as error:
         require(feature)
-    assert error.value.missing == [module]
+    assert error.value.missing == modules
     assert f'pip install "{package}"' in str(error.value)
 
 
@@ -482,7 +483,7 @@ def test_environment_packages() -> None:
     # ML-Found が先頭, 同じ指定は 1 回, pip で入らない cuda は含めない
     assert packages == [
         "ml-found @ git+https://github.com/victor-von-pooh/ML-Found.git",
-        "ml-eda @ git+https://github.com/victor-von-pooh/ML-EDA.git",
+        "ml-eda[parquet] @ git+https://github.com/victor-von-pooh/ML-EDA.git",
         "gymnasium>=1.0", "mujoco"
     ]
 

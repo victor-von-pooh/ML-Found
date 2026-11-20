@@ -71,7 +71,7 @@ ML-Found/
 | `mujoco` | `gymnasium` と `mujoco` (モジュールが見つかるか) | `pip install -e "./ML-Found[mujoco]"`. 描画には OpenGL が要る ([公式の手順](https://mujoco.readthedocs.io/en/stable/python.html)) |
 | `ros2` | `rclpy` か `ros2` のコマンドのどちらか | pip では入らない. [公式の手順](https://docs.ros.org/) で入れ, setup のスクリプトを source してから Python を起動する |
 | `cuda` | `torch.cuda.is_available()` | NVIDIA のドライバと, [PyTorch の手順](https://pytorch.org/get-started/locally/) で CUDA 付きの PyTorch |
-| `eda` | `ml_eda` (ML-EDA. データセットの読み込みと前処理) | `pip install "ml-eda @ git+https://github.com/victor-von-pooh/ML-EDA.git"` |
+| `eda` | `ml_eda` と `pyarrow` (ML-EDA. データセットの読み込みと前処理. 書き出したデータセットは parquet) | `pip install "ml-eda[parquet] @ git+https://github.com/victor-von-pooh/ML-EDA.git"` (追加の依存 `parquet` で pyarrow も入る) |
 | `modelcontrol` | `ml_modelcontrol` (ML-ModelControl. モデルの定義から作る) | `pip install "ml-modelcontrol @ git+https://github.com/victor-von-pooh/ML-ModelControl.git"` |
 | `inference` | `ml_inference` (ML-Inference. 学習したモデルで予測し, 判断に使う) | `pip install "ml-inference @ git+https://github.com/victor-von-pooh/ML-Inference.git"` (ML-EDA と ML-ModelControl も一緒に入る) |
 

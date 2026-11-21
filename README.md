@@ -11,6 +11,7 @@
 - **ミニバッチ学習とフルバッチ学習の両対応**: DataLoader でも, グラフ全体のような 1 つのデータでも, 同じ書き方で学習できる
 - **torch の Optimizer と Scheduler をそのまま使える**: クラス名と引数を config に書くだけで, `torch.optim` にあるものを使える. closure が必要な LBFGS も自動で見分けて使える
 - **ベストモデルと再開**: 監視する指標が最も良いモデルを保存して最後に戻す. Early Stopping, 勾配クリッピング, チェックポイントからの再開にも対応する
+- **重みの指数移動平均 (EMA)**: `trainer.ema.decay` に減衰率を書くだけで, EMA の重みで検証し, ベストモデルと `final_model.pt` も EMA の重みにする. EMA の状態はチェックポイントに入り, 再開しても通しの学習と一致する
 - **Lightning などに依存しない**: 素の PyTorch だけで書いている
 - **強化学習と方策の書き出し (任意)**: Gymnasium の形の環境とのやり取りを loader にして, 同じ `Trainer` で方策を学習し, 守り (行動の範囲, 止める条件, 外れたときの動き) と一緒に書き出せる
 - **追加の依存の案内**: 任意の機能 (強化学習, MuJoCo, ROS 2, CUDA, 他の段階のライブラリ ML-EDA, ML-ModelControl, ML-Inference) ごとに, 要るもの, 入っているかの確かめ方, 入れ方の一覧を持ち, 足りなければ次の一手を案内して止まる
@@ -47,6 +48,7 @@ source .venv/bin/activate
 pip install -e ".[dev,examples,rl]"
 pytest
 python examples/minibatch/train.py   # fullbatch, cartpole も同じ
+python examples/minibatch/train.py --experiment configs/experiment/examples/ema.yaml   # EMA の重みで検証する例
 ```
 
 任意の機能 (強化学習, MuJoCo, ROS 2, CUDA, 他の段階のライブラリ) に要るもの (追加の依存) と入れ方は [docs/DESIGN.md](docs/DESIGN.md) の「追加の依存」.

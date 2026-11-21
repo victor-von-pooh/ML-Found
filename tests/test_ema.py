@@ -690,3 +690,43 @@ def test_ema_resume_raw_eval_best(tmp_path: Path) -> None:
     assert read_status(resumed.run_dir)["final_weights"] == "best"
     log = (resumed.run_dir / "train.log").read_text(encoding="utf-8")
     assert "重みが last.pt に無く" not in log
+
+
+def test_ema_resume_to_weights_only(tmp_path: Path) -> None:
+    """
+    再開で best_weights_only を true に変えると, 写した重みだけの best.pt の
+    model が EMA のベストモデルの重みになることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 重み以外も含む best.pt で 3 エポック学習
+    text = SGD + "trainer:\n  epochs: 3\n" + EMA
+    first = make_experiment(tmp_path / "first", text)
+    Trainer(nn.Linear(1, 1), first, regression_step).fit(
+        make_loader(), make_loader()
+    )
+    best = load_checkpoint(
+        str(first.run_dir / "best.pt"), torch.device("cpu")
+    )
+    expected = best["checkpoint"]["best_model"]
+    assert not same_weights(best["model"], expected)
+
+    # 重みだけにして学習せずに再開すると, 写した best.pt は EMA の重み
+    resumed = make_experiment(
+        tmp_path / "resumed",
+        text + f"  resume_from: {first.run_dir / 'last.pt'}\n"
+        "  checkpoint:\n    best_weights_only: true\n"
+    )
+    Trainer(nn.Linear(1, 1), resumed, regression_step).fit(
+        make_loader(), make_loader()
+    )
+    copied = read_weights(resumed.run_dir / "best.pt")
+    assert copied["weights_only"] is True
+    assert same_weights(copied["model"], expected)

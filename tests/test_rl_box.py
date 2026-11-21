@@ -10,6 +10,7 @@ from ml_found.rl import (
     EvaluationLoader, ExperienceBuffer, Exploration, ReinforceStep,
     RolloutLoader, evaluate_policy, export_policy, load_policy, make_guards
 )
+from ml_found.rl.rollout import LOG_STD_MAX, LOG_STD_MIN, gaussian_std
 from ml_found.training.trainer import Trainer
 from test_rl import Space
 from test_trainer import make_experiment
@@ -395,6 +396,21 @@ def test_box_multi_dim_and_log_std() -> None:
     # 範囲の外の log_std にも勾配が流れ, 更新で戻れる
     outputs["loss"].backward()
     assert torch.all(model.log_std.grad != 0)
+
+    # 大きな値と無限大でも, 標準偏差は範囲の端の値で, 勾配は有限
+    for value, expected in (
+        (1e8, LOG_STD_MAX), (-1e8, LOG_STD_MIN), (float("inf"), LOG_STD_MAX),
+        (float("-inf"), LOG_STD_MIN)
+    ):
+        model.log_std = nn.Parameter(torch.full((4,), value))
+        std = gaussian_std(model, 4)
+        assert torch.allclose(std, torch.full((4,), expected).exp())
+        std.sum().backward()
+        assert torch.all(torch.isfinite(model.log_std.grad))
+
+        # 有限の値なら勾配も通る (無限大は更新で戻せないので 0)
+        if abs(value) < float("inf"):
+            assert torch.all(model.log_std.grad != 0)
     with torch.no_grad():
         model.log_std.fill_(-1e6)
     batch = next(iter(RolloutLoader(MultiBoxEnv(), model, episodes=1)))

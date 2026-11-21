@@ -19,6 +19,9 @@ from ml_found.training.callbacks import (
     Checkpoint, EarlyStopping, copy_state_dict, load_checkpoint,
     save_checkpoint, without_best_model
 )
+from ml_found.training.ema import (
+    build_ema_model, ema_state_dict, reset_ema_model
+)
 from ml_found.training.history import (
     History, LrSteps, MetricTracker, to_float
 )
@@ -424,6 +427,15 @@ class Trainer:
         # モデルをデバイスに移して保存
         self.model = model.to(self.device)
 
+        # config で EMA を使う場合は, 重みの指数移動平均を持つモデルを作成
+        # (学習するモデルの写しを同じデバイスに用意)
+        self.ema_model: Optional[optim.swa_utils.AveragedModel] = None
+        ema_cfg = self.trainer_cfg.ema
+        if ema_cfg.decay is not None:
+            self.ema_model = build_ema_model(
+                self.model, ema_cfg.decay, ema_cfg.use_buffers
+            )
+
         # 1 ステップの計算を行う関数を保存
         self.step_fn = step_fn
 
@@ -789,8 +801,9 @@ class Trainer:
         """
         検証, ベストモデルの判定, final_model.pt に使うモデルを返す関数
 
-        EMA の重みで検証する場合などに継承して上書きする. 返すモデルは
-        self.model と同じ名前の重み (state_dict のキー) を持つ必要がある.
+        自分で持つ平均の重みで検証する場合などに継承して上書きする. 返す
+        モデルは self.model と同じ名前の重み (state_dict のキー) を持つ必要が
+        ある.
         step を上書きする場合は, 学習以外 (phase が valid か train_eval) で
         このモデルを使う
 
@@ -801,10 +814,14 @@ class Trainer:
         Returns
         ----------
         model: nn.Module
-            評価に使うモデル, 既定は学習するモデル (self.model) そのもの
+            評価に使うモデル, 既定は学習するモデル (self.model) そのもの.
+            trainer.ema.decay を使う場合は EMA の重みを持つモデル
         """
-        # 既定は学習するモデルをそのまま使用
-        model = self.model
+        # 既定は EMA のモデルか, 学習するモデルをそのまま使用
+        if self.ema_model is not None:
+            model = self.ema_model.module
+        else:
+            model = self.model
 
         return model
 
@@ -1268,6 +1285,10 @@ class Trainer:
             self.last_grad_norm = self.clip_gradients()
             self.optimizer.step()
 
+        # EMA を使う場合は, 更新した重みで指数移動平均を更新
+        if self.ema_model is not None:
+            self.ema_model.update_parameters(self.model)
+
         # パラメータの更新回数のカウント
         self.global_step += 1
 
@@ -1671,10 +1692,81 @@ class Trainer:
             ),
             "checkpoint": self.checkpoint.state_dict(),
             "rng": get_rng_state(),
+            "ema": self.ema_state(),
             "extra": self.extra_state_dict()
         }
 
         return state
+
+    def ema_state(self) -> Optional[dict]:
+        """
+        チェックポイントに入れる EMA の状態を取得する関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        state: Optional[dict]
+            減衰率, use_buffers, 重みと更新回数. EMA を使わない場合は None
+        """
+        # 今の設定と EMA の重みをまとめて取得
+        ema_cfg = self.trainer_cfg.ema
+        state = ema_state_dict(
+            self.ema_model, ema_cfg.decay, ema_cfg.use_buffers
+        )
+
+        return state
+
+    def resume_ema(self, state: Optional[dict]) -> None:
+        """
+        再開元のチェックポイントから EMA の状態を戻す関数
+
+        再開元と設定が違う場合は警告し, 再開元に状態が無ければ再開した重み
+        から EMA を始める
+
+        Parameters
+        ----------
+        state: Optional[dict]
+            再開元の ema, EMA を使わなかった実験と古いチェックポイントでは
+            None
+
+        Returns
+        ----------
+        None
+        """
+        # 再開元と今回の EMA の使い方に応じて復元し, 違いがあれば通知の文を用意
+        message = None
+        ema_cfg = self.trainer_cfg.ema
+        if self.ema_model is None and state is not None:
+            message = (
+                "再開元は EMA を使っていますが, 今回は trainer.ema.decay が "
+                "null なので EMA の状態を使いません. 再開元のベストモデルは "
+                "EMA の重みと値のままです"
+            )
+        elif self.ema_model is not None and state is None:
+            reset_ema_model(self.ema_model, self.model)
+            message = (
+                "再開元に EMA の状態が無いので, 再開した重みから EMA を始めます."
+                " 再開元のベストモデルは学習しているモデルの重みと値のままです"
+            )
+        elif self.ema_model is not None:
+            self.ema_model.load_state_dict(state["state"])
+            old = (state.get("decay"), state.get("use_buffers"))
+            new = (ema_cfg.decay, ema_cfg.use_buffers)
+            if old != new:
+                message = (
+                    f"再開元と EMA の設定が違います: 再開元は decay={old[0]}, "
+                    f"use_buffers={old[1]}, 今回は decay={new[0]}, "
+                    f"use_buffers={new[1]}. 戻した EMA の重みから今回の設定で"
+                    "続けます"
+                )
+
+        # 違いがあれば train.log にも残して警告
+        if message is not None:
+            self.logger.warning(message)
+            warnings.warn(message, stacklevel=3)
 
     def extra_state_dict(self) -> dict:
         """
@@ -1815,7 +1907,8 @@ class Trainer:
         elif self.checkpoint.best_model_state is None:
             self.restore_best_weights(state, checkpoint_path)
 
-        # 継承したクラスが加えた状態の復元
+        # EMA と, 継承したクラスが加えた状態の復元
+        self.resume_ema(state.get("ema"))
         self.load_extra_state_dict(state.get("extra", {}))
 
         # 続きの乱数を使えるように乱数の状態の復元
@@ -2333,7 +2426,16 @@ class Trainer:
             )
 
         # 評価に使うモデルが別の場合は記録
-        if self.eval_model() is not self.model:
+        ema_cfg = self.trainer_cfg.ema
+        if (
+            self.ema_model is not None
+            and self.eval_model() is self.ema_model.module
+        ):
+            self.logger.info(
+                f"評価に使うモデル: EMA (decay={ema_cfg.decay}, "
+                f"use_buffers={ema_cfg.use_buffers})"
+            )
+        elif self.eval_model() is not self.model:
             self.logger.info(
                 "評価に使うモデル: eval_model が返すモデル "
                 f"({type(self.eval_model()).__name__})"
@@ -2878,6 +2980,7 @@ class Trainer:
             ),
             "global_step": self.global_step,
             "rng": get_rng_state(),
+            "ema": self.ema_state(),
             "extra": self.extra_state_dict()
         })
 
@@ -2890,7 +2993,7 @@ class Trainer:
         Parameters
         ----------
         state: dict
-            戻す状態 (model, optimizer, scheduler, global_step, rng, extra)
+            戻す状態 (model, optimizer, scheduler, global_step, rng, ema, extra)
 
         Returns
         ----------
@@ -2903,9 +3006,11 @@ class Trainer:
             self.scheduler.load_state_dict(state["scheduler"])
         self.global_step = int(state.get("global_step", self.global_step))
 
-        # 乱数と, 継承したクラスが加えた状態 (EMA など) の復元
+        # 乱数, EMA, 継承したクラスが加えた状態の復元
         for message in set_rng_state(state["rng"]):
             self.logger.warning(message)
+        if self.ema_model is not None and state.get("ema") is not None:
+            self.ema_model.load_state_dict(state["ema"]["state"])
         self.load_extra_state_dict(state.get("extra", {}))
 
     def discard_epoch(
@@ -2956,7 +3061,11 @@ class Trainer:
                 message += f". 状態はエポック {epoch - 1} のものに戻しました"
         if source is not None:
             # 評価に使うモデルが別の場合は, 戻したかを重みの変化で判定
-            separate = self.eval_model() is not self.model
+            # (config の EMA は状態と一緒に戻すので判定不要)
+            separate = self.eval_model() is not self.model and not (
+                self.ema_model is not None
+                and self.eval_model() is self.ema_model.module
+            )
             before = (
                 clone_to_cpu(self.eval_model().state_dict()) if separate
                 else None

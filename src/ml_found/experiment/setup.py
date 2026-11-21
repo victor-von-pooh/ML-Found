@@ -117,6 +117,17 @@ def check_trainer_config(cfg: DictConfig) -> None:
             " (再開元の Scheduler の状態を使います)"
         )
 
+    # EMA の減衰率は null か, 0 より大きく 1 より小さい数に制限
+    decay = trainer_cfg.ema.decay
+    if decay is not None and (
+        isinstance(decay, bool) or not isinstance(decay, (int, float))
+        or not 0.0 < decay < 1.0
+    ):
+        raise ValueError(
+            "trainer.ema.decay は null か, 0 より大きく 1 より小さい数に"
+            f"してください: {decay}"
+        )
+
     # last.pt を保存する間隔は 1 以上に制限
     if trainer_cfg.checkpoint.every_n_epochs < 1:
         raise ValueError(

@@ -8,10 +8,12 @@ from torch import nn
 from ml_found.training.callbacks import load_checkpoint
 from ml_found.training.trainer import Trainer
 
+from test_multi_optimizers import TwoParts, make_named_experiment, named_step
 from test_trainer import (
     EMATrainer, make_experiment, make_loader, regression_step, same_weights,
     stop_at
 )
+from test_trainer_options import ManualTrainer
 
 # 学習の設定 (SGD と, 減衰率 0.5 の EMA)
 SGD = "optimizer:\n  name: SGD\n  params:\n    lr: 0.1\n"
@@ -76,6 +78,29 @@ class RawEvalTrainer(Trainer):
         model = self.model
 
         return model
+
+
+class BufferCheckTrainer(Trainer):
+    def update_parameters(self, loss: torch.Tensor) -> None:
+        """
+        更新のたびに, EMA のバッファが学習するモデルの値と同じかを確かめる
+        関数
+
+        Parameters
+        ----------
+        loss: torch.Tensor
+            1 バッチ分の損失
+
+        Returns
+        ----------
+        None
+        """
+        # 元の手順 (EMA の更新を含む) の後にバッファを比較
+        super(BufferCheckTrainer, self).update_parameters(loss)
+        for ema_buffer, buffer in zip(
+            self.ema_model.module.buffers(), self.model.buffers()
+        ):
+            assert torch.equal(ema_buffer, buffer)
 
 
 def test_ema_matches_subclass(tmp_path: Path) -> None:
@@ -236,7 +261,9 @@ def test_ema_resume_mismatch(tmp_path: Path) -> None:
     None
     """
     # EMA を使わない実験と使う実験を 1 エポックずつ
-    plain = make_experiment(tmp_path / "plain", SGD + "trainer:\n  epochs: 1\n")
+    plain = make_experiment(
+        tmp_path / "plain", SGD + "trainer:\n  epochs: 1\n"
+    )
     plain_trainer = Trainer(nn.Linear(1, 1), plain, regression_step)
     plain_trainer.fit(make_loader(), make_loader())
     with_ema = make_experiment(
@@ -457,3 +484,121 @@ def test_ema_decay_check(tmp_path: Path, decay: str) -> None:
             tmp_path, f"trainer:\n  ema:\n    decay: {decay}\n"
         )
     assert not (tmp_path / "outputs").exists()
+
+
+@pytest.mark.parametrize("with_ema", [False, True])
+def test_ema_resume_best_without_last(tmp_path: Path, with_ema: bool) -> None:
+    """
+    last_with_best: false で EMA の有無を変えて再開しても, 再開元の
+    ベストモデルの重みが best.pt から戻ることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    with_ema: bool
+        再開元で EMA を使うかどうか (再開では逆にする)
+
+    Returns
+    ----------
+    None
+    """
+    # last.pt にベストモデルの重みを入れずに 3 エポック学習
+    text = (
+        SGD + "trainer:\n  epochs: 3\n  checkpoint:\n"
+        "    last_with_best: false\n"
+    )
+    first = make_experiment(
+        tmp_path / "first", text + (EMA if with_ema else "")
+    )
+    Trainer(nn.Linear(1, 1), first, regression_step).fit(
+        make_loader(), make_loader()
+    )
+    best = load_checkpoint(
+        str(first.run_dir / "best.pt"), torch.device("cpu")
+    )
+    expected = (
+        best["checkpoint"]["best_model"] if with_ema else best["model"]
+    )
+
+    # EMA の有無を逆にして, 学習せずに再開すると再開元のベストモデルの重み
+    resumed = make_experiment(
+        tmp_path / "resumed",
+        text + f"  resume_from: {first.run_dir / 'last.pt'}\n"
+        + ("" if with_ema else EMA)
+    )
+    trainer = Trainer(nn.Linear(1, 1), resumed, regression_step)
+    with pytest.warns(UserWarning, match="EMA"):
+        trainer.fit(make_loader(), make_loader())
+    final = read_weights(resumed.run_dir / "final_model.pt")
+    assert same_weights(final, expected)
+    assert read_status(resumed.run_dir)["final_weights"] == "best"
+    log = (resumed.run_dir / "train.log").read_text(encoding="utf-8")
+    assert "重みが last.pt に無く" not in log
+
+
+def test_ema_update_counts(tmp_path: Path) -> None:
+    """
+    名前付きの Optimizer, 自分で更新する設定, closure を使う Optimizer でも,
+    更新のたびに 1 回 EMA を更新することを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 名前付きの Optimizer (1 回の更新で 2 つの Optimizer を進める)
+    experiment = make_named_experiment(
+        tmp_path / "named", "trainer:\n  epochs: 2\n" + EMA
+    )
+    trainer = Trainer(TwoParts(), experiment, named_step)
+    trainer.fit(make_loader())
+    assert trainer.global_step == 8
+    assert int(trainer.ema_model.n_averaged) == 8
+
+    # 自分で更新する設定
+    experiment = make_experiment(
+        tmp_path / "manual",
+        "trainer:\n  epochs: 2\n  manual_optimization: true\n" + EMA
+    )
+    trainer = ManualTrainer(nn.Linear(1, 1), experiment)
+    trainer.fit(make_loader())
+    assert int(trainer.ema_model.n_averaged) == 8
+
+    # closure を使う Optimizer (closure は何度も呼ばれるが更新は 1 回)
+    experiment = make_experiment(
+        tmp_path / "lbfgs",
+        "optimizer:\n  name: LBFGS\n  params:\n    lr: 0.1\n"
+        "trainer:\n  epochs: 2\n" + EMA
+    )
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+    trainer.fit(make_loader())
+    assert int(trainer.ema_model.n_averaged) == 8
+
+
+def test_ema_copies_buffers(tmp_path: Path) -> None:
+    """
+    use_buffers: false では, 更新のたびにバッファを学習するモデルから写す
+    ことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # BatchNorm を持つモデルで, 更新のたびに比べながら学習
+    experiment = make_experiment(
+        tmp_path, SGD + "trainer:\n  epochs: 2\n" + EMA
+    )
+    model = nn.Sequential(nn.Linear(1, 4), nn.BatchNorm1d(4), nn.Linear(4, 1))
+    trainer = BufferCheckTrainer(model, experiment, regression_step)
+    trainer.fit(make_loader(shuffle=True))
+    assert int(trainer.ema_model.n_averaged) == 8

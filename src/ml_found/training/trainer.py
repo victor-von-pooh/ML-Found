@@ -75,6 +75,29 @@ def loader_generators(loader: Iterable) -> list[torch.Generator]:
     return generators
 
 
+def has_loader_state(loader: Any) -> bool:
+    """
+    チェックポイントに状態を保存して戻せる loader かを判定する関数
+
+    Parameters
+    ----------
+    loader: Any
+        学習か検証に使う loader, 検証しない場合は None
+
+    Returns
+    ----------
+    stateful: bool
+        checkpoint_state と load_checkpoint_state を持つ場合は True
+        (RolloutLoader など)
+    """
+    # 2 つのメソッドを両方持つものだけを対象
+    stateful = callable(getattr(loader, "checkpoint_state", None)) and (
+        callable(getattr(loader, "load_checkpoint_state", None))
+    )
+
+    return stateful
+
+
 def clone_to_cpu(value: Any) -> Any:
     """
     テンソルを含む状態を, cpu の写しにする関数
@@ -543,6 +566,9 @@ class Trainer:
         self.start_state: Optional[dict] = None
         self.epoch_start_step = 0
         self.partial_weights = False
+
+        # チェックポイントに状態を保存する, 今の fit の loader の入れ物を用意
+        self.loaders: dict[str, Any] = {}
 
     def build_single_parts(
         self, optimizer: Optional[optim.Optimizer],
@@ -1693,11 +1719,87 @@ class Trainer:
             "checkpoint": self.checkpoint.state_dict(),
             "separate_best_model": self.checkpoint.separate_best_model,
             "rng": get_rng_state(),
+            "loaders": self.loader_states(),
             "ema": self.ema_state(),
             "extra": self.extra_state_dict()
         }
 
         return state
+
+    def loader_states(self) -> dict:
+        """
+        状態を保存できる loader の状態を集める関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        states: dict
+            loader の役割 (train か valid) ごとの checkpoint_state の値
+        """
+        # 状態を持つ loader だけを対象
+        states = {
+            name: loader.checkpoint_state()
+            for name, loader in self.loaders.items()
+            if has_loader_state(loader)
+        }
+
+        return states
+
+    def load_loader_states(
+        self, states: Optional[dict], resuming: bool
+    ) -> None:
+        """
+        保存した状態を loader に戻す関数
+
+        Parameters
+        ----------
+        states: Optional[dict]
+            loader_states で集めた状態, 古いチェックポイントでは None
+        resuming: bool
+            resume_from での再開の場合は True (戻せない状態を警告として
+            表示. どちらも train.log には残す)
+
+        Returns
+        ----------
+        None
+        """
+        # 状態を持つ loader に, 同じ役割の状態があれば復元
+        # (loader が返した, 戻せなかった状態の警告の文も集める)
+        states = states or {}
+        messages = []
+        for name, loader in self.loaders.items():
+            if not has_loader_state(loader):
+                continue
+            if name in states:
+                returned = loader.load_checkpoint_state(states[name])
+                messages += [
+                    f"{name} の loader: {message}"
+                    for message in returned or []
+                ]
+            else:
+                messages.append(
+                    f"再開元に {name} の loader の状態 (環境の状態と乱数など) "
+                    "が無いので戻せません. 再開した学習は通しで学習した場合と"
+                    "一致しません"
+                )
+
+        # 保存した状態を受け取る loader が無い場合も通知
+        for name in states:
+            if not has_loader_state(self.loaders.get(name)):
+                messages.append(
+                    f"再開元の {name} の loader の状態 (環境の状態と乱数など) "
+                    "を受け取る loader が無いので戻せません"
+                )
+
+        # train.log に残し, 再開では警告も表示 (途中で止めたエポックの
+        # 捨てでは同じ fit の状態なので, 表示しない)
+        for message in messages:
+            self.logger.warning(message)
+            if resuming:
+                warnings.warn(message, stacklevel=2)
 
     def ema_state(self) -> Optional[dict]:
         """
@@ -1917,6 +2019,9 @@ class Trainer:
         for message in set_rng_state(state["rng"]):
             self.logger.warning(message)
             warnings.warn(message, stacklevel=2)
+
+        # 環境の状態と乱数など, loader の状態の復元
+        self.load_loader_states(state.get("loaders"), resuming=True)
 
         # 新しい保存先にも, 再開元の best.pt と読み込んだ状態を保存
         run_dir = self.experiment.run_dir
@@ -3008,8 +3113,8 @@ class Trainer:
         Returns
         ----------
         state: dict
-            モデル, Optimizer, Scheduler, 更新回数, 乱数, 継承したクラスが
-            加えた状態 (テンソルは cpu の写し)
+            モデル, Optimizer, Scheduler, 更新回数, 乱数, loader (環境の
+            状態と乱数), 継承したクラスが加えた状態 (テンソルは cpu の写し)
         """
         # チェックポイントと同じ名前で, 戻すのに必要なものだけを写す
         state = clone_to_cpu({
@@ -3021,6 +3126,7 @@ class Trainer:
             ),
             "global_step": self.global_step,
             "rng": get_rng_state(),
+            "loaders": self.loader_states(),
             "ema": self.ema_state(),
             "extra": self.extra_state_dict()
         })
@@ -3034,7 +3140,8 @@ class Trainer:
         Parameters
         ----------
         state: dict
-            戻す状態 (model, optimizer, scheduler, global_step, rng, ema, extra)
+            戻す状態 (model, optimizer, scheduler, global_step, rng, loaders,
+            ema, extra)
 
         Returns
         ----------
@@ -3047,9 +3154,10 @@ class Trainer:
             self.scheduler.load_state_dict(state["scheduler"])
         self.global_step = int(state.get("global_step", self.global_step))
 
-        # 乱数, EMA, 継承したクラスが加えた状態の復元
+        # 乱数, loader, EMA, 継承したクラスが加えた状態の復元
         for message in set_rng_state(state["rng"]):
             self.logger.warning(message)
+        self.load_loader_states(state.get("loaders"), resuming=False)
         if self.ema_model is not None and state.get("ema") is not None:
             self.ema_model.load_state_dict(state["ema"]["state"])
         self.load_extra_state_dict(state.get("extra", {}))
@@ -3395,6 +3503,9 @@ class Trainer:
 
         # 同じ Trainer で fit を繰り返す場合に備えて, 中断の印を初期化
         self.stopped_by_request = False
+
+        # チェックポイントに状態を保存する loader (環境の状態と乱数など)
+        self.loaders = {"train": train_loader, "valid": valid_loader}
 
         # 前の fit が学習を始めていれば, この fit は続き (最後に終えたエポックの
         # 次から, trainer.epochs の分だけ追加で学習)

@@ -24,6 +24,9 @@ class ScaledReward:
         self.observation_space = env.observation_space
         self.action_space = env.action_space
 
+        # 再開で環境の乱数 (np_random) を戻せるように, 中の環境を公開
+        self.unwrapped = env.unwrapped
+
     def reset(self, seed: Optional[int] = None) -> tuple[Any, dict]:
         """
         エピソードを始める関数

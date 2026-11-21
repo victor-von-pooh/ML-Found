@@ -38,7 +38,7 @@ PyTorch のモデルを config から自動で学習させる基盤のライブ�
 | config | 学習の設定. 既定の `configs/default/train.yaml` と, そこからの差分の `configs/experiment/train.yaml` を重ね, 「項目=値」で上書きする |
 | 実験 (experiment) | 1 回の学習. 出力先 `<output_dir>/<name>/<日付>/<時刻>/` (実験のディレクトリ) に config, 記録, チェックポイント, 状態を残す (下の「出力」) |
 | step | 1 バッチの計算 (順伝播, 損失, 指標) をする関数 `step(model, batch, phase)`. プロジェクトが書く (下の「学習スクリプトと step の決まり」) |
-| チェックポイント (checkpoint) | 再開に使う `last.pt` と, ベストモデルの `best.pt`. モデル, Optimizer, Scheduler, 記録, 乱数の状態を持つ |
+| チェックポイント (checkpoint) | 再開に使う `last.pt` と, ベストモデルの `best.pt`. モデル, Optimizer, Scheduler, 記録, 乱数, loader (強化学習の環境の乱数と状態) の状態を持つ |
 | ベストモデル (best) | 監視する指標 (`trainer.monitor`) が最も良いエポックの重み. 学習の後の `final_model.pt` は既定でこの重み |
 | 方策の一式 (policy) | 強化学習で学習した方策の重み, 組み立て直しの引数, 守りの書き出し (`policy/`. 下の「方策の書き出しと守り」) |
 | 追加の依存 (requirement) | 任意の機能に要るライブラリと, その確かめ方と入れ方の登録簿の 1 項目 (下の「追加の依存」) |
@@ -427,7 +427,7 @@ experiment = start_experiment(cfg, diff, str(project_dir))
 
 ## 16. 学習の再開
 
-`trainer.resume_from` に前回の `last.pt` を指定すると, モデル, Optimizer, Scheduler, 記録, Early Stopping, 乱数 (`register_rng` で登録したものを含む) の状態を戻して続きのエポックから学習する.
+`trainer.resume_from` に前回の `last.pt` を指定すると, モデル, Optimizer, Scheduler, 記録, Early Stopping, 乱数 (`register_rng` で登録したものを含む), loader (強化学習の環境の乱数, 環境の層の状態 (正規化の統計と `state_dict` の値), 探索の設定. 下) の状態を戻して続きのエポックから学習する.
 
 ```yaml
 # configs/experiment/train.yaml
@@ -444,6 +444,7 @@ trainer:
 - `persistent_workers=True` の DataLoader では, ワーカーの乱数の種を最初の 1 回だけ引くので, 再開した学習は通しで学習した場合と一致しない (警告が出る). 一致させたい場合は `num_workers: 0` にする
 - 存在しない `resume_from` は, 出力先を作る前にエラーになる
 - `trainer.ema.decay` の EMA の重みと更新回数も戻る. 再開元と EMA の設定が違う場合は「重みの指数移動平均 (EMA)」の「再開」
+- 学習と検証の loader が `checkpoint_state()` (チェックポイントに入れる状態を返す) と `load_checkpoint_state(state)` (戻す) の両方を持つ場合は, その状態を `last.pt` の `loaders` (`train` と `valid`) に入れ, 再開とエポックの途中で止めた場合に戻す. `RolloutLoader` と `EvaluationLoader` が持つ (「強化学習」の「再開」). 自分で書く loader も, この 2 つを持てば同じく戻る. `load_checkpoint_state` は, 戻せなかった状態や再開元の値で上書きした設定を伝える文のリストを返してよく, `Trainer` が警告して `train.log` に残す. 状態は `register_rng` の状態と同じ型だけで作る (チェックポイントを安全に読み込むため). `state_dict` の名前は使わない (DataLoader の仲間が持つ `state_dict` を意図せず保存しないため). 再開元に loader の状態が無い (この仕組みの前のチェックポイントなど) か, 状態を受け取る loader が無い場合は警告し, `train.log` にも残す
 
 同じ `Trainer` で `fit` を呼び直すと, 前の `fit` の続きとして, 最後に終えたエポックの次から `trainer.epochs` の分だけ学習する (3 エポックの後なら 4 から 6). 記録と `last.pt` は同じ実験のディレクトリに続けて書く.
 
@@ -654,8 +655,41 @@ class GaussianPolicy(nn.Module):
 - **行動の範囲**: 環境には, 選んだ行動を行動の空間の範囲で clip して渡す. 経験には clip する前の値を記録する (選んだ確率密度と合わせるため). 書き出した方策 (下の「方策の書き出しと守り」) は平均を行動とし (`head` は `deterministic`), 守りの `action_low` と `action_high` (空間の範囲との狭い方) で clip する. 学習の clip は空間の範囲だけなので, 守りで空間より狭くした範囲は学習の間は当たらない. 狭い範囲の中で学ばせる場合は, 環境の行動の空間をその範囲にする (Gymnasium の `RescaleAction` など)
 - 行動を選ぶときは, モデルを一時的に推論モードにする (1 件の観測の BatchNorm と, Dropout で確率がずれるのを避けるため)
 - `RolloutLoader` は学習だけに使う. `trainer.eval_train: true` では, 評価し直しで学習の環境の乱数が進んで結果が変わるので, エラーにする (評価は `EvaluationLoader`)
-- 再開 (`resume_from`) では, モデルと Optimizer は戻るが, 環境の状態と環境の乱数は戻らない
+- 再開 (`resume_from`) とエポックの途中で止めた場合の戻し方は, 下の「再開」
 - `eval_model` を上書きした場合は, `EvaluationLoader` に渡すモデルもそのモデルにする (loader は渡されたモデルで行動を選ぶ)
+
+### 再開
+
+`resume_from` で再開した学習は, 環境の乱数と状態も戻り, 通しで学習した場合と一致する. `RolloutLoader` と `EvaluationLoader` の状態は `last.pt` に入る (「学習の再開」).
+
+- **エピソードの途中では保存しない**: `RolloutLoader` はエピソードを途中で止めずにエポックを区切り, チェックポイントはエポックの終わりだけに書く. 保存するときの環境は必ずエピソードの間 (次は `reset`) なので, 環境の中の物理の状態 (CartPole の `state` など) は保存しない. エポックの途中で止めた場合は, 前のエポックの終わり (か学習を始めた時点) の状態に戻し, 次の `reset` から続ける
+- **環境の乱数**: Gymnasium の環境は `reset` で環境の乱数 (`np_random`) から初めの状態を決めるので, 乱数を戻せば続きのエピソードが通しと同じになる. `RolloutLoader` は `env.unwrapped.np_random` の状態 (`bit_generator.state`) を保存して戻す (NumPy の MT19937, PCG64, PCG64DXSM, Philox, SFC64). 最初の `reset` の前は保存しない. 自分で作った Wrapper は `unwrapped` で中の環境を返す (返さないと乱数が見つからず, `state_dict` も無ければ戻すときに警告が出る)
+- **loader の中の状態**: 最初の `reset` だけ種を渡した印と, 探索の設定 (`exploration`) を戻す. 印を戻さないと, 再開した loader が最初の `reset` で種を渡し直して同じエピソードを繰り返す. 探索の設定は, 登録した関数で差し替えた値も続くように再開元の値で続ける (今の設定と違う場合は警告). 行動を選ぶ乱数は torch の全体の乱数なので, `Trainer` が戻す
+- **エピソードを越えて続く状態**: `reset` で初めに戻らない状態は, 環境の層 (外側の Wrapper から `.env` で辿った各層と `unwrapped`) ごとに保存して戻す. 層の深さ (外側から 0), クラスの名前, 種類で再開元の層と対応させ, 合わない層 (違う Wrapper で包んだ場合など) は戻さずに警告する
+    - Gymnasium の観測と報酬の正規化 (`NormalizeObservation` の `obs_rms`, `NormalizeReward` の `return_rms` と `discounted_reward`) の統計は, 何もしなくても保存して戻す
+    - 自分で作った環境と Wrapper は, `state_dict()` (状態を返す) と `load_state_dict(state)` (戻す) を持たせる. 両方を持つ層はこの 2 つを使う (正規化の統計より優先). Gymnasium には状態の取り出しと戻しの決まりが無く, MuJoCo の環境の `set_state(qpos, qvel)` と名前がぶつかるので, PyTorch と同じ名前にする
+    - `state_dict` の値は `register_rng` の状態と同じ型 (テンソル, 数値, 文字列, `None`, NumPy の配列と, それらのリスト, タプル, 辞書. 辞書のキーは文字列か整数) だけで作る. それ以外の型は保存のときにエラーになる
+    - `RecordEpisodeStatistics` のエピソードの統計 (`info` の `episode` と数) は戻せないので, 再開で警告する (学習には使わない)
+    - **制限**: `state_dict` を持たない自作の環境と Wrapper の, エピソードを越えて続く状態は戻らず, 外から見つけられないので警告も出ない. その場合, 再開した学習は通しと一致しない. 普通の Gymnasium の環境 (CartPole, Pendulum など) は乱数だけで一致する
+- **評価の環境**: `EvaluationLoader` はエピソードごとに決まった種 (`seed`, `seed + 1`, ...) で `reset` するので, 環境の乱数は保存しない. 環境の層の状態 (上の正規化の統計と `state_dict` の値) だけを保存して戻す
+
+エピソードを越えて続く状態を持つ自作の環境の例 (エピソードの数を数え, 観測に出す). `state_dict` と `load_state_dict` を持つので, 再開した学習は通しと一致する (同じ形の環境 `CarryEnv` で `tests/test_rl_resume.py` が確かめる).
+
+```python
+class CountingEnv:
+    def reset(self, seed=None):
+        if seed is not None:
+            self.np_random = np.random.default_rng(seed)
+        self.episodes += 1
+        obs = np.array([self.episodes % 10], dtype=np.float32)
+        return obs, {}
+
+    def state_dict(self) -> dict:
+        return {"episodes": self.episodes}
+
+    def load_state_dict(self, state: dict) -> None:
+        self.episodes = int(state["episodes"])
+```
 
 ### 価値の関数を使う方法 (ActorCriticStep)
 

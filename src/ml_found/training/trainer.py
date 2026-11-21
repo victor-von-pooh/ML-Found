@@ -2265,11 +2265,15 @@ class Trainer:
                 source, map_location="cpu", weights_only=True, mmap=True
             )
             if not best.get("weights_only"):
+                # ベストモデルの重みを別のモデル (EMA など) から取った場合は,
+                # model (学習しているモデル) ではなく best_model の重み
+                stored = (best.get("checkpoint") or {}).get("best_model")
+                weights = best["model"] if stored is None else stored
                 save_checkpoint({
                     "weights_only": True, "epoch": best["epoch"],
                     "monitor": best["monitor"],
                     "best_value": self.checkpoint.best_value,
-                    "model": best["model"]
+                    "model": weights
                 }, target)
                 return
         shutil.copyfile(source, target)

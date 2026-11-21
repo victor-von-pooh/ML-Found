@@ -38,6 +38,36 @@ def state_values(
     return values
 
 
+def eval_state_values(
+    model: nn.Module, observations: torch.Tensor
+) -> torch.Tensor:
+    """
+    推論モードのモデルで, 観測ごとの状態の価値を勾配なしで求める関数
+
+    Parameters
+    ----------
+    model: nn.Module
+        value(観測) で状態の価値を返すモデル
+    observations: torch.Tensor
+        観測のバッチ
+
+    Returns
+    ----------
+    values: torch.Tensor
+        (バッチ,) の状態の価値 (勾配は流さない)
+    """
+    # 推論モードにして勾配を記録せずに計算し, 元のモードに復帰
+    training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            values = state_values(model, observations)
+    finally:
+        model.train(training)
+
+    return values
+
+
 def generalized_advantages(
     rewards: torch.Tensor, values: torch.Tensor, final_values: torch.Tensor,
     lengths: list[int], gamma: float, gae_lambda: float
@@ -120,26 +150,31 @@ class ActorCriticStep(ReinforceStep):
         Returns
         ----------
         values: torch.Tensor
-            1 歩ごとの状態の価値 (勾配を流す)
+            1 歩ごとの学習モードの状態の価値 (勾配を流す)
         advantages: torch.Tensor
             1 歩ごとの利得 (勾配は流さない)
         targets: torch.Tensor
-            1 歩ごとの価値の関数の目標 (利得と価値の和. 勾配は流さない)
+            1 歩ごとの価値の関数の目標 (利得と推論モードの価値の和.
+            勾配は流さない)
         """
-        # 1 歩ごとの価値と, 打ち切りのエピソードだけ最後の観測の価値
+        # 勾配を流す学習モードの価値と, 利得と目標に使う推論モードの価値
+        # (行動を選んだときと同じモード. BatchNorm の統計を進めず,
+        # Dropout の雑音を入れないため). 最後の観測の価値は打ち切りだけ
         values = state_values(model, batch["observations"])
-        with torch.no_grad():
-            final_values = state_values(
-                model, batch["final_observations"]
-            ) * (1.0 - batch["episode_terminated"])
-            lengths = [
-                int(length) for length in batch["episode_lengths"].tolist()
-            ]
-            advantages = generalized_advantages(
-                batch["rewards"], values.detach(), final_values, lengths,
-                float(batch["gamma"]), self.gae_lambda
-            )
-            targets = advantages + values.detach()
+        fixed = eval_state_values(model, batch["observations"])
+        final_values = eval_state_values(
+            model, batch["final_observations"]
+        ) * (1.0 - batch["episode_terminated"])
+
+        # エピソードごとの利得と, 利得と価値の和の目標
+        lengths = [
+            int(length) for length in batch["episode_lengths"].tolist()
+        ]
+        advantages = generalized_advantages(
+            batch["rewards"], fixed, final_values, lengths,
+            float(batch["gamma"]), self.gae_lambda
+        )
+        targets = advantages + fixed
 
         return values, advantages, targets
 
@@ -163,10 +198,12 @@ class ActorCriticStep(ReinforceStep):
         Returns
         ----------
         outputs: dict
-            学習では方策の勾配の損失と価値の関数の損失の和, 検証では報酬の
-            和の平均の符号を反転した値を loss に入れ, 報酬, 歩数, 安全の
-            違反の指標, エントロピー (entropy), 学習では価値の関数の損失
-            (value_loss) を加える
+            学習では方策の勾配の損失 + value_coef × 価値の関数の損失 -
+            entropy_coef × エントロピー, 検証では報酬の和の平均の符号を
+            反転した値を loss に入れ, 報酬, 歩数, 安全の違反の指標と,
+            方策のエントロピー (entropy. 学習ではバッチの観測ごとの平均,
+            検証では評価で通った観測ごとの平均), 学習では価値の関数の
+            損失 (value_loss) を加える
         """
         # 検証は ReinforceStep と同じ指標
         if phase != "train":

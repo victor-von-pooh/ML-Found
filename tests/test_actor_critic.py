@@ -238,3 +238,132 @@ def test_actor_critic_learns_box_and_exports(tmp_path: Path) -> None:
         expected = model(torch.ones(1, 1)).numpy()[0]
     assert result["status"] == "ok"
     assert np.allclose(result["action"], expected)
+
+
+def test_estimate_matches_hand_calculation() -> None:
+    """
+    終了と打ち切りの混ざったバッチの利得と目標が, 手で求めた値と一致する
+    ことを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 状態の価値が観測そのものになるモデル
+    model = ActorCriticNet(1, 2, gaussian=False)
+    with torch.no_grad():
+        model.critic.weight.fill_(1.0)
+        model.critic.bias.zero_()
+
+    # 1 つ目は 2 歩で終了 (最後の後の価値は 0), 2 つ目は 1 歩で打ち切り
+    # (最後の観測 5 の価値で見積もり)
+    batch = {
+        "observations": torch.tensor([[1.0], [2.0], [3.0]]),
+        "rewards": torch.tensor([1.0, 1.0, 2.0]),
+        "episode_lengths": torch.tensor([2.0, 1.0]),
+        "episode_terminated": torch.tensor([1.0, 0.0]),
+        "final_observations": torch.tensor([[9.0], [5.0]]),
+        "gamma": torch.tensor(0.5)
+    }
+    values, advantages, targets = ActorCriticStep(gae_lambda=0.5).estimate(
+        model, batch
+    )
+
+    # 手で求めた値. 1 つ目の 2 歩目は 1 + 0.5 x 0 - 2 = -1, 1 歩目は
+    # (1 + 0.5 x 2 - 1) + 0.5 x 0.5 x (-1) = 0.75, 2 つ目は
+    # 2 + 0.5 x 5 - 3 = 1.5. 目標は利得と価値の和
+    assert torch.allclose(advantages, torch.tensor([0.75, -1.0, 1.5]))
+    assert torch.allclose(targets, torch.tensor([1.75, 1.0, 4.5]))
+    assert values.requires_grad
+    assert not advantages.requires_grad
+
+
+def test_value_loss_decreases_on_fixed_batch() -> None:
+    """
+    固定のバッチで数歩更新すると, 価値の関数の損失が下がることを確かめる
+    関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    torch.manual_seed(0)
+    model = ActorCriticNet(1, 2, gaussian=False)
+    batch = next(iter(RolloutLoader(ToyEnv(), model, episodes=2)))
+    step = ActorCriticStep(gae_lambda=1.0)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.05)
+
+    # 方策と価値の関数の損失の和で更新
+    losses = []
+    for _ in range(50):
+        outputs = step(model, batch, "train")
+        optimizer.zero_grad()
+        outputs["loss"].backward()
+        optimizer.step()
+        losses.append(float(outputs["value_loss"]))
+    assert losses[-1] < 0.25 * losses[0]
+
+    # value_coef が 0 なら価値の関数は学ばない
+    model = ActorCriticNet(1, 2, gaussian=False)
+    before = model.critic.weight.detach().clone()
+    outputs = ActorCriticStep(value_coef=0.0)(model, batch, "train")
+    outputs["loss"].backward()
+    assert model.critic.weight.grad is None or torch.all(
+        model.critic.weight.grad == 0
+    )
+    assert torch.equal(model.critic.weight, before)
+
+
+class BatchNormNet(ActorCriticNet):
+    def __init__(self):
+        # 親クラスのコンストラクタを呼び出す
+        super(BatchNormNet, self).__init__(1, 2, gaussian=False)
+
+        # BatchNorm を挟んだ価値の関数
+        self.critic = nn.Sequential(
+            nn.Linear(1, 4), nn.BatchNorm1d(4), nn.Linear(4, 1)
+        )
+
+
+def test_estimate_uses_eval_mode_with_batch_norm() -> None:
+    """
+    1 エピソードのバッチでも BatchNorm のモデルで動き, 推論モードの価値で
+    利得を求めることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    torch.manual_seed(0)
+    model = BatchNormNet()
+    batch = next(iter(RolloutLoader(
+        ToyEnv(), model, episodes=1, batch_episodes=1
+    )))
+
+    # 最後の観測 1 件の価値も推論モードで求めるのでエラーにならない
+    # BatchNorm の統計は, 勾配を流す学習モードの 1 回だけで更新
+    tracked = int(model.critic[1].num_batches_tracked)
+    outputs = ActorCriticStep()(model, batch, "train")
+    assert torch.isfinite(outputs["loss"])
+    assert int(model.critic[1].num_batches_tracked) == tracked + 1
+    assert model.training
+
+    # 利得と目標は推論モードの価値と一致
+    _, advantages, targets = ActorCriticStep().estimate(model, batch)
+    model.eval()
+    with torch.no_grad():
+        fixed = model.value(batch["observations"]).reshape(-1)
+    model.train()
+    assert torch.allclose(targets - advantages, fixed, atol=1e-6)

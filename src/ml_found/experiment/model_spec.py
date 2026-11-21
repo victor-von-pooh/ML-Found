@@ -445,7 +445,7 @@ def read_model_spec(cfg: DictConfig, project_dir: Path) -> ModelSpecRead:
     detail: Optional[str] = None
     if reason == "link" and check_climbs(raw) == "link":
         record["path"] = value
-    if reason == "missing":
+    if reason == "missing" and check_climbs(raw) == "missing":
         detail = CLIMB_TEXT.format(value=value)
     if reason is None and value.endswith(TRAILING_SEPARATORS):
         reason = "not_file"

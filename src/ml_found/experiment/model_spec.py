@@ -526,6 +526,33 @@ def copy_model_spec(spec: ModelSpecRead, run_dir: Path) -> Optional[dict]:
     return record
 
 
+def copied_spec_path(
+    record: Optional[dict], run_dir: Path
+) -> Optional[Path]:
+    """
+    実験に写したモデルの定義の場所を返す関数
+
+    Parameters
+    ----------
+    record: Optional[dict]
+        copy_model_spec が返した記録
+    run_dir: Path
+        実験のディレクトリ
+
+    Returns
+    ----------
+    path: Optional[Path]
+        写した場合 (status が copied) は run_dir の model_spec.yaml,
+        写さなかった場合と model.spec が無い場合は None
+    """
+    # 中身が source.yaml の sha256 と一致する写しだけを指す
+    path: Optional[Path] = None
+    if record is not None and record["status"] == "copied":
+        path = run_dir / MODEL_SPEC_FILE
+
+    return path
+
+
 def describe_model_spec(
     spec: ModelSpecRead, record: Optional[dict]
 ) -> Optional[str]:

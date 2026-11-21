@@ -91,7 +91,7 @@ model:
   hidden_dim: 32
 ```
 
-モデルの定義 (ML-ModelControl の定義の YAML) を使う場合は, `model.spec` に場所 (プロジェクトからの相対パス) を書くと, プロジェクトの中の普通のファイルなら `start_experiment` が実験のディレクトリに `model_spec.yaml` として写し, 場所と中身の sha256 を `source.yaml` に残す. プロジェクトの外とリンクは写さず, 外の場所は絶対パスで記録する (docs/DESIGN.md の「モデルの定義の写し」).
+モデルの定義 (ML-ModelControl の定義の YAML) を使う場合は, `model.spec` に場所 (プロジェクトからの相対パス) を書くと, プロジェクトの中の普通のファイルなら `start_experiment` が実験のディレクトリに `model_spec.yaml` として写し, 場所と中身の sha256 を `source.yaml` に残す. プロジェクトの外とリンクは写さず, 外の場所は絶対パスで記録する (docs/DESIGN.md の「モデルの定義の写し」). モデルは `model.spec` の場所でなく, `start_experiment` が返す `experiment.model_spec_path` (写した `model_spec.yaml`. 写さなかった場合は `None`) から組み立てるのを勧める. 写しから組み立てると, 記録の sha256 と学習に使った定義がそろう.
 
 experiment には default から変えたい項目だけを書く.
 

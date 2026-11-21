@@ -5,11 +5,7 @@
 
 ## 優先度 高
 
-### EMA を config で
-- 何を: `trainer.ema_decay` のような設定で, EMA の重みの更新, 保存, 再開, 検証に使うモデルの切り替えまで ML-Found が行う
-- なぜ: 今は `update_parameters`, `extra_state_dict`, `load_extra_state_dict`, `eval_model` を継承して利用者が書く. 拡散のモデルなどで毎回同じ書き方になる
-- 終わりの条件: 設定だけで EMA の重みで検証し, `final_model.pt` が EMA の重みになり, 再開しても通しの学習と一致する
-- つながり: 無し
+無し
 
 ## 優先度 中
 

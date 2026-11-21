@@ -83,6 +83,17 @@ class CheckpointConfig:
 
 
 @dataclass
+class EmaConfig:
+    # 重みの指数移動平均 (EMA) の減衰率, null の場合は不使用
+    # 使う場合は検証, ベストモデル, final_model.pt に EMA の重みを使用
+    decay: Optional[float] = None
+
+    # バッファ (BatchNorm の統計量など) も平均するか. false の場合は
+    # 学習しているモデルの値を写す
+    use_buffers: bool = False
+
+
+@dataclass
 class TrainerConfig:
     # エポック数
     epochs: int = 100
@@ -147,6 +158,9 @@ class TrainerConfig:
         default_factory=EarlyStoppingConfig
     )
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
+
+    # 重みの指数移動平均 (EMA) の設定
+    ema: EmaConfig = field(default_factory=EmaConfig)
 
 
 @dataclass

@@ -334,7 +334,8 @@ def metric_family(column: str, columns: list[str]) -> list[str]:
     ----------
     family: list[str]
         <指標>, <指標>_baseline, <指標>_diff のうち表にある列 (列の順).
-        列自体も含む
+        列自体も含む. 終わりは 1 段だけ外す (acc_baseline_diff の指標は
+        acc_baseline)
     """
     # 終わりを除いた名前を指標とし, 同じ指標の 3 つの列の候補を作成
     metric = column
@@ -364,25 +365,33 @@ def spread_better(
         表の列
     strict: bool
         同じ指標の列に違う向きを書いた場合に誤りとするか. False の場合は
-        書いた向きを残し, 書いていない列だけを埋める
+        書いた向きを残し, 違う向きの混ざった指標の列は埋めない
 
     Returns
     ----------
     spread: dict[str, str]
         広げた後の向き (列の順)
     """
-    # 書いた向きの確認と, 書いていない同じ指標の列の補い
+    # 同じ指標の列に書いた向きがそろっているかの確認 (書いた順に頼らない
+    # ように, 違う向きの混ざった指標は埋めない)
     filled = dict(better)
     for column, value in better.items():
-        for item in metric_family(column, columns):
-            current = filled.get(item)
-            if current is None:
-                filled[item] = value
-            elif current != value and strict:
-                raise ValueError(
-                    f"better の {column} と {item} は同じ指標なので, "
-                    f"同じ向きにしてください: {value}, {current}"
-                )
+        family = metric_family(column, columns)
+        conflicts = [
+            item for item in family
+            if better.get(item, value) != value
+        ]
+        if conflicts and strict:
+            raise ValueError(
+                f"better の {column} と {conflicts[0]} は同じ指標なので, "
+                f"同じ向きにしてください: {value}, {better[conflicts[0]]}"
+            )
+        if conflicts:
+            continue
+
+        # 書いていない同じ指標の列の補い
+        for item in family:
+            filled.setdefault(item, value)
     spread = {column: filled[column] for column in columns if column in filled}
 
     return spread
@@ -421,7 +430,7 @@ def check_better(better: Any, columns: list[str]) -> dict[str, str]:
                 f"better の {column} は lower か higher にしてください: "
                 f"{value!r}"
             )
-    checked = spread_better(dict(better), columns, strict=True)
+    checked = spread_better(better, columns, strict=True)
 
     return checked
 

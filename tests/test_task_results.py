@@ -557,6 +557,18 @@ def test_save_evaluation_better(tmp_path: Path) -> None:
     path = save_evaluation(experiment, "plain", {"iou": 0.5}, "test")
     assert json.loads(path.read_text(encoding="utf-8"))["better"] == {}
 
+    # 曲線と空の辞書. 広げた向きは列の順
+    path = save_evaluation(
+        experiment, "curve",
+        {"t": [0.1, 0.5], "recall_diff": [0.0, 0.1], "recall": [0.6, 0.9]},
+        "test", kind="curve", x="t", better={"recall_diff": "higher"}
+    )
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert list(data["better"]) == ["recall_diff", "recall"]
+    path = save_evaluation(experiment, "empty", {"iou": 0.5}, "test",
+                           better={})
+    assert json.loads(path.read_text(encoding="utf-8"))["better"] == {}
+
 
 def test_load_evaluations_better_old_and_unknown(tmp_path: Path) -> None:
     """
@@ -584,6 +596,10 @@ def test_load_evaluations_better_old_and_unknown(tmp_path: Path) -> None:
             "iou_diff": "higher", "mae": "best", "missing": "lower"
         }
     }), encoding="utf-8")
+    (folder / "mixed.json").write_text(json.dumps({
+        "name": "mixed", "columns": ["a", "a_baseline", "a_diff"],
+        "rows": [], "better": {"a_baseline": "lower", "a": "higher"}
+    }), encoding="utf-8")
     (folder / "broken.json").write_text(json.dumps({
         "name": "broken", "columns": ["iou"], "rows": [], "better": ["iou"]
     }), encoding="utf-8")
@@ -592,7 +608,7 @@ def test_load_evaluations_better_old_and_unknown(tmp_path: Path) -> None:
     }
     assert evaluations == {
         "broken": {}, "odd": {"iou": "higher", "iou_diff": "higher"},
-        "old": {}
+        "old": {}, "mixed": {"a": "higher", "a_baseline": "lower"}
     }
 
 
@@ -601,6 +617,7 @@ def test_load_evaluations_better_old_and_unknown(tmp_path: Path) -> None:
     [
         (["iou"], "辞書"),
         ({"miou": "higher"}, "表にありません"),
+        ({1: "higher"}, "表にありません"),
         ({"iou": "max"}, "lower か higher"),
         ({"iou": "higher", "iou_diff": "lower"}, "同じ向き"),
     ]

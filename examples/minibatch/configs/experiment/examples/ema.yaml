@@ -1,0 +1,5 @@
+# 重みの指数移動平均 (EMA) の重みで検証し, ベストモデルと final_model.pt も
+# EMA の重みにする例
+trainer:
+  ema:
+    decay: 0.99

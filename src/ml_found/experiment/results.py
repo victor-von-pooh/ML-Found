@@ -369,35 +369,40 @@ def spread_better(
         表の列
     strict: bool
         同じ指標の列に違う向きを書いた場合に誤りとするか. False の場合は
-        書いた向きを残し, 2 つの向きが届く書いていない列は埋めない
+        向きのある列はそのままにし, 2 つの向きが届く列は埋めない
 
     Returns
     ----------
     spread: dict[str, str]
         広げた後の向き (列の順)
     """
-    # 書いた列ごとに, 同じ指標の列へ届く向きを集める (書いた順に頼らない
-    # ように, 先に全てを集めてから決める)
-    arrivals: dict[str, dict[str, str]] = {}
-    for column, value in better.items():
-        for item in metric_family(column, columns):
-            arrivals.setdefault(item, {})[column] = value
-
-    # 1 つの列に 2 つの向きが届いた場合, 書く側は誤り, 読む側は埋めない
-    # (書いた列は書いた向きのまま)
+    # 向きのある列から同じ指標の列へ届く向きを, 変化が無くなるまで広げる
+    # (各回で全ての列から集めてから決めるので, 書いた順に頼らない)
     filled = dict(better)
-    for item, sources in arrivals.items():
-        values = set(sources.values())
-        if len(values) > 1 and strict:
-            names = ", ".join(
-                f"{column}: {value}" for column, value in sources.items()
-            )
-            raise ValueError(
-                f"better の向きが, 同じ指標の列 {item} で食い違います "
-                f"({names}). 同じ指標の列は同じ向きにしてください"
-            )
-        if len(values) == 1:
-            filled.setdefault(item, values.pop())
+    while True:
+        arrivals: dict[str, dict[str, str]] = {}
+        for column, value in filled.items():
+            for item in metric_family(column, columns):
+                arrivals.setdefault(item, {})[column] = value
+
+        # 1 つの列に 2 つの向きが届いた場合, 書く側は誤り, 読む側は埋めない
+        # (向きのある列はその向きのまま)
+        added: dict[str, str] = {}
+        for item, sources in arrivals.items():
+            values = set(sources.values())
+            if len(values) > 1 and strict:
+                names = ", ".join(
+                    f"{column}: {value}" for column, value in sources.items()
+                )
+                raise ValueError(
+                    f"better の向きが, 同じ指標の列 {item} で食い違います "
+                    f"({names}). 同じ指標の列は同じ向きにしてください"
+                )
+            if len(values) == 1 and item not in filled:
+                added[item] = values.pop()
+        if not added:
+            break
+        filled.update(added)
     spread = {column: filled[column] for column in columns if column in filled}
 
     return spread
@@ -488,7 +493,7 @@ def save_evaluation(
     description: Optional[str] = None, kind: str = "table",
     x: Optional[str] = None, baseline: Optional[str] = None,
     guard: bool = False, epoch: Optional[int] = None,
-    better: Optional[dict[str, str]] = None
+    better: Optional[Mapping[str, str]] = None
 ) -> Path:
     """
     学習の後のデータ全体の評価を evaluations/<名前>.json に書く関数
@@ -516,8 +521,8 @@ def save_evaluation(
         守る指標の表か
     epoch: Optional[int] = None
         評価した重みのエポック
-    better: Optional[dict[str, str]] = None
-        列ごとの指標の向き. 列の名前から lower (小さいほど良い) か
+    better: Optional[Mapping[str, str]] = None
+        列ごとの指標の向き (DictConfig などの Mapping も可). 列の名前から lower (小さいほど良い) か
         higher (大きいほど良い). <指標>, <指標>_baseline, <指標>_diff は
         同じ向きで, どれか 1 つに書けば他にも広げて書く
 

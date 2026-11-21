@@ -16,6 +16,7 @@ from ml_found import (
     original_coordinates, save_evaluation, save_sample, task_from_dataset,
     write_task
 )
+from ml_found.experiment.results import spread_better
 from ml_found.experiment.setup import Experiment
 from ml_found.experiment.task import TASK_FILE
 from ml_found.training.trainer import Trainer
@@ -609,6 +610,33 @@ def test_better_does_not_depend_on_order(tmp_path: Path) -> None:
     assert results[0] == results[1] == {
         "acc": "higher", "acc_diff": "higher", "acc_baseline_diff": "lower"
     }
+
+
+def test_better_spreads_until_stable(tmp_path: Path) -> None:
+    """
+    指標の向きを変化が無くなるまで広げ, 書いた向きが読み直しで変わらない
+    ことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # acc_baseline_diff から acc_baseline, そこから acc と acc_diff へ
+    experiment = make_experiment(tmp_path)
+    columns = ["acc", "acc_baseline", "acc_diff", "acc_baseline_diff"]
+    path = save_evaluation(
+        experiment, "acc", {column: [0.1] for column in columns}, "test",
+        better={"acc_baseline_diff": "lower"}
+    )
+    written = json.loads(path.read_text(encoding="utf-8"))["better"]
+    assert written == {column: "lower" for column in columns}
+    assert spread_better(written, columns, strict=True) == written
+    assert load_evaluations(experiment.run_dir)[0]["better"] == written
 
 
 def test_better_mapping_and_message(tmp_path: Path) -> None:

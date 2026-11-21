@@ -355,6 +355,7 @@ def run_episode(
     observation, info = env.reset(seed=seed)
     steps = 0
     done = False
+    ended = False
     while not done:
         # 連続の行動は clip する前の値を記録 (選んだ確率密度と合わせるため)
         if kind == "box":
@@ -382,7 +383,8 @@ def run_episode(
             )
         observation = next_observation
         steps += 1
-        done = bool(terminated) or bool(truncated) or (
+        ended = bool(terminated)
+        done = ended or bool(truncated) or (
             max_steps is not None and steps >= max_steps
         )
 
@@ -391,7 +393,8 @@ def run_episode(
     if success_key is not None and isinstance(info, dict):
         if success_key in info:
             success = bool(info[success_key])
-    stats = buffer.end_episode(success)
+    # 打ち切りの後の価値を見積もれるように, 終了かと最後の観測も記録
+    stats = buffer.end_episode(success, ended, observation)
 
     return stats
 

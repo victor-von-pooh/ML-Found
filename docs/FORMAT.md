@@ -98,7 +98,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `default` | 文字か null | default の config |
 | `experiment` | 文字か null | experiment の config |
 | `overrides` | 文字のリストか null | 「項目=値」の上書き (書いた文字のまま) |
-| `model_spec` | 辞書か null | モデルの定義 (config の `model.spec`) の写し (下). config に `model.spec` が無い, 空, 文字でない場合は null. |
+| `model_spec` | 辞書か null | モデルの定義 (config の `model.spec`) の写し (下). config に `model.spec` が無い, 空, 文字でない, 参照を解決できない場合は null |
 
 - パスは, プロジェクトの中ならプロジェクトからの相対パス (区切りは `/`), 外なら絶対パス. 外のパス (画面で書き換えた config を置いた場所など) は, 後で消えていることがある
 - null は分からないことを表す (ノートブックの中, `load_config` などを通らずに作った config など)

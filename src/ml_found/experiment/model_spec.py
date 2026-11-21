@@ -49,8 +49,9 @@ class ModelSpecRead:
     # 写す中身 (読めた場合だけ)
     content: Optional[bytes]
 
-    # model.spec が文字でない場合の, 書いた値の表示 (train.log に書く)
-    invalid_value: Optional[str]
+    # model.spec が文字でないか参照を解決できない場合の, train.log に書く
+    # 知らせ
+    notice: Optional[str]
 
 
 def is_link(path: Path) -> bool:
@@ -81,9 +82,10 @@ def is_link(path: Path) -> bool:
     return linked
 
 
-def climbs_link(path: Path) -> bool:
+def check_climbs(path: Path) -> Optional[str]:
     """
-    正規化する前の場所で, リンクの後の .. で上がるかを確かめる関数
+    正規化する前の場所の .. が, OS の辿り方と同じ場所に上がるかを確かめる
+    関数
 
     Parameters
     ----------
@@ -92,23 +94,27 @@ def climbs_link(path: Path) -> bool:
 
     Returns
     ----------
-    climbed: bool
-        リンクの後の .. がある場合は True (正規化で .. を消すと, OS が
-        開く場所と違う場所を記録するため)
+    reason: Optional[str]
+        .. の直前がリンクなら link (POSIX では, 正規化で .. を消すと OS が
+        開く場所と違う場所を記録するため), 無いかディレクトリでなければ
+        missing (OS では開けないため). 問題が無ければ None
     """
-    # 先頭から 1 つずつ辿り, .. の直前の場所がリンクかを確認
+    # 先頭から 1 つずつ辿り, .. の直前の場所を確認
     current = Path(path.anchor)
     for part in path.parts[1:]:
-        if part == "..":
-            if is_link(current):
-                climbed = True
-                return climbed
-            current = current.parent
-        elif part != ".":
+        if part != "..":
             current = current / part
-    climbed = False
+            continue
+        if is_link(current):
+            reason: Optional[str] = "link"
+            return reason
+        if not os.path.isdir(current):
+            reason = "missing"
+            return reason
+        current = current.parent
+    reason = None
 
-    return climbed
+    return reason
 
 
 def has_link(path: Path, project_dir: Path) -> bool:
@@ -351,13 +357,16 @@ def check_spec_path(path: Path, raw: Path, root: Path) -> Optional[str]:
     Returns
     ----------
     reason: Optional[str]
-        写さない理由 (outside, link), 写してよい場合は None
+        写さない理由 (outside, link, missing), 写してよい場合は None
     """
-    # プロジェクトの外, リンクの後の .., 途中か場所自体のリンクは写さない
+    # プロジェクトの外, リンクの後の .. か辿れない .., 途中か場所自体の
+    # リンクは写さない
     reason: Optional[str] = None
     if not path.is_relative_to(root):
         reason = "outside"
-    elif climbs_link(raw) or has_link(path, root):
+    else:
+        reason = check_climbs(raw)
+    if reason is None and has_link(path, root):
         reason = "link"
 
     return reason
@@ -382,20 +391,28 @@ def read_model_spec(cfg: DictConfig, project_dir: Path) -> ModelSpecRead:
     spec: ModelSpecRead
         source.yaml の model_spec の記録と, 写す中身
     """
-    # model はプロジェクトの項目なので, 読めない値は書いていない扱い
+    # model はプロジェクトの項目なので, 解決できない参照と文字でない値は
+    # 写さずに知らせるだけ (場所が無いので記録は null)
     try:
         value = OmegaConf.select(
             cfg, MODEL_SPEC_KEY, throw_on_resolution_failure=True
         )
-    except OmegaConfBaseException:
-        value = None
+    except OmegaConfBaseException as error:
+        spec = ModelSpecRead(
+            record=None, content=None,
+            notice=f"{MODEL_SPEC_KEY} の参照を解決できないので, モデルの"
+            f"定義を写しません: {str(error).splitlines()[0]!r}"
+        )
+        return spec
     if value is not None and not isinstance(value, str):
         spec = ModelSpecRead(
-            record=None, content=None, invalid_value=repr(value)
+            record=None, content=None,
+            notice=f"{MODEL_SPEC_KEY} が場所の文字でないので, モデルの定義を"
+            f"写しません: {value!r}"
         )
         return spec
     if value is None or not value.strip():
-        spec = ModelSpecRead(record=None, content=None, invalid_value=None)
+        spec = ModelSpecRead(record=None, content=None, notice=None)
         return spec
 
     # 場所の書き方の確認 (読めない書き方は invalid)
@@ -406,8 +423,15 @@ def read_model_spec(cfg: DictConfig, project_dir: Path) -> ModelSpecRead:
         reason = check_spec_path(path, raw, root)
     except (OSError, ValueError, RuntimeError):
         record["status"] = "invalid"
-        spec = ModelSpecRead(record=record, content=None, invalid_value=None)
+        spec = ModelSpecRead(record=record, content=None, notice=None)
         return spec
+
+    # .. で link にした場所は, 別のファイルを指して見えないように書いた
+    # 文字のまま記録. 末尾の区切り (m.yaml/) はディレクトリの書き方
+    if reason == "link" and ".." in raw.parts:
+        record["path"] = value
+    if reason is None and value.endswith(("/", os.sep)):
+        reason = "not_file"
 
     # 写してよい場所なら中身を読み, 中身の sha256 を記録
     content: Optional[bytes] = None
@@ -416,7 +440,7 @@ def read_model_spec(cfg: DictConfig, project_dir: Path) -> ModelSpecRead:
     if content is not None:
         record["sha256"] = hashlib.sha256(content).hexdigest()
     record["status"] = reason
-    spec = ModelSpecRead(record=record, content=content, invalid_value=None)
+    spec = ModelSpecRead(record=record, content=content, notice=None)
 
     return spec
 
@@ -465,16 +489,16 @@ def copy_model_spec(spec: ModelSpecRead, run_dir: Path) -> Optional[dict]:
         config に model.spec が無い, 空, 文字でない場合は None
     """
     # 読めた中身だけを写し, 書けなければ理由を残して学習は続行
+    record: Optional[dict] = None
     if spec.record is None:
-        return None
+        return record
     record = dict(spec.record)
     if spec.content is None:
         return record
     try:
         write_spec_copy(run_dir, spec.content)
     except OSError:
-        record["status"] = "write_failed"
-        record["sha256"] = None
+        record.update(status="write_failed", sha256=None)
         return record
     record["status"] = "copied"
 
@@ -500,13 +524,9 @@ def describe_model_spec(
         写した場合は写した先と sha256, 写さなかった場合は理由.
         model.spec が無いか空の場合は None
     """
-    # 文字でない値は書き方の誤りとして知らせ, 場所は改行で偽の行を
-    # 作れないように repr で表示
-    if spec.invalid_value is not None:
-        message: Optional[str] = (
-            f"{MODEL_SPEC_KEY} が場所の文字でないので, モデルの定義を"
-            f"写しません: {spec.invalid_value}"
-        )
+    # 書き方の誤りの知らせと, 改行で偽の行を作れないように repr の場所
+    if spec.notice is not None:
+        message: Optional[str] = spec.notice
         return message
     if record is None:
         message = None

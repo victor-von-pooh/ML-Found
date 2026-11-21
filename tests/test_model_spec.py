@@ -8,9 +8,9 @@ import pytest
 from omegaconf import OmegaConf
 
 from ml_found.config.loader import load_project_config
-from ml_found.experiment import model_spec
+from ml_found.experiment import model_spec, setup
 from ml_found.experiment.model_spec import (
-    MODEL_SPEC_FILE, copy_model_spec, read_model_spec
+    MODEL_SPEC_FILE, copy_model_spec, describe_model_spec, read_model_spec
 )
 from ml_found.experiment.setup import start_experiment
 
@@ -448,13 +448,30 @@ def test_dotdot_after_link(tmp_path: Path) -> None:
         outside / "sub", target_is_directory=True
     )
     record = copy_spec("extlink/../m.yaml", run_dir, project)
-    assert record == {"path": "m.yaml", "status": "link", "sha256": None}
+    assert record == {
+        "path": "extlink/../m.yaml", "status": "link", "sha256": None
+    }
+    absolute = str(project / "extlink" / ".." / "m.yaml")
+    assert copy_spec(absolute, run_dir, project) == {
+        "path": absolute, "status": "link", "sha256": None
+    }
+    assert copy_spec("extlink/..", run_dir, project)["status"] == "link"
     assert not (run_dir / MODEL_SPEC_FILE).exists()
+
+    # .. の直前が無い場所は開けないので missing, 末尾の区切りは not_file
+    record = copy_spec("nosuch/../m.yaml", run_dir, project)
+    assert record == {"path": "m.yaml", "status": "missing", "sha256": None}
+    assert copy_spec("m.yaml/", run_dir, project)["status"] == "not_file"
 
     # リンクでないディレクトリの後の .. はそのまま中の場所
     (project / "models").mkdir()
     record = copy_spec("models/../m.yaml", run_dir, project)
     assert record["status"] == "copied"
+    record = copy_spec("./models/./../m.yaml", run_dir, project)
+    assert record == {
+        "path": "m.yaml", "status": "copied",
+        "sha256": hashlib.sha256(SPEC_TEXT.encode()).hexdigest()
+    }
 
 
 def test_invalid_places_and_write_failure(
@@ -492,6 +509,7 @@ def test_invalid_places_and_write_failure(
     assert record == {
         "path": "m.yaml", "status": "write_failed", "sha256": None
     }
+    assert not list(run_dir.glob(f".{MODEL_SPEC_FILE}.*.tmp"))
 
     # start_experiment も止まらずに train.log と source.yaml に残す
     run = run_start(
@@ -536,3 +554,86 @@ def test_too_large(
     assert record == {
         "path": "big.yaml", "status": "too_large", "sha256": None
     }
+
+
+def test_reads_before_run_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    出力先を作る前に定義を読み, 写しと sha256 が学習を始めるときの中身
+    であることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        出力先を作る関数の差し替えに使う
+
+    Returns
+    ----------
+    None
+    """
+    # 出力先を作るときに定義を書き換える
+    project = tmp_path / "project"
+    (project / "models").mkdir(parents=True)
+    spec = project / "models" / "model.yaml"
+    spec.write_text(SPEC_TEXT, encoding="utf-8")
+    original = setup.make_run_dir
+
+    def rewriting_make_run_dir(*args: object) -> Path:
+        """
+        定義を書き換えてから出力先を作る関数
+
+        Parameters
+        ----------
+        *args: object
+            make_run_dir の引数
+
+        Returns
+        ----------
+        run_dir: Path
+            作った出力先
+        """
+        spec.write_text("changed: true\n", encoding="utf-8")
+        run_dir = original(*args)
+
+        return run_dir
+
+    monkeypatch.setattr(setup, "make_run_dir", rewriting_make_run_dir)
+    run_dir = run_start(
+        project, monkeypatch, "model:\n  spec: models/model.yaml\n"
+    )
+    assert (run_dir / MODEL_SPEC_FILE).read_text(encoding="utf-8") == (
+        SPEC_TEXT
+    )
+    assert read_record(run_dir)["sha256"] == hashlib.sha256(
+        SPEC_TEXT.encode()
+    ).hexdigest()
+
+
+@pytest.mark.parametrize("value", ["${nope}", "${oc.env:ML_FOUND_NO_SUCH}"])
+def test_unresolved_reference(tmp_path: Path, value: str) -> None:
+    """
+    解決できない参照の model.spec を, 写さずに知らせることを確かめる関数
+
+    load_config は解決できない参照で止まるので, 読み込み関数を通らない
+    config で確かめる
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    value: str
+        model.spec に書く参照
+
+    Returns
+    ----------
+    None
+    """
+    spec = read_model_spec(spec_config(value), tmp_path)
+    record = copy_model_spec(spec, tmp_path)
+    assert record is None
+    message = describe_model_spec(spec, record)
+    assert message is not None and "参照を解決できない" in message
+    assert "\n" not in message

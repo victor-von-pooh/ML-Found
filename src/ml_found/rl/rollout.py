@@ -1,11 +1,20 @@
 import math
+import warnings
 from typing import Any, Iterator, Optional
 
 import numpy as np
 import torch
 from torch import nn
 
+from ml_found.experiment.seed import decode_state, encode_state
 from ml_found.rl.buffer import ExperienceBuffer
+
+# 環境の乱数を作り直すときに使える NumPy の乱数生成器の種類
+BIT_GENERATORS = {
+    "MT19937": np.random.MT19937, "PCG64": np.random.PCG64,
+    "PCG64DXSM": np.random.PCG64DXSM, "Philox": np.random.Philox,
+    "SFC64": np.random.SFC64
+}
 
 # 連続の行動の方策の対数の標準偏差の範囲 (発散して inf や nan にしないため)
 LOG_STD_MIN = -20.0
@@ -509,6 +518,151 @@ def check_count(name: str, value: Any, optional: bool = False) -> None:
         raise ValueError(f"{name} は 1 以上の整数にしてください: {value!r}")
 
 
+def env_rng(env: Any) -> Optional[np.random.Generator]:
+    """
+    環境の乱数生成器 (Gymnasium の np_random) を取り出す関数
+
+    Parameters
+    ----------
+    env: Any
+        Gymnasium の形の環境 (Wrapper の場合は中の環境の乱数)
+
+    Returns
+    ----------
+    rng: Optional[np.random.Generator]
+        環境の乱数生成器, 持たない場合は None
+    """
+    # Wrapper も中の環境も同じ乱数を使うので, 中の環境から取得
+    unwrapped = getattr(env, "unwrapped", env)
+    rng = getattr(unwrapped, "np_random", None)
+    if not isinstance(rng, np.random.Generator):
+        rng = None
+
+    return rng
+
+
+def set_env_rng(env: Any, state: dict) -> None:
+    """
+    環境の乱数生成器を, 保存した状態に戻す関数
+
+    Parameters
+    ----------
+    env: Any
+        Gymnasium の形の環境
+    state: dict
+        乱数生成器の bit_generator.state
+
+    Returns
+    ----------
+    None
+    """
+    # 同じ種類の生成器ならその場で戻し, 違えば同じ種類で作り直して置き換え
+    rng = env_rng(env)
+    if rng is not None and (
+        rng.bit_generator.state.get("bit_generator")
+        == state.get("bit_generator")
+    ):
+        rng.bit_generator.state = state
+        return
+    bit_generator = BIT_GENERATORS.get(str(state.get("bit_generator")))
+    if bit_generator is None or rng is None:
+        raise ValueError(
+            "環境の乱数 (np_random) を戻せません. 再開元と同じ環境にして"
+            "ください"
+        )
+    generator = bit_generator()
+    generator.state = state
+    getattr(env, "unwrapped", env).np_random = np.random.Generator(generator)
+
+
+def env_state_owner(env: Any) -> Optional[Any]:
+    """
+    状態を保存して戻す口 (state_dict と load_state_dict) を持つ環境を探す関数
+
+    Parameters
+    ----------
+    env: Any
+        Gymnasium の形の環境
+
+    Returns
+    ----------
+    owner: Optional[Any]
+        口を持つ外側の環境か中の環境 (unwrapped), 無い場合は None
+    """
+    # 外側 (Wrapper) から中の環境の順に, 両方のメソッドを持つものを探索
+    for target in (env, getattr(env, "unwrapped", env)):
+        if callable(getattr(target, "state_dict", None)) and callable(
+            getattr(target, "load_state_dict", None)
+        ):
+            owner = target
+            return owner
+    owner = None
+
+    return owner
+
+
+def save_env_state(env: Any) -> Optional[Any]:
+    """
+    環境が state_dict で返す状態を, チェックポイントに保存できる形で返す関数
+
+    Parameters
+    ----------
+    env: Any
+        Gymnasium の形の環境
+
+    Returns
+    ----------
+    state: Optional[Any]
+        state_dict の値 (NumPy の配列は保存できる形), 口が無い場合は None
+    """
+    # 口が無い環境は保存しない, 保存できない型はエラー
+    owner = env_state_owner(env)
+    if owner is None:
+        state = None
+        return state
+    try:
+        state = encode_state(owner.state_dict(), "env")
+    except TypeError as error:
+        raise TypeError(
+            f"環境の state_dict() の値を保存できません: {error}"
+        ) from error
+
+    return state
+
+
+def load_env_state(env: Any, state: Optional[Any]) -> None:
+    """
+    save_env_state で保存した状態を, 環境の load_state_dict で戻す関数
+
+    Parameters
+    ----------
+    env: Any
+        Gymnasium の形の環境
+    state: Optional[Any]
+        save_env_state の値, 保存しなかった場合は None
+
+    Returns
+    ----------
+    None
+    """
+    # 両方ある場合だけ復元し, 片方にしか無い場合は警告
+    owner = env_state_owner(env)
+    if owner is not None and state is not None:
+        owner.load_state_dict(decode_state(state))
+    elif owner is not None:
+        warnings.warn(
+            "再開元に環境の state_dict の状態が無いので, 環境の状態は"
+            "戻しません",
+            stacklevel=3
+        )
+    elif state is not None:
+        warnings.warn(
+            "環境が load_state_dict を持たないので, 再開元の環境の状態は"
+            "戻せません",
+            stacklevel=3
+        )
+
+
 class RolloutLoader:
     def __init__(
         self, env: Any, model: nn.Module, episodes: Optional[int] = None,
@@ -589,6 +743,93 @@ class RolloutLoader:
         self.seeded = True
 
         return seed
+
+    def checkpoint_state(self) -> dict:
+        """
+        再開で戻すための, loader と環境の状態を返す関数
+
+        エピソードは途中で止めずにエポックを区切るので, エポックの終わりの
+        環境はエピソードの間にある (次は reset). そのため環境の中の物理の
+        状態は持たず, reset に使う環境の乱数と, 環境が state_dict で返す
+        エピソードを越えて続く状態を持つ
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        state: dict
+            種を渡したかの印, 探索の設定, 環境の乱数 (np_random) の状態,
+            環境の state_dict の値 (チェックポイントに安全に保存できる形)
+        """
+        # 環境の乱数は reset した後だけ (前は種を渡す最初の reset から)
+        rng = env_rng(self.env) if self.seeded else None
+        rng_state = (
+            None if rng is None
+            else encode_state(rng.bit_generator.state, "np_random")
+        )
+
+        # 環境が自分で返す状態 (保存できない型はエラー)
+        env_state = save_env_state(self.env)
+
+        state = {
+            "seeded": self.seeded,
+            "exploration": {
+                "temperature": self.exploration.temperature,
+                "epsilon": self.exploration.epsilon
+            },
+            "np_random": rng_state,
+            "env": env_state
+        }
+
+        return state
+
+    def load_checkpoint_state(self, state: dict) -> None:
+        """
+        checkpoint_state で保存した状態に, loader と環境を戻す関数
+
+        Parameters
+        ----------
+        state: dict
+            checkpoint_state の値
+
+        Returns
+        ----------
+        None
+        """
+        # 種を渡したかの印と, 環境の乱数の復元
+        self.seeded = bool(state.get("seeded", False))
+        if state.get("np_random") is not None:
+            set_env_rng(self.env, decode_state(state["np_random"]))
+        elif self.seeded and env_state_owner(self.env) is None:
+            # 乱数も state_dict も無い環境は, reset の乱数を戻せないので警告
+            warnings.warn(
+                "環境の乱数 (unwrapped.np_random) が見つからず, state_dict も"
+                "無いので, 環境の乱数は戻せません. 再開した学習は通しで学習"
+                "した場合と一致しないことがあります. 自分で作った Wrapper は "
+                "unwrapped で中の環境を返してください",
+                stacklevel=2
+            )
+
+        # 探索の設定は, 登録した関数で差し替えた値も続くように再開元のもの
+        saved = state.get("exploration")
+        if saved is not None:
+            exploration = Exploration(
+                saved["temperature"], saved["epsilon"]
+            )
+            if (exploration.temperature, exploration.epsilon) != (
+                self.exploration.temperature, self.exploration.epsilon
+            ):
+                warnings.warn(
+                    f"探索の設定は再開元の {exploration!r} で続けます "
+                    f"(今の設定は {self.exploration!r})",
+                    stacklevel=2
+                )
+            self.exploration = exploration
+
+        # 環境が自分で返した状態の復元 (片方にしか無い場合は警告)
+        load_env_state(self.env, state.get("env"))
 
     def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
         """
@@ -679,6 +920,43 @@ class EvaluationLoader:
         n_batches = 1
 
         return n_batches
+
+    def checkpoint_state(self) -> dict:
+        """
+        再開で戻すための, 評価の環境の状態を返す関数
+
+        エピソードごとに決まった種で reset するので環境の乱数は持たず,
+        環境が state_dict で返すエピソードを越えて続く状態だけを持つ
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        state: dict
+            環境の state_dict の値 (口が無い場合は None)
+        """
+        # 環境が自分で返す状態
+        state = {"env": save_env_state(self.env)}
+
+        return state
+
+    def load_checkpoint_state(self, state: dict) -> None:
+        """
+        checkpoint_state で保存した状態に, 評価の環境を戻す関数
+
+        Parameters
+        ----------
+        state: dict
+            checkpoint_state の値
+
+        Returns
+        ----------
+        None
+        """
+        # 環境が自分で返した状態の復元 (片方にしか無い場合は警告)
+        load_env_state(self.env, state.get("env"))
 
     def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
         """

@@ -570,6 +570,84 @@ def test_save_evaluation_better(tmp_path: Path) -> None:
     assert json.loads(path.read_text(encoding="utf-8"))["better"] == {}
 
 
+def test_better_does_not_depend_on_order(tmp_path: Path) -> None:
+    """
+    指標の向きの広げ方が書いた順で変わらないことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # acc と acc_baseline_diff の向きは, どちらも acc_baseline に届く
+    experiment = make_experiment(tmp_path)
+    columns = ["acc", "acc_baseline", "acc_diff", "acc_baseline_diff"]
+    table = {column: [0.1] for column in columns}
+    for better in (
+        {"acc": "higher", "acc_baseline_diff": "lower"},
+        {"acc_baseline_diff": "lower", "acc": "higher"}
+    ):
+        with pytest.raises(ValueError, match="acc_baseline で食い違います"):
+            save_evaluation(experiment, "acc", table, "test", better=better)
+
+    # 読む側は, 2 つの向きが届く書いていない列を埋めない
+    folder = experiment.run_dir / "evaluations"
+    folder.mkdir(exist_ok=True)
+    for index, better in enumerate((
+        {"acc": "higher", "acc_baseline_diff": "lower"},
+        {"acc_baseline_diff": "lower", "acc": "higher"}
+    )):
+        (folder / f"e{index}.json").write_text(json.dumps({
+            "name": f"e{index}", "columns": columns, "rows": [],
+            "better": better
+        }), encoding="utf-8")
+    results = [item["better"] for item in load_evaluations(experiment.run_dir)]
+    assert results[0] == results[1] == {
+        "acc": "higher", "acc_diff": "higher", "acc_baseline_diff": "lower"
+    }
+
+
+def test_better_mapping_and_message(tmp_path: Path) -> None:
+    """
+    DictConfig と NumPy の文字の向きを受け, 表に無い列の誤りに表の列を
+    添えることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    better = OmegaConf.create({"iou": "higher"})
+    path = save_evaluation(
+        experiment, "cfg", {"iou": [0.5], "iou_diff": [0.1]}, "test",
+        better=better
+    )
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["better"] == {"iou": "higher", "iou_diff": "higher"}
+    path = save_evaluation(
+        experiment, "numpy", {"mae": [0.5]}, "test",
+        better={np.str_("mae"): np.str_("lower")}
+    )
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["better"] == {"mae": "lower"}
+    assert type(next(iter(data["better"]))) is str
+
+    # 多い列は初めの 10 個と残りの数を添える
+    table = {f"m{index}": [0.0] for index in range(12)}
+    with pytest.raises(ValueError, match=r"表の列: m0, .*m9 ほか 2 列"):
+        save_evaluation(experiment, "many", table, "test",
+                        better={"x": "lower"})
+
+
 def test_load_evaluations_better_old_and_unknown(tmp_path: Path) -> None:
     """
     better の無い前のファイルと, 知らない値や表に無い列の欄を読めることを

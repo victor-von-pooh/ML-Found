@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 import json
 import math
 import os
@@ -49,6 +50,9 @@ EVALUATION_KINDS = ("table", "curve")
 
 # 指標の向き (小さいほど良いか, 大きいほど良いか)
 BETTER_VALUES = ("lower", "higher")
+
+# 表に無い列の誤りに添える表の列の数の上限
+MAX_SHOWN_COLUMNS = 10
 
 # 比べる相手との表の形で, 同じ指標の向きを持つ列の名前の終わり
 # (<指標>, <指標>_baseline, <指標>_diff)
@@ -365,33 +369,35 @@ def spread_better(
         表の列
     strict: bool
         同じ指標の列に違う向きを書いた場合に誤りとするか. False の場合は
-        書いた向きを残し, 違う向きの混ざった指標の列は埋めない
+        書いた向きを残し, 2 つの向きが届く書いていない列は埋めない
 
     Returns
     ----------
     spread: dict[str, str]
         広げた後の向き (列の順)
     """
-    # 同じ指標の列に書いた向きがそろっているかの確認 (書いた順に頼らない
-    # ように, 違う向きの混ざった指標は埋めない)
-    filled = dict(better)
+    # 書いた列ごとに, 同じ指標の列へ届く向きを集める (書いた順に頼らない
+    # ように, 先に全てを集めてから決める)
+    arrivals: dict[str, dict[str, str]] = {}
     for column, value in better.items():
-        family = metric_family(column, columns)
-        conflicts = [
-            item for item in family
-            if better.get(item, value) != value
-        ]
-        if conflicts and strict:
-            raise ValueError(
-                f"better の {column} と {conflicts[0]} は同じ指標なので, "
-                f"同じ向きにしてください: {value}, {better[conflicts[0]]}"
-            )
-        if conflicts:
-            continue
+        for item in metric_family(column, columns):
+            arrivals.setdefault(item, {})[column] = value
 
-        # 書いていない同じ指標の列の補い
-        for item in family:
-            filled.setdefault(item, value)
+    # 1 つの列に 2 つの向きが届いた場合, 書く側は誤り, 読む側は埋めない
+    # (書いた列は書いた向きのまま)
+    filled = dict(better)
+    for item, sources in arrivals.items():
+        values = set(sources.values())
+        if len(values) > 1 and strict:
+            names = ", ".join(
+                f"{column}: {value}" for column, value in sources.items()
+            )
+            raise ValueError(
+                f"better の向きが, 同じ指標の列 {item} で食い違います "
+                f"({names}). 同じ指標の列は同じ向きにしてください"
+            )
+        if len(values) == 1:
+            filled.setdefault(item, values.pop())
     spread = {column: filled[column] for column in columns if column in filled}
 
     return spread
@@ -413,24 +419,32 @@ def check_better(better: Any, columns: list[str]) -> dict[str, str]:
     checked: dict[str, str]
         同じ指標の列に広げた向き. None の場合は空
     """
-    # 辞書で, 列は表にあり, 値は lower か higher に制限
+    # 辞書 (DictConfig などの Mapping も可) で, 列は表にあり, 値は lower か
+    # higher に制限. NumPy の文字などは str にそろえる
     if better is None:
         checked: dict[str, str] = {}
         return checked
-    if not isinstance(better, dict):
+    if not isinstance(better, Mapping):
         raise ValueError(
             "better は列の名前から lower か higher の辞書にしてください: "
             f"{better!r}"
         )
+    written: dict[str, str] = {}
     for column, value in better.items():
-        if column not in columns:
-            raise ValueError(f"better の列 {column!r} は表にありません")
-        if value not in BETTER_VALUES:
+        if not isinstance(column, str) or column not in columns:
+            shown = ", ".join(columns[:MAX_SHOWN_COLUMNS])
+            if len(columns) > MAX_SHOWN_COLUMNS:
+                shown += f" ほか {len(columns) - MAX_SHOWN_COLUMNS} 列"
+            raise ValueError(
+                f"better の列 {column!r} は表にありません (表の列: {shown})"
+            )
+        if not isinstance(value, str) or value not in BETTER_VALUES:
             raise ValueError(
                 f"better の {column} は lower か higher にしてください: "
                 f"{value!r}"
             )
-    checked = spread_better(better, columns, strict=True)
+        written[str(column)] = str(value)
+    checked = spread_better(written, columns, strict=True)
 
     return checked
 

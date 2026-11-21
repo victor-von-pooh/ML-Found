@@ -78,13 +78,15 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `lr_steps.csv`, `lr_steps.png` | fit を終えたとき (`scheduler.interval: step` で, 更新が 1 回以上の場合) | 更新ごとの学習率. 列は `step`, `epoch`, `lr` (名前付きの Optimizer では `lr_<名前>`) |
 | `best.pt`, `last.pt` | 設定による | チェックポイント. 中の形は決めない (ML-Found で読む) |
 | `git_diff.patch` | 未コミットの変更がある場合 | commit id からの差分 |
+| `model_spec.yaml` | `start_experiment` の後. config の `model.spec` の場所にプロジェクトの中の普通のファイルがあり, 再開 (`trainer.resume_from`) でない場合 | 学習に使ったモデルの定義 (ML-ModelControl の定義の YAML) の写し. 中身は変えずに写す. 写したかどうかと中身の sha256 は `source.yaml` の `model_spec` |
 | `task.yaml` | 任意. config の `task` か `write_task` で書いた場合 | 何の実験か (下の「task.yaml」). 受け持ち, 出力の意味, 正解の出どころ, 作り方 |
 | `evaluations/<名前>.json` | 任意. `save_evaluation` で書いた場合 | データ全体の評価の表 (下の「evaluations」) |
 | `samples/` | 任意. `save_sample` で書いた場合 | 見本の出力と一覧 `samples/index.json` (下の「samples」) |
 | `policy/` | 任意. 強化学習の方策を `export_policy` で書き出した場合 | 方策の一式 (下の「方策の一式」). 独自の版を持つ |
 
 - `task.yaml`, `evaluations/`, `samples/` は任意のファイル. 書かなかった実験には無い. 読む側は, 無い場合を「分からない」として扱う
-- プロジェクトが実験のディレクトリに自分のファイル (生成した画像, 写したモデルの定義など) を足してよい. 読む側は, 知らないファイルを無視する. 学習曲線とプロジェクトの画像は, 上の名前で見分ける
+- プロジェクトが実験のディレクトリに自分のファイル (生成した画像, 問題の設定の写しなど) を足してよい. 読む側は, 知らないファイルを無視する. 学習曲線とプロジェクトの画像は, 上の名前で見分ける
+- `model_spec.yaml` はプロジェクトが学習の後に同じ名前で書き直してもよい (学習のスクリプトが自分で定義を写す場合). そのときの中身は `source.yaml` の `sha256` と合わないことがあるので, 読む側は `sha256` を学習を始めたときの定義の印として使う
 - 書きかけを読まないように, ML-Found は一時ファイル (`*.tmp`, `.run.json.*.tmp` など) に書いてから置き換える. 一時ファイルが一瞬見えることがあるので, 読む側は無視する
 
 ### source.yaml
@@ -96,9 +98,15 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `default` | 文字か null | default の config |
 | `experiment` | 文字か null | experiment の config |
 | `overrides` | 文字のリストか null | 「項目=値」の上書き (書いた文字のまま) |
+| `model_spec` | 辞書か null | モデルの定義 (config の `model.spec`) の写し (下). config に `model.spec` が無い, 空, 文字でない場合は null |
 
 - パスは, プロジェクトの中ならプロジェクトからの相対パス (区切りは `/`), 外なら絶対パス. 外のパス (画面で書き換えた config を置いた場所など) は, 後で消えていることがある
 - null は分からないことを表す (ノートブックの中, `load_config` などを通らずに作った config など)
+- `model_spec` の欄は次の 3 つ
+    - `path` (文字): config の `model.spec` の場所. 相対パスはプロジェクトから辿り (`~` はホームに展開), 他のパスと同じく, プロジェクトの中ならプロジェクトからの相対パス (区切りは `/`), 外なら絶対パス. リンクは辿らずに書く
+    - `status` (文字): `copied` (`model_spec.yaml` に写した), `missing` (ファイルが無い), `outside` (プロジェクトの外を指す), `link` (場所か途中のディレクトリがシンボリックリンク), `not_file` (ディレクトリ, FIFO など普通のファイルでない), `unreadable` (権限などで読めない), `resumed` (再開した学習なので写さない. 定義は再開元の実験にある). 読む側は知らない値を写していないものとして読む
+    - `sha256` (文字か null): 写した中身の SHA-256 (16 進の小文字). `copied` の他は null
+- `model_spec` が無い `source.yaml` (この欄の前の ML-Found が書いたもの) は, 写したかどうか分からないものとして読む
 
 ### run.json
 

@@ -15,6 +15,9 @@ from ml_found.experiment.env_info import (
     collect_env_info, get_git_diff, log_env_info
 )
 from ml_found.experiment.logger import get_logger
+from ml_found.experiment.model_spec import (
+    copy_model_spec, describe_model_spec
+)
 from ml_found.experiment.seed import EXTRA_RNGS, fix_seed
 from ml_found.experiment.task import (
     TASK_KEYS, build_task, describe_origin, save_task
@@ -430,10 +433,12 @@ def start_experiment(
         datetime.now()
     )
 
-    # 学習に使った config と差分, 起動のしかた (スクリプト, config のパス,
-    # 上書き), config に task があれば何の実験か (task.yaml) を保存
+    # 学習に使った config と差分, モデルの定義の写し (config に model.spec
+    # があれば), 起動のしかた (スクリプト, config のパス, 上書き, 定義の
+    # 写しの記録), config に task があれば何の実験か (task.yaml) を保存
     save_config(cfg, diff, str(run_dir))
-    save_source(cfg, str(run_dir), project_root)
+    model_spec = copy_model_spec(cfg, run_dir, project_root)
+    save_source(cfg, str(run_dir), project_root, model_spec)
     if task is not None:
         save_task(run_dir, task)
 
@@ -447,6 +452,8 @@ def start_experiment(
     )
     logger.info(f"保存先: {run_dir}")
     logger.info(f"default との差分:\n\n{format_diff(diff)}")
+    if model_spec is not None:
+        logger.info(describe_model_spec(model_spec))
     if task is not None:
         logger.info(
             f"task.yaml を書きました: {describe_origin(task['target']['origin'])}"

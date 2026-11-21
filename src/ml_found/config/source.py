@@ -108,7 +108,9 @@ def script_path(project_dir: Path) -> Optional[str]:
     return script
 
 
-def build_source(cfg: DictConfig, project_dir: Path) -> dict:
+def build_source(
+    cfg: DictConfig, project_dir: Path, model_spec: Optional[dict] = None
+) -> dict:
     """
     実験の起動のしかたをまとめる関数
 
@@ -118,13 +120,16 @@ def build_source(cfg: DictConfig, project_dir: Path) -> dict:
         学習に使う config
     project_dir: Path
         プロジェクトのディレクトリ
+    model_spec: Optional[dict] = None
+        モデルの定義の写しの記録 (path, status, sha256),
+        config に model.spec が無い場合は None
 
     Returns
     ----------
     source: dict
-        format_version, script, default, experiment, overrides.
-        load_config などを使わずに作った config では, format_version と
-        script 以外は None
+        format_version, script, default, experiment, overrides, model_spec.
+        load_config などを使わずに作った config では, default, experiment,
+        overrides は None
     """
     # 読み込み関数が覚えた情報を, プロジェクトからの相対パスに変換
     remembered = SOURCES.get(id(cfg))
@@ -133,7 +138,8 @@ def build_source(cfg: DictConfig, project_dir: Path) -> dict:
         "script": script_path(project_dir),
         "default": None,
         "experiment": None,
-        "overrides": None
+        "overrides": None,
+        "model_spec": None if model_spec is None else dict(model_spec)
     }
     if remembered is not None:
         source["default"] = relative_to_project(
@@ -147,7 +153,10 @@ def build_source(cfg: DictConfig, project_dir: Path) -> dict:
     return source
 
 
-def save_source(cfg: DictConfig, run_dir: str, project_dir: Path) -> None:
+def save_source(
+    cfg: DictConfig, run_dir: str, project_dir: Path,
+    model_spec: Optional[dict] = None
+) -> None:
     """
     実験の起動のしかたを source.yaml に保存する関数
 
@@ -159,6 +168,9 @@ def save_source(cfg: DictConfig, run_dir: str, project_dir: Path) -> None:
         保存先のディレクトリ
     project_dir: Path
         プロジェクトのディレクトリ
+    model_spec: Optional[dict] = None
+        モデルの定義の写しの記録 (path, status, sha256),
+        config に model.spec が無い場合は None
 
     Returns
     ----------
@@ -166,7 +178,7 @@ def save_source(cfg: DictConfig, run_dir: str, project_dir: Path) -> None:
     """
     # 既にある場合は, 分からない項目 (None) だけを今回の値で埋めて情報を保持
     path = Path(run_dir) / SOURCE_FILE
-    source = build_source(cfg, project_dir)
+    source = build_source(cfg, project_dir, model_spec)
     if path.exists():
         existing = OmegaConf.to_container(OmegaConf.load(path))
         if isinstance(existing, dict):

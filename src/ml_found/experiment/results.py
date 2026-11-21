@@ -47,6 +47,13 @@ NAME_PATTERN = re.compile(r"[A-Za-z0-9_@-][A-Za-z0-9_.@-]*")
 # 評価の種類
 EVALUATION_KINDS = ("table", "curve")
 
+# 指標の向き (小さいほど良いか, 大きいほど良いか)
+BETTER_VALUES = ("lower", "higher")
+
+# 比べる相手との表の形で, 同じ指標の向きを持つ列の名前の終わり
+# (<指標>, <指標>_baseline, <指標>_diff)
+METRIC_SUFFIXES = ("_baseline", "_diff")
+
 # 見本の種類と, 写すファイルの拡張子から決める種類
 SAMPLE_KINDS = ("image", "text", "audio", "point_cloud", "mask", "file")
 KIND_BY_SUFFIX = {
@@ -312,11 +319,153 @@ def table_records(table: Any) -> tuple[list[str], list[dict]]:
     return columns, records
 
 
+def metric_family(column: str, columns: list[str]) -> list[str]:
+    """
+    比べる相手との表の形で, 列と同じ指標の列を集める関数
+
+    Parameters
+    ----------
+    column: str
+        列の名前
+    columns: list[str]
+        表の列
+
+    Returns
+    ----------
+    family: list[str]
+        <指標>, <指標>_baseline, <指標>_diff のうち表にある列 (列の順).
+        列自体も含む
+    """
+    # 終わりを除いた名前を指標とし, 同じ指標の 3 つの列の候補を作成
+    metric = column
+    for suffix in METRIC_SUFFIXES:
+        if column.endswith(suffix) and len(column) > len(suffix):
+            metric = column[:-len(suffix)]
+            break
+    candidates = {metric} | {metric + suffix for suffix in METRIC_SUFFIXES}
+    family = [
+        item for item in columns if item in candidates or item == column
+    ]
+
+    return family
+
+
+def spread_better(
+    better: dict[str, str], columns: list[str], strict: bool
+) -> dict[str, str]:
+    """
+    指標の向きを, 同じ指標の列 (<指標>, _baseline, _diff) に広げる関数
+
+    Parameters
+    ----------
+    better: dict[str, str]
+        列の名前から向き (lower か higher). 列は表にあるもの
+    columns: list[str]
+        表の列
+    strict: bool
+        同じ指標の列に違う向きを書いた場合に誤りとするか. False の場合は
+        書いた向きを残し, 書いていない列だけを埋める
+
+    Returns
+    ----------
+    spread: dict[str, str]
+        広げた後の向き (列の順)
+    """
+    # 書いた向きの確認と, 書いていない同じ指標の列の補い
+    filled = dict(better)
+    for column, value in better.items():
+        for item in metric_family(column, columns):
+            current = filled.get(item)
+            if current is None:
+                filled[item] = value
+            elif current != value and strict:
+                raise ValueError(
+                    f"better の {column} と {item} は同じ指標なので, "
+                    f"同じ向きにしてください: {value}, {current}"
+                )
+    spread = {column: filled[column] for column in columns if column in filled}
+
+    return spread
+
+
+def check_better(better: Any, columns: list[str]) -> dict[str, str]:
+    """
+    save_evaluation に渡した列ごとの指標の向きを確かめる関数
+
+    Parameters
+    ----------
+    better: Any
+        列の名前から lower か higher の辞書, None の場合は向きを書かない
+    columns: list[str]
+        表の列
+
+    Returns
+    ----------
+    checked: dict[str, str]
+        同じ指標の列に広げた向き. None の場合は空
+    """
+    # 辞書で, 列は表にあり, 値は lower か higher に制限
+    if better is None:
+        checked: dict[str, str] = {}
+        return checked
+    if not isinstance(better, dict):
+        raise ValueError(
+            "better は列の名前から lower か higher の辞書にしてください: "
+            f"{better!r}"
+        )
+    for column, value in better.items():
+        if column not in columns:
+            raise ValueError(f"better の列 {column!r} は表にありません")
+        if value not in BETTER_VALUES:
+            raise ValueError(
+                f"better の {column} は lower か higher にしてください: "
+                f"{value!r}"
+            )
+    checked = spread_better(dict(better), columns, strict=True)
+
+    return checked
+
+
+def read_better(data: dict) -> dict[str, str]:
+    """
+    読み込んだ評価から列ごとの指標の向きを取り出す関数
+
+    Parameters
+    ----------
+    data: dict
+        evaluations/<名前>.json の中身
+
+    Returns
+    ----------
+    better: dict[str, str]
+        表の列のうち向きのあるもの (同じ指標の列に広げたもの).
+        better を持たないファイルは空, 表に無い列と知らない値の欄は除く
+    """
+    # 列が文字のリストでない場合と better が辞書でない場合は向きが無い扱い
+    columns = data.get("columns")
+    raw = data.get("better")
+    if (
+        not isinstance(columns, list)
+        or not all(isinstance(column, str) for column in columns)
+        or not isinstance(raw, dict)
+    ):
+        better: dict[str, str] = {}
+        return better
+    known = {
+        column: value for column, value in raw.items()
+        if column in columns and value in BETTER_VALUES
+    }
+    better = spread_better(known, columns, strict=False)
+
+    return better
+
+
 def save_evaluation(
     target: Any, name: str, table: Any, split: str,
     description: Optional[str] = None, kind: str = "table",
     x: Optional[str] = None, baseline: Optional[str] = None,
-    guard: bool = False, epoch: Optional[int] = None
+    guard: bool = False, epoch: Optional[int] = None,
+    better: Optional[dict[str, str]] = None
 ) -> Path:
     """
     学習の後のデータ全体の評価を evaluations/<名前>.json に書く関数
@@ -344,6 +493,10 @@ def save_evaluation(
         守る指標の表か
     epoch: Optional[int] = None
         評価した重みのエポック
+    better: Optional[dict[str, str]] = None
+        列ごとの指標の向き. 列の名前から lower (小さいほど良い) か
+        higher (大きいほど良い). <指標>, <指標>_baseline, <指標>_diff は
+        同じ向きで, どれか 1 つに書けば他にも広げて書く
 
     Returns
     ----------
@@ -368,6 +521,7 @@ def save_evaluation(
         raise ValueError(f"epoch は 0 以上の整数にしてください: {epoch!r}")
     check_optional_text(description, "description")
     check_optional_text(baseline, "baseline")
+    directions = check_better(better, columns)
 
     # 一時ファイルから置き換えて書き込み
     evaluation = {
@@ -380,6 +534,7 @@ def save_evaluation(
         "description": description,
         "baseline": baseline,
         "guard": bool(guard),
+        "better": directions,
         "epoch": epoch,
         "created_at": now_iso()
     }
@@ -404,7 +559,7 @@ def load_evaluations(run_dir: Union[str, os.PathLike]) -> list[dict]:
     ----------
     evaluations: list[dict]
         名前の順の評価. evaluations/ が無い実験 (評価を書かなかった実験など)
-        は空
+        は空. better は列ごとの指標の向きの辞書 (無いファイルは空)
     """
     # 一時ファイル (. で始まる) と読めないファイルは無視
     folder = Path(run_dir) / EVALUATIONS_DIR
@@ -419,6 +574,7 @@ def load_evaluations(run_dir: Union[str, os.PathLike]) -> list[dict]:
         except (OSError, ValueError):
             continue
         if isinstance(data, dict):
+            data["better"] = read_better(data)
             evaluations.append(data)
 
     return evaluations

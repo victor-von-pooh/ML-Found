@@ -497,7 +497,7 @@ task.update({
 write_task(experiment, task)
 ```
 
-評価は学習の後に `save_evaluation(experiment, 名前, 表, 分割)` で書く. 表は行の辞書の並び, 列の名前から値の並びの辞書, 1 行の辞書, pandas の DataFrame (索引は使わないので, 要るなら `reset_index()` で列にする) のどれか. 値は数, 文字, 真偽値, None (テンソルと NumPy の数も可. nan と無限大は null). `description` (何の評価か), `kind="curve"` と `x` (曲線の横軸の列), `baseline` (比べる相手の名前), `guard=True` (守る指標の表), `epoch` (評価した重みのエポック) を添えられる. 実験の代わりに実験のディレクトリのパスを渡すと, 終えた実験にも後から書ける.
+評価は学習の後に `save_evaluation(experiment, 名前, 表, 分割)` で書く. 表は行の辞書の並び, 列の名前から値の並びの辞書, 1 行の辞書, pandas の DataFrame (索引は使わないので, 要るなら `reset_index()` で列にする) のどれか. 値は数, 文字, 真偽値, None (テンソルと NumPy の数も可. nan と無限大は null). `description` (何の評価か), `kind="curve"` と `x` (曲線の横軸の列), `baseline` (比べる相手の名前), `guard=True` (守る指標の表), `epoch` (評価した重みのエポック), `better` (列ごとの指標の向き. 列の名前から `"lower"` か `"higher"` の辞書) を添えられる. 実験の代わりに実験のディレクトリのパスを渡すと, 終えた実験にも後から書ける.
 
 ```python
 save_evaluation(
@@ -508,9 +508,11 @@ save_evaluation(
         "iou_baseline": [0.78, 0.70],
         "iou_diff": [0.03, -0.06]
     },
-    "test", baseline="今の処理", guard=True
+    "test", baseline="今の処理", guard=True, better={"iou": "higher"}
 )
 ```
+
+`better` は書かなくてもよい (書かない列は, 画面が指標の名前から向きを推し量るか, 分からないとする). 名前から向きの決まらない指標 (`neg_log_loss`, 独自の指標など) と守る指標の表では書くのを推奨する (守れたかの判定を画面が言い切れるように). 表に無い列と, `lower` と `higher` でない値は誤り. 比べる相手との表の形の `<指標>`, `<指標>_baseline`, `<指標>_diff` は同じ向きなので, どれか 1 つに書けば JSON には 3 つの列に広げて書く (上の例では `iou_baseline` と `iou_diff` も `higher`). 同じ指標の列に違う向きを書くと誤り. `load_evaluations` は各評価の `better` を辞書で返す (書かなかった評価と, `better` を持たない前のファイルは空の辞書. 表に無い列と知らない値の欄は除き, 欠けた同じ指標の列には向きを広げる).
 
 比べる相手との表は, 上のように 1 行を 1 つのグループにし, 指標ごとに `<指標>` (この実験), `<指標>_baseline` (比べる相手), `<指標>_diff` (この実験 - 比べる相手) を並べる形を推奨する (画面が差の列を見分けられる). 相手が 2 つ以上ある場合などは, 1 行を (グループ, 答えた側) にし, 答えた側を `answer` の列 (`model` か相手の名前) に書く形も使える (docs/FORMAT.md の「evaluations」).
 

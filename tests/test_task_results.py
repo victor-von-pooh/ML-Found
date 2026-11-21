@@ -520,6 +520,119 @@ def test_save_evaluation_errors(
     assert load_evaluations(experiment.run_dir) == []
 
 
+def test_save_evaluation_better(tmp_path: Path) -> None:
+    """
+    列ごとの指標の向きを書き, 同じ指標の列に広げて読めることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+
+    # 指標に書いた向きは _baseline と _diff にも広げる
+    path = save_evaluation(
+        experiment, "guard",
+        {
+            "group": ["a"], "accuracy": [0.9], "accuracy_baseline": [0.8],
+            "accuracy_diff": [0.1], "loss": [0.2], "loss_diff": [-0.1]
+        },
+        "test", baseline="今の処理", guard=True,
+        better={"accuracy": "higher", "loss_diff": "lower"}
+    )
+    expected = {
+        "accuracy": "higher", "accuracy_baseline": "higher",
+        "accuracy_diff": "higher", "loss": "lower", "loss_diff": "lower"
+    }
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["better"] == expected
+    assert load_evaluations(experiment.run_dir)[0]["better"] == expected
+
+    # 書かなかった評価は空の辞書
+    path = save_evaluation(experiment, "plain", {"iou": 0.5}, "test")
+    assert json.loads(path.read_text(encoding="utf-8"))["better"] == {}
+
+
+def test_load_evaluations_better_old_and_unknown(tmp_path: Path) -> None:
+    """
+    better の無い前のファイルと, 知らない値や表に無い列の欄を読めることを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    folder = tmp_path / "evaluations"
+    folder.mkdir()
+    (folder / "old.json").write_text(json.dumps({
+        "name": "old", "split": "test", "kind": "table", "x": None,
+        "columns": ["iou"], "rows": [{"iou": 0.5}]
+    }), encoding="utf-8")
+    (folder / "odd.json").write_text(json.dumps({
+        "name": "odd", "columns": ["iou", "iou_diff", "mae"],
+        "rows": [], "better": {
+            "iou_diff": "higher", "mae": "best", "missing": "lower"
+        }
+    }), encoding="utf-8")
+    (folder / "broken.json").write_text(json.dumps({
+        "name": "broken", "columns": ["iou"], "rows": [], "better": ["iou"]
+    }), encoding="utf-8")
+    evaluations = {
+        item["name"]: item["better"] for item in load_evaluations(tmp_path)
+    }
+    assert evaluations == {
+        "broken": {}, "odd": {"iou": "higher", "iou_diff": "higher"},
+        "old": {}
+    }
+
+
+@pytest.mark.parametrize(
+    ("better", "message"),
+    [
+        (["iou"], "辞書"),
+        ({"miou": "higher"}, "表にありません"),
+        ({"iou": "max"}, "lower か higher"),
+        ({"iou": "higher", "iou_diff": "lower"}, "同じ向き"),
+    ]
+)
+def test_save_evaluation_better_errors(
+    tmp_path: Path, better: object, message: str
+) -> None:
+    """
+    指標の向きの誤りを書く前に見つけることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    better: object
+        渡す向き
+    message: str
+        誤りのメッセージに含まれる文字
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    with pytest.raises(ValueError, match=message):
+        save_evaluation(
+            experiment, "ok", {"iou": [0.5], "iou_diff": [0.1]}, "test",
+            better=better
+        )
+    assert load_evaluations(experiment.run_dir) == []
+
+
 def test_save_samples(tmp_path: Path) -> None:
     """
     画像, 文, 音, 点群, ファイルの見本を書き, 一覧に加えることを確かめる関数

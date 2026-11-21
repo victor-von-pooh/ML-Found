@@ -17,6 +17,12 @@
 
 ## 優先度 低
 
+### 評価の読み込みでリンクと普通でないファイルを読まない
+- 何を: `load_evaluations` (`experiment/results.py`) が `evaluations/` の `*.json` を読むとき, シンボリックリンク, FIFO などの普通でないファイルと, 大きすぎるファイル (画面と同じ 20 MiB を超えるもの) を読まずに飛ばす. `evaluations/` 自体がリンクなら空とする. 開くときに入れ替わらないよう `O_NOFOLLOW` で開き, 開いたものが普通のファイルかを確かめ, 上限 + 1 バイトまでだけ読む
+- なぜ: 今はリンクを辿って実験の外のファイルを読み, FIFO では読み込みが止まり, 大きさの上限も無いため. あわせて, 同じ読み方を自分で持つ画面 (ML-Dashboard. リンクと普通でないファイルと 20 MiB を超えるファイルを読まない) と読み方をそろえる
+- 終わりの条件: `load_evaluations` がリンク (ファイルと `evaluations/` 自体), FIFO, 大きすぎるファイルを飛ばし, テストがある
+- つながり: ML-Dashboard の「一覧と比較の評価の残り」
+
 ### 画面が使う確かめの関数を公開する
 - 何を: ML-Dashboard が今は内部のモジュールから読んでいる関数を公開の関数にし, `__all__` と文書に入れる. 実験を始める前の確かめ (`start_experiment` が出力先を作る前にする, 名前, 再開のパス, trainer, Optimizer と Scheduler の確かめ. 今は `check_name`, `check_resume_path`, `check_trainer_config`, `check_optim_config`, `missing_data_size_params`, `try_build_optim`) は 1 つの公開の関数にまとめる案. 他は, 名前付きの Optimizer の扱い (`named_views`, `uses_named_optimizers`), Optimizer と Scheduler のクラスの解決 (`resolve_optimizer_class`, `resolve_scheduler_class`), 引数の確かめ (`check_optim_params`, `check_param_values`), config の上書きの読み方 (`parse_overrides`, `params_sections`), 見本の索引の読み込み (`read_samples_index`), 方策の重みのハッシュ (`file_sha256`)
 - なぜ: 公開の口が無いので ML-Dashboard が内部のモジュールを読み, ML-Found の中を変えると画面が壊れうる

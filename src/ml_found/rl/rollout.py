@@ -145,7 +145,9 @@ def gaussian_std(model: nn.Module, size: int) -> torch.Tensor:
     # 勾配はそのまま通し (範囲の外に出た log_std も更新で戻れるように).
     # 値は 0 の差だけを足すので, 大きな値や無限大でも桁落ちと nan は無し
     clamped = log_std.clamp(LOG_STD_MIN, LOG_STD_MAX)
-    log_std = clamped + (log_std - log_std.detach()).nan_to_num(0.0)
+    log_std = clamped.detach() + (
+        log_std - log_std.detach()
+    ).nan_to_num(0.0)
     std = log_std.exp().expand(size)
 
     return std

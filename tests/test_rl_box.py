@@ -397,6 +397,13 @@ def test_box_multi_dim_and_log_std() -> None:
     outputs["loss"].backward()
     assert torch.all(model.log_std.grad != 0)
 
+    # 範囲の中では, 標準偏差の和の log_std の勾配は標準偏差と同じ
+    for value in (0.0, 1.0):
+        model.log_std = nn.Parameter(torch.full((4,), value))
+        std = gaussian_std(model, 4)
+        std.sum().backward()
+        assert torch.allclose(model.log_std.grad, std.detach())
+
     # 大きな値と無限大でも, 標準偏差は範囲の端の値で, 勾配は有限
     for value, expected in (
         (1e8, LOG_STD_MAX), (-1e8, LOG_STD_MIN), (float("inf"), LOG_STD_MAX),

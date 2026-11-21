@@ -139,7 +139,7 @@ print([(param["name"], param["default"]) for param in adam["params"]])
 上書きは experiment の後に重なり, experiment と同じく default にある項目だけを書けて, `diff.yaml` にも残る. 上書きでクラス名を変えると, default と experiment に書いた前のクラスの引数は捨てられる. 値は YAML として読むので, `scheduler.name=null` で使わない設定にできる. 項目の削除 (`~`) や追加 (`+`) の書き方には対応していない.
 独自の引数 (`--seed` など) を持つ学習スクリプトは, 自分の parser に `add_config_arguments(parser)` で `--experiment` と上書きを加え, 読み込んだ引数を `load_config_from_args(project_dir, args)` に渡す. パスや上書きを自分で決める場合は `load_config(default_path, experiment_path, overrides)` を使う.
 
-`start_experiment` が返す `Experiment` は, 学習に使う config (`cfg`), プロジェクトのディレクトリ (`project_dir`), 実験の出力先 (`run_dir`. `<output_dir>/<name>/<日付>/<時刻>/` の `Path`), ロガー (`logger`), デバイス (`device`), モデルの定義の写しの場所 (`model_spec_path`. 写した場合は `run_dir / "model_spec.yaml"`, 写さなかった場合と `model.spec` が無い場合は `None`) を持つ. モデルを作るのに使ったファイルを残す場合は `run_dir` に写す. モデルの定義 (ML-ModelControl) は, config の `model.spec` に場所を書けば `start_experiment` が写す (下の「モデルの定義の写し」).
+`start_experiment` が返す `Experiment` は, 学習に使う config (`cfg`), プロジェクトのディレクトリ (`project_dir`), 実験の出力先 (`run_dir`. `<output_dir>/<name>/<日付>/<時刻>/` の `Path`), ロガー (`logger`), デバイス (`device`), モデルの定義の写しの場所 (`model_spec_path`. 写した場合は `run_dir / "model_spec.yaml"`), 写した元の定義のファイル (`model_spec_source`. プロジェクトの中の絶対パス) を持つ (`model_spec_path` と `model_spec_source` は, 写さなかった場合と `model.spec` が無い場合は `None`). モデルを作るのに使ったファイルを残す場合は `run_dir` に写す. モデルの定義 (ML-ModelControl) は, config の `model.spec` に場所を書けば `start_experiment` が写す (下の「モデルの定義の写し」).
 
 **モデルの定義の写し**: config の `model.spec` (相対パスはプロジェクトから辿る) にファイルがあれば, `start_experiment` が出力先を作る前に読み (学習を始めるときの中身), 出力先を作った後に中身を変えずに `model_spec.yaml` として写し, 場所と中身の sha256 を `source.yaml` の `model_spec` に書く (出力先だけで何で学習したかが分かり, 同じモデルで起動し直せるように). ML-Found は定義の中身を読まない (ml_modelcontrol に頼らない) ので, 定義の誤りはモデルを組み立てるときに分かる.
 
@@ -149,19 +149,28 @@ print([(param["name"], param["default"]) for param in adam["params"]])
 - `trainer.resume_from` で再開する学習でも写す (再開でも今の定義から組み立て, 再開元の重みを strict に読むので, 学習が動いた時点で今の定義がその実験の定義). 再開かどうかは `config.yaml` の `trainer.resume_from` で分かる. 同じ `Trainer` で `fit` を呼び直す場合は同じ実験なので, 最初に写したものが残る
 - 写したファイルは `config.yaml` と同じ権限 (umask に従う) で作る. 学習のスクリプトが学習の後に同じ名前で写し直しても上書きできる (そのときの中身は `sha256` と合わないことがある)
 
-**モデルは定義の写しから組み立てる (推奨)**: 学習のスクリプトは, `model.spec` の場所でなく `Experiment` の `model_spec_path` (写した `model_spec.yaml`) からモデルを組み立てる. 写しの中身は `source.yaml` の `sha256` と同じなので, 記録した定義と学習に使った定義がそろう. `sha256` は `start_experiment` が読んだ時点の中身なので, `model.spec` の場所 (か別の場所) から組み立てると, 別の時点 (`start_experiment` の前や後) に書き換えた定義を使い, 記録と一致しないことがある. `model_spec_path` が `None` (写さなかった場合. 理由は `source.yaml` の `status` と `train.log`) は, 記録に `sha256` が無いので, プロジェクトの定義から組み立てても記録との食い違いは起きない.
+**モデルは定義の写しから組み立てる (推奨)**: 学習のスクリプトは, `model.spec` の場所でなく `Experiment` の `model_spec_path` (写した `model_spec.yaml`) からモデルを組み立てる. 写しの中身は `source.yaml` の `sha256` と同じなので, 記録した定義と学習に使った定義がそろう. `sha256` は `start_experiment` が読んだ時点の中身なので, `model.spec` の場所 (か別の場所) から組み立てると, 別の時点 (`start_experiment` の前や後) に書き換えた定義を使い, 記録と一致しないことがある. `None` の場合 (写さなかった場合. 理由は `source.yaml` の `status` と `train.log`) は, 記録に `sha256` が無いので, プロジェクトの定義から組み立てても記録との食い違いは起きない.
+
+- 定義の中の相対の参照 (外部の重みのファイルなど) は, 写しのある `run_dir` でなく元の定義の場所から辿る. 組み立てる関数には, 相対の参照の起点として `model_spec_source.parent` を渡す (渡さずに写しのディレクトリから辿ると, 参照したファイルが見つからない). ML-Found が写すのは定義のファイルだけで, 定義が参照するファイルは写さない
+- 定義の誤りで空の出力先が残らないように, 元の定義の確かめ (組み立てずに形を確かめる関数など) は `start_experiment` の前にする. 組み立ては写しからする
 
 ```python
+# 元の定義を確かめてから実験を始める (誤りなら出力先を作る前に止まる)
+check_spec(project_dir / cfg.model.spec)
 experiment = start_experiment(cfg, diff, str(project_dir))
 
-# 写しがあれば写しから, 無ければ (仮のモデルなど) プロジェクトで組み立てる
+# 写しがあれば写しから (相対の参照は元の定義の場所から辿る),
+# 無ければ (仮のモデルなど) プロジェクトで組み立てる
 if experiment.model_spec_path is not None:
-    model = build_model(experiment.model_spec_path)
+    model = build_model(
+        experiment.model_spec_path,
+        base_dir=experiment.model_spec_source.parent
+    )
 else:
     model = build_fallback_model(cfg)
 ```
 
-`build_model` と `build_fallback_model` はプロジェクトで用意する組み立て (`build_model` は ML-ModelControl の定義を読む関数など).
+`check_spec`, `build_model`, `build_fallback_model` はプロジェクトで用意するもの. 例えば ML-ModelControl では, 定義の確かめに `infer`, 組み立てに `build_model(path, base_dir=...)` を使える (`base_dir` を省くと定義のファイルのディレクトリから辿る).
 
 `step(model, batch, phase)` の決まりは以下の通り.
 

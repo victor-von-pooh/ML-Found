@@ -10,8 +10,8 @@ from omegaconf import OmegaConf
 from ml_found.config.loader import load_project_config
 from ml_found.experiment import model_spec, setup
 from ml_found.experiment.model_spec import (
-    MODEL_SPEC_FILE, copied_spec_path, copy_model_spec, describe_model_spec,
-    read_model_spec
+    MODEL_SPEC_FILE, copied_spec_path, copied_spec_source, copy_model_spec,
+    describe_model_spec, read_model_spec
 )
 from ml_found.experiment.setup import Experiment, start_experiment
 
@@ -276,6 +276,15 @@ def test_build_from_copy(
     assert hashlib.sha256(content).hexdigest() == record["sha256"]
     assert content != spec.read_bytes()
 
+    # 元のファイルの場所は, 定義の中の相対の参照 (外部の重みなど) を辿る
+    # 起点. 写しのディレクトリからは辿れない
+    assert experiment.model_spec_source == (
+        project.resolve() / "models" / "model.yaml"
+    )
+    (project / "models" / "fc.pt").write_bytes(b"weights")
+    assert (experiment.model_spec_source.parent / "fc.pt").is_file()
+    assert not (experiment.model_spec_path.parent / "fc.pt").exists()
+
 
 @pytest.mark.parametrize(
     "spec", ["", "model:\n  spec: null\n", "model:\n  spec: 3\n",
@@ -285,8 +294,8 @@ def test_no_copy_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spec: str
 ) -> None:
     """
-    定義を写さなかった場合は model_spec_path が None であることを確かめる
-    関数
+    定義を写さなかった場合は model_spec_path と model_spec_source が None
+    であることを確かめる関数
 
     Parameters
     ----------
@@ -303,12 +312,13 @@ def test_no_copy_path(
     """
     experiment = start_project(tmp_path / "project", monkeypatch, spec)
     assert experiment.model_spec_path is None
+    assert experiment.model_spec_source is None
 
 
 def test_copied_spec_path_by_status(tmp_path: Path) -> None:
     """
-    copied 以外の status (write_failed など) では写しの場所を返さない
-    ことを確かめる関数
+    copied 以外の status (write_failed など) では写しと元のファイルの
+    場所を返さないことを確かめる関数
 
     Parameters
     ----------
@@ -325,6 +335,22 @@ def test_copied_spec_path_by_status(tmp_path: Path) -> None:
         record = {"path": "m.yaml", "status": status, "sha256": None}
         assert copied_spec_path(record, tmp_path) is None
     assert copied_spec_path(None, tmp_path) is None
+
+    # 読めたが書けなかった (write_failed) 場合は元のファイルも指さない
+    project = tmp_path / "project"
+    run_dir = tmp_path / "run"
+    project.mkdir()
+    run_dir.mkdir()
+    (project / "m.yaml").write_text(SPEC_TEXT, encoding="utf-8")
+    spec = read_model_spec(spec_config("m.yaml"), project)
+    assert spec.source == project.resolve() / "m.yaml"
+    (run_dir / MODEL_SPEC_FILE).mkdir()
+    record = copy_model_spec(spec, run_dir)
+    assert record["status"] == "write_failed"
+    assert copied_spec_source(spec, record) is None
+    (run_dir / MODEL_SPEC_FILE).rmdir()
+    record = copy_model_spec(spec, run_dir)
+    assert copied_spec_source(spec, record) == project.resolve() / "m.yaml"
 
 
 @pytest.mark.parametrize(

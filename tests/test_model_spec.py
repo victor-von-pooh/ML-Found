@@ -319,3 +319,73 @@ def test_resumed_does_not_copy(tmp_path: Path) -> None:
         "path": "model.yaml", "status": "resumed", "sha256": None
     }
     assert not (run_dir / MODEL_SPEC_FILE).exists()
+
+
+def test_project_reached_through_link(tmp_path: Path) -> None:
+    """
+    リンクを通したプロジェクトの場所から書いた絶対パスも, プロジェクトの
+    中として写すことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 本物のプロジェクトと, それを指すリンク (macOS の /tmp と同じ形)
+    project = tmp_path / "project"
+    run_dir = tmp_path / "run"
+    (project / "models").mkdir(parents=True)
+    run_dir.mkdir()
+    (project / "models" / "m.yaml").write_text(SPEC_TEXT, encoding="utf-8")
+    alias = tmp_path / "alias"
+    alias.symlink_to(project, target_is_directory=True)
+
+    # リンクから書いた絶対パスと, リンクで渡したプロジェクト
+    value = str(alias / "models" / "m.yaml")
+    for root in (project, alias):
+        record = copy_model_spec(spec_config(value), run_dir, root)
+        assert record["status"] == "copied"
+        assert record["path"] == "models/m.yaml"
+
+
+def test_not_directory_and_unreadable(tmp_path: Path) -> None:
+    """
+    途中がファイルの場所を無いものとし, 読めない途中のディレクトリでも
+    止まらずに理由を残すことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    project = tmp_path / "project"
+    run_dir = tmp_path / "run"
+    project.mkdir()
+    run_dir.mkdir()
+    (project / "models").write_text("", encoding="utf-8")
+    record = copy_model_spec(spec_config("models/m.yaml"), run_dir, project)
+    assert record["status"] == "missing"
+
+    # 入れないディレクトリの中 (root では確かめられないので飛ばす)
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        pytest.skip("権限で読めない場所を作れない")
+    locked = project / "locked"
+    (locked / "inner").mkdir(parents=True)
+    (locked / "inner" / "m.yaml").write_text(SPEC_TEXT, encoding="utf-8")
+    locked.chmod(0)
+    try:
+        record = copy_model_spec(
+            spec_config("locked/inner/m.yaml"), run_dir, project
+        )
+    finally:
+        locked.chmod(0o755)
+    assert record["status"] == "unreadable"
+    assert not (run_dir / MODEL_SPEC_FILE).exists()

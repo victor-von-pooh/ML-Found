@@ -54,6 +54,30 @@ def read_spec_value(cfg: DictConfig) -> Optional[str]:
     return value
 
 
+def is_link(path: Path) -> bool:
+    """
+    場所がシンボリックリンクか Windows のジャンクションかを判定する関数
+
+    Parameters
+    ----------
+    path: Path
+        場所
+
+    Returns
+    ----------
+    linked: bool
+        リンクかジャンクションなら True. 権限などで確かめられない場合は
+        False (開くときに読めないものとして扱う)
+    """
+    # os.path の関数は確かめられない場合も例外を出さずに False を返却
+    isjunction = getattr(os.path, "isjunction", None)
+    linked = os.path.islink(path) or (
+        isjunction is not None and isjunction(path)
+    )
+
+    return linked
+
+
 def has_link(path: Path, project_dir: Path) -> bool:
     """
     プロジェクトから場所までの途中か場所自体にリンクがあるかを確かめる関数
@@ -74,7 +98,7 @@ def has_link(path: Path, project_dir: Path) -> bool:
     current = project_dir
     for part in path.relative_to(project_dir).parts:
         current = current / part
-        if current.is_symlink():
+        if is_link(current):
             linked = True
             return linked
     linked = False
@@ -82,7 +106,41 @@ def has_link(path: Path, project_dir: Path) -> bool:
     return linked
 
 
-def read_spec_bytes(path: Path) -> tuple[Optional[bytes], Optional[str]]:
+def rebase_on_project(path: Path, root: Path) -> Path:
+    """
+    プロジェクトの別の書き方から辿った絶対パスを, 解決したプロジェクトの
+    場所からのパスに直す関数
+
+    Parameters
+    ----------
+    path: Path
+        正規化した絶対パス
+    root: Path
+        プロジェクトのディレクトリ (解決した絶対パス)
+
+    Returns
+    ----------
+    rebased: Path
+        プロジェクトの中なら root からのパス. macOS の /tmp と /private/tmp
+        のように, 途中までがプロジェクトそのものを指す場合も中とする.
+        それ以外は元のパス
+    """
+    # 既に root の中ならそのまま, 違えば先頭の側から root と同じ場所を探索
+    if path.is_relative_to(root):
+        rebased = path
+        return rebased
+    rebased = path
+    for parent in reversed(path.parents):
+        if os.path.realpath(parent) == str(root):
+            rebased = root / path.relative_to(parent)
+            break
+
+    return rebased
+
+
+def read_spec_bytes(
+    path: Path, root: Path
+) -> tuple[Optional[bytes], Optional[str]]:
     """
     モデルの定義のファイルを, リンクを辿らずに普通のファイルだけ読む関数
 
@@ -90,6 +148,8 @@ def read_spec_bytes(path: Path) -> tuple[Optional[bytes], Optional[str]]:
     ----------
     path: Path
         定義のファイルの場所
+    root: Path
+        プロジェクトのディレクトリ (解決した絶対パス)
 
     Returns
     ----------
@@ -107,19 +167,26 @@ def read_spec_bytes(path: Path) -> tuple[Optional[bytes], Optional[str]]:
     )
     try:
         fd = os.open(path, flags)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return None, "missing"
     except OSError:
-        if path.is_symlink():
+        if is_link(path):
             return None, "link"
-        if path.exists() and not path.is_file():
+        if os.path.exists(path) and not os.path.isfile(path):
             return None, "not_file"
         return None, "unreadable"
 
-    # 開いたものが普通のファイルの場合だけ読み込み
+    # 確かめた後に途中のディレクトリをリンクに入れ替えられた場合に備え,
+    # 開いたものがプロジェクトの中の同じファイルかを確かめてから読み込み
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
             return None, "not_file"
+        real = Path(os.path.realpath(path))
+        if not real.is_relative_to(root) or not os.path.samestat(
+            opened, os.stat(real)
+        ):
+            return None, "link"
         chunks = []
         while chunk := os.read(fd, 1 << 20):
             chunks.append(chunk)
@@ -189,7 +256,7 @@ def copy_model_spec(
     path = Path(value).expanduser()
     if not path.is_absolute():
         path = root / path
-    path = Path(os.path.normpath(path))
+    path = rebase_on_project(Path(os.path.normpath(path)), root)
     record: dict[str, Any] = {
         "path": relative_to_project(path, root), "status": None,
         "sha256": None
@@ -207,7 +274,7 @@ def copy_model_spec(
         return record
 
     # 中身を読んで写し, 中身の sha256 を記録
-    content, reason = read_spec_bytes(path)
+    content, reason = read_spec_bytes(path, root)
     if content is None:
         record["status"] = reason
         return record
@@ -232,6 +299,7 @@ def describe_model_spec(record: dict) -> str:
     message: str
         写した場合は写した先と sha256, 写さなかった場合は理由
     """
+    # 写した場合は sha256, 写さなかった場合は理由の説明
     if record["status"] == "copied":
         message = (
             f"モデルの定義 ({record['path']}) を {MODEL_SPEC_FILE} に"

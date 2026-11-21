@@ -8,7 +8,10 @@ import pytest
 from omegaconf import OmegaConf
 
 from ml_found.config.loader import load_project_config
-from ml_found.experiment.model_spec import MODEL_SPEC_FILE, copy_model_spec
+from ml_found.experiment import model_spec
+from ml_found.experiment.model_spec import (
+    MODEL_SPEC_FILE, copy_model_spec, read_model_spec
+)
 from ml_found.experiment.setup import start_experiment
 
 # モデルの定義の見本 (中身は読まないので形は問わない)
@@ -120,6 +123,30 @@ def spec_config(value: object, resume: object = None) -> object:
     return cfg
 
 
+def copy_spec(value: object, run_dir: Path, project: Path) -> object:
+    """
+    model.spec に場所を書いた config で定義を読んで写す関数
+
+    Parameters
+    ----------
+    value: object
+        model.spec の値
+    run_dir: Path
+        実験のディレクトリ
+    project: Path
+        プロジェクトのディレクトリ
+
+    Returns
+    ----------
+    record: object
+        source.yaml の model_spec の記録 (dict か None)
+    """
+    spec = read_model_spec(spec_config(value), project)
+    record = copy_model_spec(spec, run_dir)
+
+    return record
+
+
 def test_copy_spec_on_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -191,6 +218,10 @@ def test_no_spec(
     assert not (run_dir / MODEL_SPEC_FILE).exists()
     assert read_record(run_dir) is None
 
+    # 文字でない値だけは, 書き方の誤りとして train.log に書く
+    log = (run_dir / "train.log").read_text(encoding="utf-8")
+    assert ("場所の文字でない" in log) == ("spec: 3" in spec)
+
 
 def test_missing_spec_keeps_training(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -259,13 +290,13 @@ def test_skip_outside_and_links(tmp_path: Path) -> None:
         "models/../models/missing.yaml": ("missing", "models/missing.yaml")
     }
     for value, (status, path) in cases.items():
-        record = copy_model_spec(spec_config(value), run_dir, project)
+        record = copy_spec(value, run_dir, project)
         assert record == {"path": path, "status": status, "sha256": None}
     assert not (run_dir / MODEL_SPEC_FILE).exists()
 
     # プロジェクトの中の絶対パスは写し, 相対パスで記録
-    record = copy_model_spec(
-        spec_config(str(project / "models" / "real.yaml")), run_dir, project
+    record = copy_spec(
+        str(project / "models" / "real.yaml"), run_dir, project
     )
     assert record["status"] == "copied"
     assert record["path"] == "models/real.yaml"
@@ -288,15 +319,15 @@ def test_skip_fifo(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     os.mkfifo(project / "model.yaml")
-    record = copy_model_spec(spec_config("model.yaml"), tmp_path, project)
+    record = copy_spec("model.yaml", tmp_path, project)
     assert record == {
         "path": "model.yaml", "status": "not_file", "sha256": None
     }
 
 
-def test_resumed_does_not_copy(tmp_path: Path) -> None:
+def test_resumed_copies(tmp_path: Path) -> None:
     """
-    再開する学習では定義を写し直さないことを確かめる関数
+    再開する学習でも, 学習を始めるときの定義を写すことを確かめる関数
 
     Parameters
     ----------
@@ -312,13 +343,14 @@ def test_resumed_does_not_copy(tmp_path: Path) -> None:
     project.mkdir()
     run_dir.mkdir()
     (project / "model.yaml").write_text(SPEC_TEXT, encoding="utf-8")
-    record = copy_model_spec(
-        spec_config("model.yaml", "outputs/last.pt"), run_dir, project
+    spec = read_model_spec(
+        spec_config("model.yaml", "outputs/last.pt"), project
     )
-    assert record == {
-        "path": "model.yaml", "status": "resumed", "sha256": None
-    }
-    assert not (run_dir / MODEL_SPEC_FILE).exists()
+    record = copy_model_spec(spec, run_dir)
+    assert record["status"] == "copied"
+    assert (run_dir / MODEL_SPEC_FILE).read_text(encoding="utf-8") == (
+        SPEC_TEXT
+    )
 
 
 def test_project_reached_through_link(tmp_path: Path) -> None:
@@ -347,7 +379,7 @@ def test_project_reached_through_link(tmp_path: Path) -> None:
     # リンクから書いた絶対パスと, リンクで渡したプロジェクト
     value = str(alias / "models" / "m.yaml")
     for root in (project, alias):
-        record = copy_model_spec(spec_config(value), run_dir, root)
+        record = copy_spec(value, run_dir, root)
         assert record["status"] == "copied"
         assert record["path"] == "models/m.yaml"
 
@@ -371,7 +403,7 @@ def test_not_directory_and_unreadable(tmp_path: Path) -> None:
     project.mkdir()
     run_dir.mkdir()
     (project / "models").write_text("", encoding="utf-8")
-    record = copy_model_spec(spec_config("models/m.yaml"), run_dir, project)
+    record = copy_spec("models/m.yaml", run_dir, project)
     assert record["status"] == "missing"
 
     # 入れないディレクトリの中 (root では確かめられないので飛ばす)
@@ -382,10 +414,125 @@ def test_not_directory_and_unreadable(tmp_path: Path) -> None:
     (locked / "inner" / "m.yaml").write_text(SPEC_TEXT, encoding="utf-8")
     locked.chmod(0)
     try:
-        record = copy_model_spec(
-            spec_config("locked/inner/m.yaml"), run_dir, project
-        )
+        record = copy_spec("locked/inner/m.yaml", run_dir, project)
     finally:
         locked.chmod(0o755)
     assert record["status"] == "unreadable"
     assert not (run_dir / MODEL_SPEC_FILE).exists()
+
+
+def test_dotdot_after_link(tmp_path: Path) -> None:
+    """
+    リンクの後の .. で上がる場所を, 正規化した別のファイルとして写さない
+    ことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 中と外に同じ名前の定義, 外の下のディレクトリを指すリンク
+    project = tmp_path / "project"
+    run_dir = tmp_path / "run"
+    outside = tmp_path / "outside"
+    (outside / "sub").mkdir(parents=True)
+    project.mkdir()
+    run_dir.mkdir()
+    (outside / "m.yaml").write_text("outside\n", encoding="utf-8")
+    (project / "m.yaml").write_text(SPEC_TEXT, encoding="utf-8")
+    (project / "extlink").symlink_to(
+        outside / "sub", target_is_directory=True
+    )
+    record = copy_spec("extlink/../m.yaml", run_dir, project)
+    assert record == {"path": "m.yaml", "status": "link", "sha256": None}
+    assert not (run_dir / MODEL_SPEC_FILE).exists()
+
+    # リンクでないディレクトリの後の .. はそのまま中の場所
+    (project / "models").mkdir()
+    record = copy_spec("models/../m.yaml", run_dir, project)
+    assert record["status"] == "copied"
+
+
+def test_invalid_places_and_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    読めない書き方の場所と写しの書き込みの失敗で, 止まらずに理由を残す
+    ことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        sys.argv の差し替えに使う
+
+    Returns
+    ----------
+    None
+    """
+    # 存在しないユーザーの ~ とヌル文字
+    project = tmp_path / "project"
+    run_dir = tmp_path / "run"
+    project.mkdir()
+    run_dir.mkdir()
+    for value in ("~no_such_user_for_ml_found/m.yaml", "models/a\0b.yaml"):
+        record = copy_spec(value, run_dir, project)
+        assert record["status"] == "invalid", value
+        assert record["sha256"] is None
+
+    # 写す先に同じ名前のディレクトリがあると書けない
+    (project / "m.yaml").write_text(SPEC_TEXT, encoding="utf-8")
+    (run_dir / MODEL_SPEC_FILE).mkdir()
+    record = copy_spec("m.yaml", run_dir, project)
+    assert record == {
+        "path": "m.yaml", "status": "write_failed", "sha256": None
+    }
+
+    # start_experiment も止まらずに train.log と source.yaml に残す
+    run = run_start(
+        tmp_path / "started", monkeypatch,
+        "model:\n  spec: ~no_such_user_for_ml_found/m.yaml\n"
+    )
+    assert read_record(run)["status"] == "invalid"
+    log = (run / "train.log").read_text(encoding="utf-8")
+    assert "'~no_such_user_for_ml_found/m.yaml'" in log
+
+
+def test_too_large(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    大きさの上限までは写し, 超えると写さないことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        上限の差し替えに使う
+
+    Returns
+    ----------
+    None
+    """
+    project = tmp_path / "project"
+    run_dir = tmp_path / "run"
+    project.mkdir()
+    run_dir.mkdir()
+    monkeypatch.setattr(model_spec, "MAX_SPEC_BYTES", 8)
+    monkeypatch.setattr(model_spec, "CHUNK_BYTES", 3)
+    (project / "ok.yaml").write_bytes(b"12345678")
+    (project / "big.yaml").write_bytes(b"123456789")
+    record = copy_spec("ok.yaml", run_dir, project)
+    assert record["status"] == "copied"
+    assert record["sha256"] == hashlib.sha256(b"12345678").hexdigest()
+    assert (run_dir / MODEL_SPEC_FILE).read_bytes() == b"12345678"
+    record = copy_spec("big.yaml", run_dir, project)
+    assert record == {
+        "path": "big.yaml", "status": "too_large", "sha256": None
+    }

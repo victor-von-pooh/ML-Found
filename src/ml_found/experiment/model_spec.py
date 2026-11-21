@@ -24,6 +24,9 @@ MAX_SPEC_BYTES = 16 * 1024 * 1024
 # 読み込みの 1 回の大きさ
 CHUNK_BYTES = 1 << 20
 
+# ディレクトリを表す場所の終わり (m.yaml/ と m.yaml/.)
+TRAILING_SEPARATORS = ("/", "/.", os.sep, os.sep + ".")
+
 # Windows のジャンクションの印 (lstat の st_reparse_tag)
 JUNCTION_TAG = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
 
@@ -426,11 +429,12 @@ def read_model_spec(cfg: DictConfig, project_dir: Path) -> ModelSpecRead:
         spec = ModelSpecRead(record=record, content=None, notice=None)
         return spec
 
-    # .. で link にした場所は, 別のファイルを指して見えないように書いた
-    # 文字のまま記録. 末尾の区切り (m.yaml/) はディレクトリの書き方
-    if reason == "link" and ".." in raw.parts:
+    # リンクの後の .. で link にした場所は, 別のファイルを指して見えない
+    # ように書いた文字のまま記録. 末尾の区切り (m.yaml/ と m.yaml/.) は
+    # ディレクトリの書き方
+    if reason == "link" and check_climbs(raw) == "link":
         record["path"] = value
-    if reason is None and value.endswith(("/", os.sep)):
+    if reason is None and value.endswith(TRAILING_SEPARATORS):
         reason = "not_file"
 
     # 写してよい場所なら中身を読み, 中身の sha256 を記録
@@ -486,7 +490,8 @@ def copy_model_spec(spec: ModelSpecRead, run_dir: Path) -> Optional[dict]:
     ----------
     record: Optional[dict]
         source.yaml の model_spec (path, status, sha256).
-        config に model.spec が無い, 空, 文字でない場合は None
+        config に model.spec が無い, 空, 文字でない, 参照を解決できない場合は
+        None
     """
     # 読めた中身だけを写し, 書けなければ理由を残して学習は続行
     record: Optional[dict] = None

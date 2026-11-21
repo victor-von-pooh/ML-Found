@@ -461,7 +461,14 @@ def test_dotdot_after_link(tmp_path: Path) -> None:
     # .. の直前が無い場所は開けないので missing, 末尾の区切りは not_file
     record = copy_spec("nosuch/../m.yaml", run_dir, project)
     assert record == {"path": "m.yaml", "status": "missing", "sha256": None}
-    assert copy_spec("m.yaml/", run_dir, project)["status"] == "not_file"
+    for value in ("m.yaml/", "m.yaml/."):
+        assert copy_spec(value, run_dir, project)["status"] == "not_file"
+
+    # リンクと関係の無い .. はリンクで止めても正規化して記録
+    (project / "sub").mkdir()
+    (project / "lnk").symlink_to(project / "m.yaml")
+    record = copy_spec("sub/../lnk", run_dir, project)
+    assert record == {"path": "lnk", "status": "link", "sha256": None}
 
     # リンクでないディレクトリの後の .. はそのまま中の場所
     (project / "models").mkdir()

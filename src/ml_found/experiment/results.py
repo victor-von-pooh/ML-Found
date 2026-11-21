@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 import json
 import math
 import os
@@ -46,6 +47,16 @@ NAME_PATTERN = re.compile(r"[A-Za-z0-9_@-][A-Za-z0-9_.@-]*")
 
 # 評価の種類
 EVALUATION_KINDS = ("table", "curve")
+
+# 指標の向き (小さいほど良いか, 大きいほど良いか)
+BETTER_VALUES = ("lower", "higher")
+
+# 表に無い列の誤りに添える表の列の数の上限
+MAX_SHOWN_COLUMNS = 10
+
+# 比べる相手との表の形で, 同じ指標の向きを持つ列の名前の終わり
+# (<指標>, <指標>_baseline, <指標>_diff)
+METRIC_SUFFIXES = ("_baseline", "_diff")
 
 # 見本の種類と, 写すファイルの拡張子から決める種類
 SAMPLE_KINDS = ("image", "text", "audio", "point_cloud", "mask", "file")
@@ -312,11 +323,211 @@ def table_records(table: Any) -> tuple[list[str], list[dict]]:
     return columns, records
 
 
+def metric_family(column: str, columns: list[str]) -> list[str]:
+    """
+    比べる相手との表の形で, 列と同じ指標の列を集める関数
+
+    Parameters
+    ----------
+    column: str
+        列の名前
+    columns: list[str]
+        表の列
+
+    Returns
+    ----------
+    family: list[str]
+        <指標>, <指標>_baseline, <指標>_diff のうち表にある列 (列の順).
+        列自体も含む. 終わりは 1 段だけ外す (acc_baseline_diff の指標は
+        acc_baseline)
+    """
+    # 終わりを除いた名前を指標とし, 同じ指標の 3 つの列の候補を作成
+    metric = column
+    for suffix in METRIC_SUFFIXES:
+        if column.endswith(suffix) and len(column) > len(suffix):
+            metric = column[:-len(suffix)]
+            break
+    candidates = {metric} | {metric + suffix for suffix in METRIC_SUFFIXES}
+    family = [
+        item for item in columns if item in candidates or item == column
+    ]
+
+    return family
+
+
+def conflict_message(
+    item: str, sources: dict[str, str], written: dict[str, str]
+) -> str:
+    """
+    1 つの列に違う向きが届いた誤りの文を, 書いた列と広げた列に分けて作る
+    関数
+
+    Parameters
+    ----------
+    item: str
+        違う向きが届いた列
+    sources: dict[str, str]
+        向きを届けた列から向き
+    written: dict[str, str]
+        利用者が書いた向き
+
+    Returns
+    ----------
+    message: str
+        誤りの文
+    """
+    # 書いた列と, 書いた列から広げた列の分け
+    direct = [
+        f"{column}: {value}" for column, value in sources.items()
+        if column in written
+    ]
+    spread = [
+        f"{column}: {value}" for column, value in sources.items()
+        if column not in written
+    ]
+    message = (
+        f"better の向きが, 同じ指標の列 {item} で食い違います "
+        f"(書いた列 {', '.join(direct) or '無し'}, "
+        f"広げた列 {', '.join(spread) or '無し'}). "
+        "同じ指標の列は同じ向きにしてください"
+    )
+
+    return message
+
+
+def spread_better(
+    better: dict[str, str], columns: list[str], strict: bool
+) -> dict[str, str]:
+    """
+    指標の向きを, 同じ指標の列 (<指標>, _baseline, _diff) に広げる関数
+
+    Parameters
+    ----------
+    better: dict[str, str]
+        列の名前から向き (lower か higher). 列は表にあるもの
+    columns: list[str]
+        表の列
+    strict: bool
+        同じ指標の列に違う向きを書いた場合に誤りとするか. False の場合は
+        向きのある列はそのままにし, 2 つの向きが届く列は埋めない
+
+    Returns
+    ----------
+    spread: dict[str, str]
+        広げた後の向き (列の順)
+    """
+    # 向きのある列から同じ指標の列へ届く向きを, 変化が無くなるまで広げる
+    # (各回で全ての列から集めてから決めるので, 書いた順に頼らない)
+    filled = dict(better)
+    while True:
+        arrivals: dict[str, dict[str, str]] = {}
+        for column, value in filled.items():
+            for item in metric_family(column, columns):
+                arrivals.setdefault(item, {})[column] = value
+
+        # 1 つの列に 2 つの向きが届いた場合, 書く側は誤り, 読む側は埋めない
+        # (向きのある列はその向きのまま)
+        added: dict[str, str] = {}
+        for item, sources in arrivals.items():
+            values = set(sources.values())
+            if len(values) > 1 and strict:
+                raise ValueError(conflict_message(item, sources, better))
+            if len(values) == 1 and item not in filled:
+                added[item] = values.pop()
+        if not added:
+            break
+        filled.update(added)
+    spread = {column: filled[column] for column in columns if column in filled}
+
+    return spread
+
+
+def check_better(better: Any, columns: list[str]) -> dict[str, str]:
+    """
+    save_evaluation に渡した列ごとの指標の向きを確かめる関数
+
+    Parameters
+    ----------
+    better: Any
+        列の名前から lower か higher の辞書, None の場合は向きを書かない
+    columns: list[str]
+        表の列
+
+    Returns
+    ----------
+    checked: dict[str, str]
+        同じ指標の列に広げた向き. None の場合は空
+    """
+    # 辞書 (DictConfig などの Mapping も可) で, 列は表にあり, 値は lower か
+    # higher に制限. NumPy の文字などは str にそろえる
+    if better is None:
+        checked: dict[str, str] = {}
+        return checked
+    if not isinstance(better, Mapping):
+        raise ValueError(
+            "better は列の名前から lower か higher の辞書にしてください: "
+            f"{better!r}"
+        )
+    written: dict[str, str] = {}
+    for column, value in better.items():
+        if not isinstance(column, str) or column not in columns:
+            shown = ", ".join(columns[:MAX_SHOWN_COLUMNS])
+            if len(columns) > MAX_SHOWN_COLUMNS:
+                shown += f" ほか {len(columns) - MAX_SHOWN_COLUMNS} 列"
+            raise ValueError(
+                f"better の列 {column!r} は表にありません (表の列: {shown})"
+            )
+        if not isinstance(value, str) or value not in BETTER_VALUES:
+            raise ValueError(
+                f"better の {column} は lower か higher にしてください: "
+                f"{value!r}"
+            )
+        written[str(column)] = str(value)
+    checked = spread_better(written, columns, strict=True)
+
+    return checked
+
+
+def read_better(data: dict) -> dict[str, str]:
+    """
+    読み込んだ評価から列ごとの指標の向きを取り出す関数
+
+    Parameters
+    ----------
+    data: dict
+        evaluations/<名前>.json の中身
+
+    Returns
+    ----------
+    better: dict[str, str]
+        表の列のうち向きのあるもの (同じ指標の列に広げたもの).
+        better を持たないファイルは空, 表に無い列と知らない値の欄は除く
+    """
+    # 列が文字のリストでない場合と better が辞書でない場合は向きが無い扱い
+    columns = data.get("columns")
+    raw = data.get("better")
+    if (
+        not isinstance(columns, list)
+        or not all(isinstance(column, str) for column in columns)
+        or not isinstance(raw, dict)
+    ):
+        better: dict[str, str] = {}
+        return better
+    known = {
+        column: value for column, value in raw.items()
+        if column in columns and value in BETTER_VALUES
+    }
+    better = spread_better(known, columns, strict=False)
+
+    return better
+
+
 def save_evaluation(
     target: Any, name: str, table: Any, split: str,
     description: Optional[str] = None, kind: str = "table",
     x: Optional[str] = None, baseline: Optional[str] = None,
-    guard: bool = False, epoch: Optional[int] = None
+    guard: bool = False, epoch: Optional[int] = None,
+    better: Optional[Mapping[str, str]] = None
 ) -> Path:
     """
     学習の後のデータ全体の評価を evaluations/<名前>.json に書く関数
@@ -344,6 +555,10 @@ def save_evaluation(
         守る指標の表か
     epoch: Optional[int] = None
         評価した重みのエポック
+    better: Optional[Mapping[str, str]] = None
+        列ごとの指標の向き (DictConfig などの Mapping も可). 列の名前から lower (小さいほど良い) か
+        higher (大きいほど良い). <指標>, <指標>_baseline, <指標>_diff は
+        同じ向きで, どれか 1 つに書けば他にも広げて書く
 
     Returns
     ----------
@@ -368,6 +583,7 @@ def save_evaluation(
         raise ValueError(f"epoch は 0 以上の整数にしてください: {epoch!r}")
     check_optional_text(description, "description")
     check_optional_text(baseline, "baseline")
+    directions = check_better(better, columns)
 
     # 一時ファイルから置き換えて書き込み
     evaluation = {
@@ -380,6 +596,7 @@ def save_evaluation(
         "description": description,
         "baseline": baseline,
         "guard": bool(guard),
+        "better": directions,
         "epoch": epoch,
         "created_at": now_iso()
     }
@@ -404,7 +621,7 @@ def load_evaluations(run_dir: Union[str, os.PathLike]) -> list[dict]:
     ----------
     evaluations: list[dict]
         名前の順の評価. evaluations/ が無い実験 (評価を書かなかった実験など)
-        は空
+        は空. better は列ごとの指標の向きの辞書 (無いファイルは空)
     """
     # 一時ファイル (. で始まる) と読めないファイルは無視
     folder = Path(run_dir) / EVALUATIONS_DIR
@@ -419,6 +636,7 @@ def load_evaluations(run_dir: Union[str, os.PathLike]) -> list[dict]:
         except (OSError, ValueError):
             continue
         if isinstance(data, dict):
+            data["better"] = read_better(data)
             evaluations.append(data)
 
     return evaluations

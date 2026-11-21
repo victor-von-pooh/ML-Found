@@ -592,8 +592,11 @@ def test_better_does_not_depend_on_order(tmp_path: Path) -> None:
         {"acc": "higher", "acc_baseline_diff": "lower"},
         {"acc_baseline_diff": "lower", "acc": "higher"}
     ):
-        with pytest.raises(ValueError, match="acc_baseline で食い違います"):
+        with pytest.raises(ValueError, match="acc_baseline で食い違います") as error:
             save_evaluation(experiment, "acc", table, "test", better=better)
+        assert "書いた列 " in str(error.value)
+        assert "acc: higher" in str(error.value)
+        assert "広げた列 無し" in str(error.value)
 
     # 読む側は, 2 つの向きが届く書いていない列を埋めない
     folder = experiment.run_dir / "evaluations"

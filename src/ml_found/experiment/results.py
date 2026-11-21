@@ -355,6 +355,46 @@ def metric_family(column: str, columns: list[str]) -> list[str]:
     return family
 
 
+def conflict_message(
+    item: str, sources: dict[str, str], written: dict[str, str]
+) -> str:
+    """
+    1 つの列に違う向きが届いた誤りの文を, 書いた列と広げた列に分けて作る
+    関数
+
+    Parameters
+    ----------
+    item: str
+        違う向きが届いた列
+    sources: dict[str, str]
+        向きを届けた列から向き
+    written: dict[str, str]
+        利用者が書いた向き
+
+    Returns
+    ----------
+    message: str
+        誤りの文
+    """
+    # 書いた列と, 書いた列から広げた列の分け
+    direct = [
+        f"{column}: {value}" for column, value in sources.items()
+        if column in written
+    ]
+    spread = [
+        f"{column}: {value}" for column, value in sources.items()
+        if column not in written
+    ]
+    message = (
+        f"better の向きが, 同じ指標の列 {item} で食い違います "
+        f"(書いた列 {', '.join(direct) or '無し'}, "
+        f"広げた列 {', '.join(spread) or '無し'}). "
+        "同じ指標の列は同じ向きにしてください"
+    )
+
+    return message
+
+
 def spread_better(
     better: dict[str, str], columns: list[str], strict: bool
 ) -> dict[str, str]:
@@ -391,13 +431,7 @@ def spread_better(
         for item, sources in arrivals.items():
             values = set(sources.values())
             if len(values) > 1 and strict:
-                names = ", ".join(
-                    f"{column}: {value}" for column, value in sources.items()
-                )
-                raise ValueError(
-                    f"better の向きが, 同じ指標の列 {item} で食い違います "
-                    f"({names}). 同じ指標の列は同じ向きにしてください"
-                )
+                raise ValueError(conflict_message(item, sources, better))
             if len(values) == 1 and item not in filled:
                 added[item] = values.pop()
         if not added:

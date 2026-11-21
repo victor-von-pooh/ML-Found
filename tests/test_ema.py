@@ -602,3 +602,91 @@ def test_ema_copies_buffers(tmp_path: Path) -> None:
     trainer = BufferCheckTrainer(model, experiment, regression_step)
     trainer.fit(make_loader(shuffle=True))
     assert int(trainer.ema_model.n_averaged) == 8
+
+
+def test_ema_resume_raw_eval_best(tmp_path: Path) -> None:
+    """
+    EMA を持ったまま学習しているモデルで検証する上書きで, last_with_best:
+    false のまま設定を変えずに再開すると, 前のエポックのベストモデルの重みが
+    best.pt から戻ることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    def make_step() -> object:
+        """
+        学習は平均二乗誤差, 検証はエポックごとに決めた損失を返す step を
+        作る関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        step: object
+            エポック 1 の検証が最も良い step
+        """
+        values = iter([1.0, 2.0, 3.0])
+
+        def step(model: nn.Module, batch: tuple, phase: str) -> dict:
+            """
+            学習時は平均二乗誤差, 検証時は決めた損失を返す関数
+
+            Parameters
+            ----------
+            model: nn.Module
+                学習するモデル
+            batch: tuple
+                x と y
+            phase: str
+                train または valid
+
+            Returns
+            ----------
+            outputs: dict
+                損失
+            """
+            # 検証では決めた損失, 学習では平均二乗誤差
+            if phase == "valid":
+                outputs = {"loss": torch.tensor(next(values))}
+                return outputs
+            outputs = regression_step(model, batch, phase)
+
+            return outputs
+
+        return step
+
+    # last.pt にベストモデルの重みを入れずに 3 エポック (ベストはエポック 1)
+    text = (
+        SGD + "trainer:\n  epochs: 3\n  checkpoint:\n"
+        "    last_with_best: false\n" + EMA
+    )
+    first = make_experiment(tmp_path / "first", text)
+    trainer = RawEvalTrainer(nn.Linear(1, 1), first, make_step())
+    trainer.fit(make_loader(), make_loader(n=8, batch_size=8))
+    assert trainer.checkpoint.best_epoch == 1
+    best = load_checkpoint(
+        str(first.run_dir / "best.pt"), torch.device("cpu")
+    )
+    assert best["separate_best_model"] is False
+    assert best["checkpoint"]["best_model"] is None
+
+    # 設定を変えずに学習せずに再開すると, best.pt の model の重みに戻る
+    resumed = make_experiment(
+        tmp_path / "resumed",
+        text + f"  resume_from: {first.run_dir / 'last.pt'}\n"
+    )
+    again = RawEvalTrainer(nn.Linear(1, 1), resumed, make_step())
+    again.fit(make_loader(), make_loader(n=8, batch_size=8))
+    final = read_weights(resumed.run_dir / "final_model.pt")
+    assert same_weights(final, best["model"])
+    assert read_status(resumed.run_dir)["final_weights"] == "best"
+    log = (resumed.run_dir / "train.log").read_text(encoding="utf-8")
+    assert "重みが last.pt に無く" not in log

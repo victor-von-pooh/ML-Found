@@ -1691,6 +1691,7 @@ class Trainer:
                 else self.early_stopping.state_dict()
             ),
             "checkpoint": self.checkpoint.state_dict(),
+            "separate_best_model": self.checkpoint.separate_best_model,
             "rng": get_rng_state(),
             "ema": self.ema_state(),
             "extra": self.extra_state_dict()
@@ -2208,10 +2209,18 @@ class Trainer:
         Returns
         ----------
         separate: bool
-            config の EMA を使っていたか, 継承して eval_model を上書きして
-            別のモデルを返す場合 (再開元も同じ上書きとみなす) は True
+            再開元のチェックポイントの separate_best_model. 無い古い
+            チェックポイントでは, config の EMA を使っていたか, 継承して
+            eval_model を上書きして別のモデルを返す場合 (再開元も同じ上書きと
+            みなす) は True
         """
-        # config の EMA は再開元の ema で, 継承した上書きは今の設定で判定
+        # 再開元が記録していればその値を使用
+        if "separate_best_model" in state:
+            separate = bool(state["separate_best_model"])
+            return separate
+
+        # 記録の無いチェックポイントでは, config の EMA は再開元の ema で,
+        # 継承した上書きは今の設定で判定
         overridden = self.eval_model() is not self.model and not (
             self.ema_model is not None
             and self.eval_model() is self.ema_model.module

@@ -1759,20 +1759,26 @@ class Trainer:
         states: Optional[dict]
             loader_states で集めた状態, 古いチェックポイントでは None
         resuming: bool
-            resume_from での再開の場合は True (戻せない状態を警告)
+            resume_from での再開の場合は True (戻せない状態を警告として
+            表示. どちらも train.log には残す)
 
         Returns
         ----------
         None
         """
         # 状態を持つ loader に, 同じ役割の状態があれば復元
+        # (loader が返した, 戻せなかった状態の警告の文も集める)
         states = states or {}
         messages = []
         for name, loader in self.loaders.items():
             if not has_loader_state(loader):
                 continue
             if name in states:
-                loader.load_checkpoint_state(states[name])
+                returned = loader.load_checkpoint_state(states[name])
+                messages += [
+                    f"{name} の loader: {message}"
+                    for message in returned or []
+                ]
             else:
                 messages.append(
                     f"再開元に {name} の loader の状態 (環境の状態と乱数など) "
@@ -1788,12 +1794,12 @@ class Trainer:
                     "を受け取る loader が無いので戻せません"
                 )
 
-        # 再開だけで警告 (途中で止めたエポックの捨てでは, 同じ fit の状態)
-        if not resuming:
-            return
+        # train.log に残し, 再開では警告も表示 (途中で止めたエポックの
+        # 捨てでは同じ fit の状態なので, 表示しない)
         for message in messages:
             self.logger.warning(message)
-            warnings.warn(message, stacklevel=3)
+            if resuming:
+                warnings.warn(message, stacklevel=2)
 
     def ema_state(self) -> Optional[dict]:
         """

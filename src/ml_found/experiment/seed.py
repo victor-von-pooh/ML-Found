@@ -14,9 +14,9 @@ FIXED_RNGS: set[str] = set()
 NDARRAY_KEY = "__ml_found_ndarray__"
 
 
-def encode_state(value: Any, path: str) -> Any:
+def encode_state(value: Any, path: str, label: str = "乱数の状態") -> Any:
     """
-    乱数の状態を, チェックポイントを安全に読み込める型だけに変換する関数
+    乱数などの状態を, チェックポイントを安全に読み込める型だけに変換する関数
 
     NumPy の配列は目印付きの辞書に, NumPy の数値は Python の数値に変換
 
@@ -26,6 +26,8 @@ def encode_state(value: Any, path: str) -> Any:
         変換する状態
     path: str
         エラーの表示に使う, 状態の中の位置
+    label: str = "乱数の状態"
+        エラーの表示に使う, 状態の名前 (環境の状態など)
 
     Returns
     ----------
@@ -50,7 +52,8 @@ def encode_state(value: Any, path: str) -> Any:
     # 入れ物は中身を順に変換
     elif isinstance(value, (list, tuple)):
         items = [
-            encode_state(item, f"{path}[{i}]") for i, item in enumerate(value)
+            encode_state(item, f"{path}[{i}]", label)
+            for i, item in enumerate(value)
         ]
         encoded = items if isinstance(value, list) else tuple(items)
     elif isinstance(value, dict):
@@ -58,13 +61,13 @@ def encode_state(value: Any, path: str) -> Any:
         for key, item in value.items():
             if not isinstance(key, (str, int)):
                 raise TypeError(
-                    f"乱数の状態 {path} の辞書のキーは文字列か整数にして"
+                    f"{label} {path} の辞書のキーは文字列か整数にして"
                     f"ください: {key!r}"
                 )
-            encoded[key] = encode_state(item, f"{path}[{key!r}]")
+            encoded[key] = encode_state(item, f"{path}[{key!r}]", label)
     else:
         raise TypeError(
-            f"乱数の状態 {path} に保存できない型 {type(value).__name__} が"
+            f"{label} {path} に保存できない型 {type(value).__name__} が"
             "あります. テンソル, 数値, 文字列, None, NumPy の配列と, それらの"
             "リスト, タプル, 辞書だけで作ってください"
         )

@@ -1,5 +1,4 @@
 import math
-import warnings
 from typing import Any, Iterator, Optional
 
 import numpy as np
@@ -14,6 +13,17 @@ BIT_GENERATORS = {
     "MT19937": np.random.MT19937, "PCG64": np.random.PCG64,
     "PCG64DXSM": np.random.PCG64DXSM, "Philox": np.random.Philox,
     "SFC64": np.random.SFC64
+}
+
+# 観測と報酬の正規化の Wrapper (NormalizeObservation, NormalizeReward) が
+# 持つ, エピソードを越えて続く統計の属性
+RUNNING_STATS = ("obs_rms", "return_rms")
+
+# 状態を持つが戻せない Gymnasium の Wrapper と, 戻せない状態
+UNSAVED_WRAPPERS = {
+    "RecordEpisodeStatistics": (
+        "エピソードの統計 (info の episode と数. 学習には使わない)"
+    )
 }
 
 # 連続の行動の方策の対数の標準偏差の範囲 (発散して inf や nan にしないため)
@@ -575,9 +585,9 @@ def set_env_rng(env: Any, state: dict) -> None:
     getattr(env, "unwrapped", env).np_random = np.random.Generator(generator)
 
 
-def env_state_owner(env: Any) -> Optional[Any]:
+def env_layers(env: Any) -> list[Any]:
     """
-    状態を保存して戻す口 (state_dict と load_state_dict) を持つ環境を探す関数
+    Wrapper を外側から .env で辿り, 中の環境までの層を並べる関数
 
     Parameters
     ----------
@@ -586,81 +596,256 @@ def env_state_owner(env: Any) -> Optional[Any]:
 
     Returns
     ----------
-    owner: Optional[Any]
-        口を持つ外側の環境か中の環境 (unwrapped), 無い場合は None
+    layers: list[Any]
+        外側から順の層 (最後は unwrapped. 同じものは 1 回だけ)
     """
-    # 外側 (Wrapper) から中の環境の順に, 両方のメソッドを持つものを探索
-    for target in (env, getattr(env, "unwrapped", env)):
-        if callable(getattr(target, "state_dict", None)) and callable(
-            getattr(target, "load_state_dict", None)
-        ):
-            owner = target
-            return owner
-    owner = None
+    # .env を辿り, 最後に unwrapped (辿れなかった場合) を追加
+    layers: list[Any] = []
+    current = env
+    while current is not None and all(
+        current is not layer for layer in layers
+    ):
+        layers.append(current)
+        current = vars_of(current).get("env")
+    unwrapped = getattr(env, "unwrapped", env)
+    if all(unwrapped is not layer for layer in layers):
+        layers.append(unwrapped)
 
-    return owner
+    return layers
 
 
-def save_env_state(env: Any) -> Optional[Any]:
+def vars_of(value: Any) -> dict:
     """
-    環境が state_dict で返す状態を, チェックポイントに保存できる形で返す関数
+    オブジェクトが自分で持つ属性の辞書を返す関数
+
+    古い Gymnasium の Wrapper は属性を中の環境から転送するので, 転送で
+    中の層の属性を外の層のものと取り違えないように, 自分の属性だけを見る
 
     Parameters
     ----------
-    env: Any
-        Gymnasium の形の環境
+    value: Any
+        オブジェクト
 
     Returns
     ----------
-    state: Optional[Any]
-        state_dict の値 (NumPy の配列は保存できる形), 口が無い場合は None
+    attributes: dict
+        __dict__ の中身, 持たない場合は空
     """
-    # 口が無い環境は保存しない, 保存できない型はエラー
-    owner = env_state_owner(env)
-    if owner is None:
+    # __dict__ を持たないもの (__slots__ など) は空
+    attributes = getattr(value, "__dict__", None)
+    if not isinstance(attributes, dict):
+        attributes = {}
+
+    return attributes
+
+
+def has_state_hooks(layer: Any) -> bool:
+    """
+    層が状態を保存して戻す口 (state_dict と load_state_dict) を持つかを
+    判定する関数
+
+    Parameters
+    ----------
+    layer: Any
+        環境の層
+
+    Returns
+    ----------
+    stateful: bool
+        クラスか自分の属性に両方のメソッドを持つ場合は True
+    """
+    # 古い Gymnasium の転送で中の層のメソッドを拾わないように,
+    # クラスと自分の属性だけを確認
+    stateful = all(
+        callable(vars_of(layer).get(name, getattr(type(layer), name, None)))
+        for name in ("state_dict", "load_state_dict")
+    )
+
+    return stateful
+
+
+def running_stats(layer: Any) -> Optional[dict]:
+    """
+    観測や報酬の正規化の Wrapper (NormalizeObservation など) が持つ統計を
+    写す関数
+
+    Parameters
+    ----------
+    layer: Any
+        環境の層
+
+    Returns
+    ----------
+    state: Optional[dict]
+        RUNNING_STATS の属性ごとの mean, var, count と, 報酬の割引の和
+        (discounted_reward), 統計を持たない層は None
+    """
+    # mean, var, count を持つ統計だけを写す
+    attributes = vars_of(layer)
+    state: dict[str, Any] = {}
+    for name in RUNNING_STATS:
+        rms = attributes.get(name)
+        if all(hasattr(rms, key) for key in ("mean", "var", "count")):
+            state[name] = {
+                "mean": np.array(rms.mean, copy=True),
+                "var": np.array(rms.var, copy=True),
+                "count": float(rms.count)
+            }
+
+    # 報酬の正規化は, エピソードを越えて続く割引の和も持つ
+    discounted = attributes.get("discounted_reward")
+    if state and isinstance(discounted, np.ndarray):
+        state["discounted_reward"] = discounted.copy()
+    if not state:
         state = None
-        return state
-    try:
-        state = encode_state(owner.state_dict(), "env")
-    except TypeError as error:
-        raise TypeError(
-            f"環境の state_dict() の値を保存できません: {error}"
-        ) from error
 
     return state
 
 
-def load_env_state(env: Any, state: Optional[Any]) -> None:
+def load_running_stats(layer: Any, state: dict) -> None:
     """
-    save_env_state で保存した状態を, 環境の load_state_dict で戻す関数
+    running_stats で写した統計を層に戻す関数
 
     Parameters
     ----------
-    env: Any
-        Gymnasium の形の環境
-    state: Optional[Any]
-        save_env_state の値, 保存しなかった場合は None
+    layer: Any
+        環境の層
+    state: dict
+        running_stats の値
 
     Returns
     ----------
     None
     """
-    # 両方ある場合だけ復元し, 片方にしか無い場合は警告
-    owner = env_state_owner(env)
-    if owner is not None and state is not None:
-        owner.load_state_dict(decode_state(state))
-    elif owner is not None:
-        warnings.warn(
-            "再開元に環境の state_dict の状態が無いので, 環境の状態は"
-            "戻しません",
-            stacklevel=3
+    # 統計の値と, 報酬の割引の和の復元
+    attributes = vars_of(layer)
+    for name in RUNNING_STATS:
+        if name in state and name in attributes:
+            rms = attributes[name]
+            rms.mean = np.array(state[name]["mean"], copy=True)
+            rms.var = np.array(state[name]["var"], copy=True)
+            rms.count = float(state[name]["count"])
+    if "discounted_reward" in state:
+        layer.discounted_reward = np.array(
+            state["discounted_reward"], copy=True
         )
-    elif state is not None:
-        warnings.warn(
-            "環境が load_state_dict を持たないので, 再開元の環境の状態は"
-            "戻せません",
-            stacklevel=3
+
+
+def stateful_layers(env: Any) -> dict[int, tuple[Any, str]]:
+    """
+    状態を保存できる層を, 外側からの深さごとに返す関数
+
+    Parameters
+    ----------
+    env: Any
+        Gymnasium の形の環境
+
+    Returns
+    ----------
+    layers: dict[int, tuple[Any, str]]
+        深さごとの層と種類 (state_dict を持つ層は state_dict, 正規化の
+        統計を持つ層は running_stats)
+    """
+    # 自分の口を持つ層を優先し, 無ければ正規化の統計を持つ層
+    layers = {}
+    for depth, layer in enumerate(env_layers(env)):
+        if has_state_hooks(layer):
+            layers[depth] = (layer, "state_dict")
+        elif running_stats(layer) is not None:
+            layers[depth] = (layer, "running_stats")
+
+    return layers
+
+
+def save_env_state(env: Any) -> list[dict]:
+    """
+    環境の層が持つエピソードを越えて続く状態を, チェックポイントに保存できる
+    形で返す関数
+
+    Parameters
+    ----------
+    env: Any
+        Gymnasium の形の環境
+
+    Returns
+    ----------
+    states: list[dict]
+        状態を持つ層ごとの深さ (外側から 0), クラスの名前, 種類, 状態
+        (NumPy の配列は保存できる形), 無い場合は空
+    """
+    # 層ごとに状態を取り出し, 保存できない型はエラー
+    states = []
+    for depth, (layer, kind) in stateful_layers(env).items():
+        value = (
+            layer.state_dict() if kind == "state_dict"
+            else running_stats(layer)
         )
+        states.append({
+            "depth": depth, "name": type(layer).__name__, "kind": kind,
+            "state": encode_state(
+                value, f"env[{depth}] ({type(layer).__name__})",
+                "環境の状態"
+            )
+        })
+
+    return states
+
+
+def load_env_state(env: Any, states: Optional[list]) -> list[str]:
+    """
+    save_env_state で保存した状態を, 環境の層に戻す関数
+
+    Parameters
+    ----------
+    env: Any
+        Gymnasium の形の環境
+    states: Optional[list]
+        save_env_state の値, 保存しなかった場合は None
+
+    Returns
+    ----------
+    messages: list[str]
+        戻せなかった状態についての警告の文
+    """
+    # 深さとクラスの名前と種類が同じ層にだけ復元
+    current = stateful_layers(env)
+    saved = {entry["depth"]: entry for entry in states or []}
+    messages = []
+    for depth in sorted(set(current) | set(saved)):
+        layer, kind = current.get(depth, (None, None))
+        entry = saved.get(depth)
+        name = type(layer).__name__ if layer is not None else None
+        matched = entry is not None and (
+            (entry["name"], entry["kind"]) == (name, kind)
+        )
+        if matched:
+            value = decode_state(entry["state"])
+            if kind == "state_dict":
+                layer.load_state_dict(value)
+            else:
+                load_running_stats(layer, value)
+            continue
+
+        # 片方にしか無い (か, 層が違う) 状態の通知
+        if layer is not None:
+            messages.append(
+                f"再開元に環境の {name} の状態が無いので, その状態は戻しません"
+            )
+        if entry is not None:
+            messages.append(
+                f"再開元の環境の {entry['name']} の状態を受け取る層が無いので"
+                "戻せません. 再開元と同じ Wrapper で包んでください"
+            )
+
+    # 状態を持つのに戻せない Wrapper
+    for layer in env_layers(env):
+        reason = UNSAVED_WRAPPERS.get(type(layer).__name__)
+        if reason is not None:
+            messages.append(
+                f"{type(layer).__name__} の{reason}は戻せません"
+            )
+
+    return messages
 
 
 class RolloutLoader:
@@ -750,8 +935,8 @@ class RolloutLoader:
 
         エピソードは途中で止めずにエポックを区切るので, エポックの終わりの
         環境はエピソードの間にある (次は reset). そのため環境の中の物理の
-        状態は持たず, reset に使う環境の乱数と, 環境が state_dict で返す
-        エピソードを越えて続く状態を持つ
+        状態は持たず, reset に使う環境の乱数と, 環境の層 (Wrapper と中の
+        環境) が持つエピソードを越えて続く状態を持つ
 
         Parameters
         ----------
@@ -761,7 +946,8 @@ class RolloutLoader:
         ----------
         state: dict
             種を渡したかの印, 探索の設定, 環境の乱数 (np_random) の状態,
-            環境の state_dict の値 (チェックポイントに安全に保存できる形)
+            環境の層の状態 (save_env_state. チェックポイントに安全に保存
+            できる形)
         """
         # 環境の乱数は reset した後だけ (前は種を渡す最初の reset から)
         rng = env_rng(self.env) if self.seeded else None
@@ -770,7 +956,7 @@ class RolloutLoader:
             else encode_state(rng.bit_generator.state, "np_random")
         )
 
-        # 環境が自分で返す状態 (保存できない型はエラー)
+        # 環境の層が持つ状態 (保存できない型はエラー)
         env_state = save_env_state(self.env)
 
         state = {
@@ -785,7 +971,7 @@ class RolloutLoader:
 
         return state
 
-    def load_checkpoint_state(self, state: dict) -> None:
+    def load_checkpoint_state(self, state: dict) -> list[str]:
         """
         checkpoint_state で保存した状態に, loader と環境を戻す関数
 
@@ -796,20 +982,26 @@ class RolloutLoader:
 
         Returns
         ----------
-        None
+        messages: list[str]
+            戻せなかった状態と, 再開元の値で上書きした設定についての警告の文
+            (Trainer が警告して train.log に残す)
         """
         # 種を渡したかの印と, 環境の乱数の復元
+        messages = []
         self.seeded = bool(state.get("seeded", False))
+        hooks = any(
+            kind == "state_dict"
+            for _, kind in stateful_layers(self.env).values()
+        )
         if state.get("np_random") is not None:
             set_env_rng(self.env, decode_state(state["np_random"]))
-        elif self.seeded and env_state_owner(self.env) is None:
+        elif self.seeded and not hooks:
             # 乱数も state_dict も無い環境は, reset の乱数を戻せないので警告
-            warnings.warn(
+            messages.append(
                 "環境の乱数 (unwrapped.np_random) が見つからず, state_dict も"
                 "無いので, 環境の乱数は戻せません. 再開した学習は通しで学習"
                 "した場合と一致しないことがあります. 自分で作った Wrapper は "
-                "unwrapped で中の環境を返してください",
-                stacklevel=2
+                "unwrapped で中の環境を返してください"
             )
 
         # 探索の設定は, 登録した関数で差し替えた値も続くように再開元のもの
@@ -821,15 +1013,16 @@ class RolloutLoader:
             if (exploration.temperature, exploration.epsilon) != (
                 self.exploration.temperature, self.exploration.epsilon
             ):
-                warnings.warn(
+                messages.append(
                     f"探索の設定は再開元の {exploration!r} で続けます "
-                    f"(今の設定は {self.exploration!r})",
-                    stacklevel=2
+                    f"(今の設定は {self.exploration!r})"
                 )
             self.exploration = exploration
 
-        # 環境が自分で返した状態の復元 (片方にしか無い場合は警告)
-        load_env_state(self.env, state.get("env"))
+        # 環境の層の状態の復元 (片方にしか無い場合は警告)
+        messages += load_env_state(self.env, state.get("env"))
+
+        return messages
 
     def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
         """
@@ -926,7 +1119,7 @@ class EvaluationLoader:
         再開で戻すための, 評価の環境の状態を返す関数
 
         エピソードごとに決まった種で reset するので環境の乱数は持たず,
-        環境が state_dict で返すエピソードを越えて続く状態だけを持つ
+        環境の層が持つエピソードを越えて続く状態だけを持つ
 
         Parameters
         ----------
@@ -935,14 +1128,14 @@ class EvaluationLoader:
         Returns
         ----------
         state: dict
-            環境の state_dict の値 (口が無い場合は None)
+            環境の層の状態 (save_env_state)
         """
-        # 環境が自分で返す状態
+        # 環境の層が持つ状態
         state = {"env": save_env_state(self.env)}
 
         return state
 
-    def load_checkpoint_state(self, state: dict) -> None:
+    def load_checkpoint_state(self, state: dict) -> list[str]:
         """
         checkpoint_state で保存した状態に, 評価の環境を戻す関数
 
@@ -953,10 +1146,13 @@ class EvaluationLoader:
 
         Returns
         ----------
-        None
+        messages: list[str]
+            戻せなかった状態についての警告の文
         """
-        # 環境が自分で返した状態の復元 (片方にしか無い場合は警告)
-        load_env_state(self.env, state.get("env"))
+        # 環境の層の状態の復元 (片方にしか無い場合は警告)
+        messages = load_env_state(self.env, state.get("env"))
+
+        return messages
 
     def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
         """

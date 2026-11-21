@@ -9,6 +9,7 @@ from torch import nn
 from ml_found.rl import (
     EvaluationLoader, Exploration, ReinforceStep, RolloutLoader, make_env
 )
+from ml_found.rl.rollout import env_layers
 from ml_found.training.history import History
 from ml_found.training.trainer import Trainer
 from test_rl import Space
@@ -285,8 +286,11 @@ def test_resume_matches_full_with_env_state(tmp_path: Path) -> None:
     state = torch.load(first_dir / "last.pt", weights_only=True)
     assert set(state["loaders"]) == {"train", "valid"}
     assert state["loaders"]["train"]["seeded"] is True
-    assert state["loaders"]["train"]["env"] == {"episodes": 8}
-    assert state["loaders"]["valid"] == {"env": {"episodes": 4}}
+    assert state["loaders"]["train"]["env"] == [{
+        "depth": 0, "name": "CarryEnv", "kind": "state_dict",
+        "state": {"episodes": 8}
+    }]
+    assert state["loaders"]["valid"]["env"][0]["state"] == {"episodes": 4}
 
 
 def test_resume_without_env_state_differs(tmp_path: Path) -> None:
@@ -304,7 +308,23 @@ def test_resume_without_env_state_differs(tmp_path: Path) -> None:
     None
     """
     def make(model: nn.Module) -> tuple:
-        return carry_loaders(model, PlainEnv)
+        """
+        state_dict を持たない環境の loader を作る関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            方策のモデル
+
+        Returns
+        ----------
+        loaders: tuple
+            学習と検証の loader
+        """
+        # 環境のクラスだけを変更
+        loaders = carry_loaders(model, PlainEnv)
+
+        return loaders
 
     full, _ = train_run(tmp_path / "full", 4, make, carry_model)
     _, first_dir = train_run(tmp_path / "first", 2, make, carry_model)
@@ -443,8 +463,8 @@ def test_loader_state_round_trip() -> None:
     # 新しい loader に戻すと同じバッチ, 探索の設定の違いは警告して再開元
     other, _ = carry_loaders(model)
     other.exploration = Exploration(temperature=2.0)
-    with pytest.warns(UserWarning, match="探索の設定は再開元"):
-        other.load_checkpoint_state(saved)
+    messages = other.load_checkpoint_state(saved)
+    assert len(messages) == 1 and "探索の設定は再開元" in messages[0]
     torch.set_rng_state(torch_state)
     batch = next(iter(other))
     assert other.exploration.epsilon == 0.2
@@ -480,10 +500,25 @@ def test_mt19937_rng_and_bad_env_state() -> None:
 
     # 保存できない型を返す環境はエラー
     def bad_state() -> dict:
-        return {"value": object()}
+        """
+        保存できない型を含む状態を返す関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        state: dict
+            object を含む辞書
+        """
+        # 保存できない値
+        state = {"value": object()}
+
+        return state
 
     loader.env.state_dict = bad_state
-    with pytest.raises(TypeError, match="環境の state_dict"):
+    with pytest.raises(TypeError, match="環境の状態 env\\[0\\]"):
         loader.checkpoint_state()
 
 
@@ -515,11 +550,31 @@ def test_discard_epoch_restores_env(tmp_path: Path) -> None:
     calls = {"train": 0}
 
     def interrupting(model: nn.Module, batch: Any, phase: str) -> dict:
+        """
+        6 回目の学習のバッチで割り込む step の関数
+
+        Parameters
+        ----------
+        model: nn.Module
+            方策のモデル
+        batch: Any
+            バッチ
+        phase: str
+            train か valid
+
+        Returns
+        ----------
+        outputs: dict
+            ReinforceStep の戻り値
+        """
+        # 学習のバッチを数え, 6 回目で割り込み
         if phase == "train":
             calls["train"] += 1
             if calls["train"] == 6:
                 raise KeyboardInterrupt
-        return step(model, batch, phase)
+        outputs = step(model, batch, phase)
+
+        return outputs
 
     trainer = Trainer(model, experiment, interrupting)
     with pytest.raises(KeyboardInterrupt):
@@ -593,7 +648,102 @@ def test_env_without_rng_warns() -> None:
     loader, _ = carry_loaders(model, OwnWrapper)
     next(iter(loader))
     saved = loader.checkpoint_state()
-    assert saved["np_random"] is None and saved["env"] is None
+    assert saved["np_random"] is None and saved["env"] == []
     other, _ = carry_loaders(model, OwnWrapper)
-    with pytest.warns(UserWarning, match="環境の乱数は戻せません"):
-        other.load_checkpoint_state(saved)
+    messages = other.load_checkpoint_state(saved)
+    assert len(messages) == 1 and "環境の乱数は戻せません" in messages[0]
+
+
+def normalized_loaders(model: nn.Module) -> tuple:
+    """
+    観測と報酬を正規化する Wrapper で包んだ CartPole の loader を作る関数
+
+    Parameters
+    ----------
+    model: nn.Module
+        方策のモデル
+
+    Returns
+    ----------
+    loaders: tuple
+        学習と検証の loader
+    """
+    # 学習は観測と報酬, 検証は観測を正規化 (統計はエピソードを越えて続く)
+    from gymnasium.wrappers import NormalizeObservation, NormalizeReward
+
+    train_env = NormalizeReward(NormalizeObservation(make_env("CartPole-v1")))
+    valid_env = NormalizeObservation(make_env("CartPole-v1"))
+    train_loader = RolloutLoader(
+        train_env, model, steps=60, batch_episodes=2, seed=0
+    )
+    valid_loader = EvaluationLoader(valid_env, model, episodes=2, seed=500)
+    loaders = (train_loader, valid_loader)
+
+    return loaders
+
+
+def test_normalize_wrappers_resume_matches_full(tmp_path: Path) -> None:
+    """
+    正規化の Wrapper の統計も戻り, 再開した学習が通しの学習と一致する
+    ことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    pytest.importorskip("gymnasium")
+    full, _ = train_run(
+        tmp_path / "full", 4, normalized_loaders, cartpole_model
+    )
+    _, first_dir = train_run(
+        tmp_path / "first", 2, normalized_loaders, cartpole_model
+    )
+    resumed, _ = train_run(
+        tmp_path / "second", 4, normalized_loaders, cartpole_model,
+        first_dir / "last.pt"
+    )
+    assert_same(resumed, full)
+
+    # 外側から報酬と観測の正規化の統計を保存
+    state = torch.load(first_dir / "last.pt", weights_only=True)
+    names = [entry["name"] for entry in state["loaders"]["train"]["env"]]
+    assert names == ["NormalizeReward", "NormalizeObservation"]
+
+
+def test_unsaved_and_mismatched_wrappers_warn() -> None:
+    """
+    戻せない Wrapper と, 再開元と違う Wrapper で包んだ環境では警告の文を
+    返すことを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    pytest.importorskip("gymnasium")
+    from gymnasium.wrappers import (
+        NormalizeObservation, RecordEpisodeStatistics
+    )
+
+    # 正規化で包んだ環境の状態を保存
+    model = cartpole_model()
+    env = NormalizeObservation(make_env("CartPole-v1"))
+    loader = RolloutLoader(env, model, episodes=1, seed=0)
+    next(iter(loader))
+    saved = loader.checkpoint_state()
+
+    # 統計の記録で包むと, 戻せない統計と, 層の違いを通知
+    other_env = RecordEpisodeStatistics(make_env("CartPole-v1"))
+    other = RolloutLoader(other_env, model, episodes=1, seed=0)
+    messages = other.load_checkpoint_state(saved)
+    assert any("NormalizeObservation の状態を受け取る層" in m for m in messages)
+    assert any("RecordEpisodeStatistics の" in m for m in messages)
+    assert env_layers(other_env)[0] is other_env

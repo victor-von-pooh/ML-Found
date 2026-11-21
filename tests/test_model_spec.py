@@ -147,6 +147,29 @@ def copy_spec(value: object, run_dir: Path, project: Path) -> object:
     return record
 
 
+def describe_spec(value: object, project: Path) -> object:
+    """
+    model.spec に場所を書いた config で定義を読み, train.log に書く文を
+    作る関数 (写さない場所に使う)
+
+    Parameters
+    ----------
+    value: object
+        model.spec の値
+    project: Path
+        プロジェクトのディレクトリ
+
+    Returns
+    ----------
+    message: object
+        train.log に書く文 (str か None)
+    """
+    spec = read_model_spec(spec_config(value), project)
+    message = describe_model_spec(spec, spec.record)
+
+    return message
+
+
 def test_copy_spec_on_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -458,11 +481,26 @@ def test_dotdot_after_link(tmp_path: Path) -> None:
     assert copy_spec("extlink/..", run_dir, project)["status"] == "link"
     assert not (run_dir / MODEL_SPEC_FILE).exists()
 
-    # .. の直前が無い場所は開けないので missing, 末尾の区切りは not_file
+    # .. の直前が無い場所は開けないので missing, 末尾の区切りは not_file.
+    # train.log の説明は書いた文字を添えて理由を書く
     record = copy_spec("nosuch/../m.yaml", run_dir, project)
     assert record == {"path": "m.yaml", "status": "missing", "sha256": None}
+    message = describe_spec("nosuch/../m.yaml", project)
+    assert "'nosuch/../m.yaml' の .. の直前が無いか" in message
+    assert "ファイルがありません" not in message
     for value in ("m.yaml/", "m.yaml/."):
         assert copy_spec(value, run_dir, project)["status"] == "not_file"
+        message = describe_spec(value, project)
+        assert f"{value!r} は末尾が区切りの" in message
+        assert "普通のファイルではありません" not in message
+
+    # ファイルが本当に無い場合と開けない場所は, status の説明のまま
+    assert describe_spec("nosuch.yaml", project).endswith(
+        "ファイルがありません"
+    )
+    assert describe_spec("m.yaml/x.yaml", project).endswith(
+        "ファイルがありません"
+    )
 
     # リンクと関係の無い .. はリンクで止めても正規化して記録
     (project / "sub").mkdir()

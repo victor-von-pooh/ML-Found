@@ -16,7 +16,8 @@ from ml_found.experiment.env_info import (
 )
 from ml_found.experiment.logger import get_logger
 from ml_found.experiment.model_spec import (
-    copy_model_spec, describe_model_spec, read_model_spec
+    copied_spec_path, copied_spec_source, copy_model_spec,
+    describe_model_spec, read_model_spec
 )
 from ml_found.experiment.seed import EXTRA_RNGS, fix_seed
 from ml_found.experiment.task import (
@@ -48,6 +49,15 @@ class Experiment:
 
     # 学習に使うデバイス
     device: torch.device
+
+    # 実験に写したモデルの定義 (run_dir の model_spec.yaml). 写さなかった
+    # 場合と config に model.spec が無い場合は None
+    model_spec_path: Optional[Path] = None
+
+    # 写したモデルの定義の元のファイル (プロジェクトの中. 定義の中の相対の
+    # 参照を辿る起点). 写さなかった場合と config に model.spec が無い場合は
+    # None
+    model_spec_source: Optional[Path] = None
 
 
 def check_name(name: str) -> None:
@@ -402,7 +412,8 @@ def start_experiment(
     Returns
     ----------
     experiment: Experiment
-        config, プロジェクトのディレクトリ, 保存先, ロガー, デバイスをまとめたもの
+        config, プロジェクトのディレクトリ, 保存先, ロガー, デバイス,
+        モデルの定義の写しと元のファイルの場所をまとめたもの
     """
     # プロジェクトのディレクトリの決定
     if project_dir is None:
@@ -477,7 +488,8 @@ def start_experiment(
     # まとめて返却
     experiment = Experiment(
         cfg=cfg, project_dir=project_root, run_dir=run_dir, logger=logger,
-        device=device
+        device=device, model_spec_path=copied_spec_path(spec_record, run_dir),
+        model_spec_source=copied_spec_source(model_spec, spec_record)
     )
 
     # fit の外 (データの用意など) で処理されなかったエラーも, ダッシュボード

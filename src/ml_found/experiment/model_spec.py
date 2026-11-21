@@ -65,6 +65,9 @@ class ModelSpecRead:
     # 写さなかった理由の, status の説明の代わりに train.log に書く説明
     # (書いた文字で理由が分かる場合だけ)
     detail: Optional[str] = None
+    # 読んだ元の定義のファイル (プロジェクトの中の正規化した絶対パス.
+    # 読めた場合だけ)
+    source: Optional[Path] = None
 
 
 def is_link(path: Path) -> bool:
@@ -459,7 +462,8 @@ def read_model_spec(cfg: DictConfig, project_dir: Path) -> ModelSpecRead:
         record["sha256"] = hashlib.sha256(content).hexdigest()
     record["status"] = reason
     spec = ModelSpecRead(
-        record=record, content=content, notice=None, detail=detail
+        record=record, content=content, notice=None, detail=detail,
+        source=path if content is not None else None
     )
 
     return spec
@@ -524,6 +528,60 @@ def copy_model_spec(spec: ModelSpecRead, run_dir: Path) -> Optional[dict]:
     record["status"] = "copied"
 
     return record
+
+
+def copied_spec_path(
+    record: Optional[dict], run_dir: Path
+) -> Optional[Path]:
+    """
+    実験に写したモデルの定義の場所を返す関数
+
+    Parameters
+    ----------
+    record: Optional[dict]
+        copy_model_spec が返した記録
+    run_dir: Path
+        実験のディレクトリ
+
+    Returns
+    ----------
+    path: Optional[Path]
+        写した場合 (status が copied) は run_dir の model_spec.yaml,
+        写さなかった場合と model.spec が無い場合は None
+    """
+    # 中身が source.yaml の sha256 と一致する写しだけを指す
+    path: Optional[Path] = None
+    if record is not None and record["status"] == "copied":
+        path = run_dir / MODEL_SPEC_FILE
+
+    return path
+
+
+def copied_spec_source(
+    spec: ModelSpecRead, record: Optional[dict]
+) -> Optional[Path]:
+    """
+    実験に写したモデルの定義の, 元のファイルの場所を返す関数
+
+    Parameters
+    ----------
+    spec: ModelSpecRead
+        read_model_spec が返したもの
+    record: Optional[dict]
+        copy_model_spec が返した記録
+
+    Returns
+    ----------
+    path: Optional[Path]
+        写した場合 (status が copied) はプロジェクトの中の元の定義の
+        ファイル (定義の中の相対の参照を辿る起点), それ以外は None
+    """
+    # 写しと同じく, 写した場合だけ指す
+    path: Optional[Path] = None
+    if record is not None and record["status"] == "copied":
+        path = spec.source
+
+    return path
 
 
 def describe_model_spec(

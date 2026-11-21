@@ -15,6 +15,9 @@ from ml_found.experiment.env_info import (
     collect_env_info, get_git_diff, log_env_info
 )
 from ml_found.experiment.logger import get_logger
+from ml_found.experiment.model_spec import (
+    copy_model_spec, describe_model_spec, read_model_spec
+)
 from ml_found.experiment.seed import EXTRA_RNGS, fix_seed
 from ml_found.experiment.task import (
     TASK_KEYS, build_task, describe_origin, save_task
@@ -420,6 +423,10 @@ def start_experiment(
     check_resume_path(cfg, project_root)
     task = config_task(cfg, project_root)
 
+    # 学習を始めるときのモデルの定義 (config に model.spec があれば) を,
+    # 出力先を作る前に読み込み (写せない場合は理由を記録に残して続行)
+    model_spec = read_model_spec(cfg, project_root)
+
     # 出力先を作ると未コミットの変更として数えられるので, 先に環境の情報の収集
     env_info = collect_env_info(str(project_root))
     git_diff = get_git_diff(str(project_root))
@@ -430,10 +437,12 @@ def start_experiment(
         datetime.now()
     )
 
-    # 学習に使った config と差分, 起動のしかた (スクリプト, config のパス,
-    # 上書き), config に task があれば何の実験か (task.yaml) を保存
+    # 学習に使った config と差分, モデルの定義の写し (config に model.spec
+    # があれば), 起動のしかた (スクリプト, config のパス, 上書き, 定義の
+    # 写しの記録), config に task があれば何の実験か (task.yaml) を保存
     save_config(cfg, diff, str(run_dir))
-    save_source(cfg, str(run_dir), project_root)
+    spec_record = copy_model_spec(model_spec, run_dir)
+    save_source(cfg, str(run_dir), project_root, spec_record)
     if task is not None:
         save_task(run_dir, task)
 
@@ -447,6 +456,9 @@ def start_experiment(
     )
     logger.info(f"保存先: {run_dir}")
     logger.info(f"default との差分:\n\n{format_diff(diff)}")
+    spec_message = describe_model_spec(model_spec, spec_record)
+    if spec_message is not None:
+        logger.info(spec_message)
     if task is not None:
         logger.info(
             f"task.yaml を書きました: {describe_origin(task['target']['origin'])}"

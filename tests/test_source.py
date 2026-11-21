@@ -99,7 +99,8 @@ def test_source_from_project_config(
         "script": "train.py",
         "default": "configs/default/train.yaml",
         "experiment": "configs/experiment/short.yaml",
-        "overrides": ["trainer.epochs=3", "experiment.seed=7"]
+        "overrides": ["trainer.epochs=3", "experiment.seed=7"],
+        "model_spec": None
     }
 
     # 上書きの値の ${...} も, 補間にせず書いた文字のまま残す
@@ -154,7 +155,7 @@ def test_source_unknown_and_outside(
     experiment = start_experiment(copied, diff, str(project))
     assert read_source(experiment.run_dir) == {
         "format_version": 1, "script": None, "default": None,
-        "experiment": None, "overrides": None
+        "experiment": None, "overrides": None, "model_spec": None
     }
 
 
@@ -183,7 +184,8 @@ def test_source_keeps_existing(tmp_path: Path) -> None:
     assert read_source(tmp_path) == {
         "format_version": 1, "script": "train.py",
         "default": "configs/default/train.yaml",
-        "experiment": None, "overrides": ["trainer.epochs=3"]
+        "experiment": None, "overrides": ["trainer.epochs=3"],
+        "model_spec": None
     }
 
 

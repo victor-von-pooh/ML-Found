@@ -148,6 +148,7 @@ def test_run_directory_matches_format(
     assert source["format_version"] == SOURCE_FORMAT_VERSION == 1
     assert source["script"] == "train.py"
     assert source["default"] == "configs/default/train.yaml"
+    assert source["model_spec"] is None
 
     # run.json の項目と版
     status = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))

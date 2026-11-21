@@ -27,6 +27,7 @@ PyTorch のモデルを config から自動で学習させる基盤のライブ�
 | 方策の一式 (`policy/`) | 持つ (`policy.json` と `apply_guards` で, 他の段階も同じ守りを当てられる) | 版 1 |
 | ML-EDA が書き出したデータセット (`dataset.yaml`) | 読む (`task.dataset` から受け持ちと正解を埋める. ml_eda には頼らない) | 版 2 と 3 (版 3 は版 2 に項目の中身の手順を足したもので, 受け持ちと正解は同じ形). 版 1 と知らない版では止まる |
 | 受け持ち, 出力の形, 正解の種類と出どころの値の名前 | ML-Quest と ML-EDA の名前を写す | 無し |
+| モデルの定義 (ML-ModelControl の定義の YAML. config の `model.spec`) | 中身を読まずに実験に写す (`model_spec.yaml`. ml_modelcontrol には頼らない) | 無し (ファイルのまま写す) |
 | 追加の依存の登録簿 (`describe_requirements`, `environment_packages`) と, Optimizer と Scheduler の登録簿 (`describe_optimizers`, `describe_schedulers`) | 持つ (ML-Dashboard と ML-Quest が読む. ML-Quest の骨組みは, 学習のスクリプトが import する段階のライブラリ (`eda`, `modelcontrol`, `inference`) だけを config の `requires` に書く) | 無し (関数の戻り値) |
 
 ## 3. 用語
@@ -138,7 +139,15 @@ print([(param["name"], param["default"]) for param in adam["params"]])
 上書きは experiment の後に重なり, experiment と同じく default にある項目だけを書けて, `diff.yaml` にも残る. 上書きでクラス名を変えると, default と experiment に書いた前のクラスの引数は捨てられる. 値は YAML として読むので, `scheduler.name=null` で使わない設定にできる. 項目の削除 (`~`) や追加 (`+`) の書き方には対応していない.
 独自の引数 (`--seed` など) を持つ学習スクリプトは, 自分の parser に `add_config_arguments(parser)` で `--experiment` と上書きを加え, 読み込んだ引数を `load_config_from_args(project_dir, args)` に渡す. パスや上書きを自分で決める場合は `load_config(default_path, experiment_path, overrides)` を使う.
 
-`start_experiment` が返す `Experiment` は, 学習に使う config (`cfg`), プロジェクトのディレクトリ (`project_dir`), 実験の出力先 (`run_dir`. `<output_dir>/<name>/<日付>/<時刻>/` の `Path`), ロガー (`logger`), デバイス (`device`) を持つ. モデルを作るのに使ったファイル (モデルの定義など) を残す場合は `run_dir` に写す.
+`start_experiment` が返す `Experiment` は, 学習に使う config (`cfg`), プロジェクトのディレクトリ (`project_dir`), 実験の出力先 (`run_dir`. `<output_dir>/<name>/<日付>/<時刻>/` の `Path`), ロガー (`logger`), デバイス (`device`) を持つ. モデルを作るのに使ったファイルを残す場合は `run_dir` に写す. モデルの定義 (ML-ModelControl) は, config の `model.spec` に場所を書けば `start_experiment` が写す (下の「モデルの定義の写し」).
+
+**モデルの定義の写し**: config の `model.spec` (相対パスはプロジェクトから辿る) にファイルがあれば, `start_experiment` が出力先を作る前に読み (学習を始めるときの中身), 出力先を作った後に中身を変えずに `model_spec.yaml` として写し, 場所と中身の sha256 を `source.yaml` の `model_spec` に書く (出力先だけで何で学習したかが分かり, 同じモデルで起動し直せるように). ML-Found は定義の中身を読まない (ml_modelcontrol に頼らない) ので, 定義の誤りはモデルを組み立てるときに分かる. `sha256` は `start_experiment` が読んだ時点の中身なので, 学習のスクリプトが別の時点 (`start_experiment` の前や後に書き換えた後) か別の場所からモデルを組み立てると, 学習に使った定義と一致しない.
+
+- `model.spec` が無い, 空 (`null` か空白だけの文字) 場合は何もしない (`source.yaml` の `model_spec` は null). 文字でない値 (`123` など) も写さずに null とし, そのことを `train.log` に 1 行書く. 解決できない参照 (`${nope}`, 無い環境変数の `${oc.env:NAME}` など) も, 定義を読む段 (`read_model_spec`) では null とするが, `start_experiment` は config を保存するときに参照の誤りで止まる. `model` はプロジェクトの項目なので, ML-Found は `model.spec` の他は読まない
+- 写せない場合は写さずに理由を `status` に残して `train.log` に書き, 学習は続ける (例外で止めない. 定義を組む前に仮のモデルで学習するプロジェクトがあり, 写しは学習の補いなので). ファイルが無い場合と, `..` の直前が無いかディレクトリでない場合 (`nosuch/../m.yaml`. OS では開けない) は `missing`, 場所として読めない書き方 (存在しないユーザーの `~`, ヌル文字など) は `invalid`, 写しを書けなかった場合 (出力先に書けない, 同じ名前のディレクトリがあるなど) は `write_failed`
+- プロジェクトの外を指す場所 (`outside`), 場所か途中のディレクトリがシンボリックリンクのもの (`link`), 普通のファイルでないもの (`not_file`. 末尾が区切りの `m.yaml/` と `m.yaml/.` も), 読めないもの (`unreadable`), 16 MiB を超えるもの (`too_large`. 重みのファイルなどを誤って指した場合に丸ごと読まないため) は写さない (実験に思わぬファイルを写さないため). リンクには Windows のジャンクションも含む. リンクの後の `..` (`extlink/../m.yaml` など) も `link` とし, そのときだけ `path` は正規化せずに書いた文字のまま残す (リンクと関係の無い `..` は正規化する) (POSIX では, `..` を消して正規化した場所と OS が開く場所が違うため). 開くときは最後の要素のリンクを辿らず (`O_NOFOLLOW`), 開いたものがプロジェクトの中の同じファイルかを確かめてから読む (確かめた後に途中のディレクトリを入れ替えられた場合も外を写さないため). プロジェクトに至るまでのリンク (macOS の `/tmp` など) は問わず, リンクを通した場所から書いた絶対パスもプロジェクトの中として扱う
+- `trainer.resume_from` で再開する学習でも写す (再開でも今の定義から組み立て, 再開元の重みを strict に読むので, 学習が動いた時点で今の定義がその実験の定義). 再開かどうかは `config.yaml` の `trainer.resume_from` で分かる. 同じ `Trainer` で `fit` を呼び直す場合は同じ実験なので, 最初に写したものが残る
+- 写したファイルは `config.yaml` と同じ権限 (umask に従う) で作る. 学習のスクリプトが学習の後に同じ名前で写し直しても上書きできる (そのときの中身は `sha256` と合わないことがある)
 
 `step(model, batch, phase)` の決まりは以下の通り.
 
@@ -633,6 +642,7 @@ ML-Found が使う項目と既定値.
 
 | 項目 | 既定値 | 説明 |
 | --- | --- | --- |
+| `model.spec` | (無し) | モデルの定義 (ML-ModelControl の定義の YAML) の場所, 相対パスの場合はプロジェクトのディレクトリから辿る. あれば `start_experiment` が実験に `model_spec.yaml` として写す (「モデルの定義の写し」). `model` の他の項目はプロジェクトのもの |
 | `requires` | (無し) | 学習に要る機能の名前のリスト (「追加の依存」). `start_experiment` が出力先を作る前に確かめる. experiment で変える場合は default にも書く |
 | `experiment.name` | `experiment` | 実験の名前, 出力先のディレクトリ名になる |
 | `experiment.output_dir` | `outputs` | 出力先, 相対パスの場合はプロジェクトのディレクトリから辿る |
@@ -699,9 +709,10 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | --- | --- |
 | `config.yaml` | 学習に使った config 全体, default として読み込めば同じ条件で学習できる. 再開した実験の場合は `trainer.resume_from` も残っているので, 最初から学習し直す場合は消す |
 | `diff.yaml` | default から変えた項目 |
-| `source.yaml` | 実験の起動のしかた. 形式の版 (`format_version`), 実行したスクリプト (`script`), default と experiment の config (`default`, `experiment`), 「項目=値」の上書き (`overrides`). パスはプロジェクトの中ならプロジェクトからの相対パス. `load_config`, `load_project_config`, `load_config_from_args` で作った config を `start_experiment` に渡すと記録され, 別の方法で作った config (写したものを含む) では `default`, `experiment`, `overrides` が `null`. ノートブックの中と `python -c` では `script` が `null`. コマンドラインの他の引数は, 秘密の値を含み得るので記録しない |
+| `source.yaml` | 実験の起動のしかた. 形式の版 (`format_version`), 実行したスクリプト (`script`), default と experiment の config (`default`, `experiment`), 「項目=値」の上書き (`overrides`), モデルの定義の写し (`model_spec`. 場所 `path`, 写したか `status`, 中身の `sha256`). パスはプロジェクトの中ならプロジェクトからの相対パス. `load_config`, `load_project_config`, `load_config_from_args` で作った config を `start_experiment` に渡すと記録され, 別の方法で作った config (写したものを含む) では `default`, `experiment`, `overrides` が `null`. ノートブックの中と `python -c` では `script` が `null`. コマンドラインの他の引数は, 秘密の値を含み得るので記録しない |
 | `train.log` | 差分, 環境の情報, モデルの構造, エポックごとの指標, 結果 |
 | `model_summary.csv` | モデルのパラメータとバッファの一覧 (名前, 種類, 持っている層のクラス名, 形, 型, 要素数, 学習するか, 共有している場合は最初の名前 `same_as`. 要素数の合計では共有したものを 1 回だけ数える) |
+| `model_spec.yaml` | config の `model.spec` の場所にプロジェクトの中の普通のファイルがあり, 写せた場合のみ. 学習を始めたときのモデルの定義の写し (「モデルの定義の写し」). 同じモデルで起動し直すときは, これをプロジェクトの定義の場所に写す |
 | `git_diff.patch` | 未コミットの変更がある場合のみ, commit id からの差分. 未追跡のファイルも含むが, `.gitignore` で除外したファイルと submodule の中の変更は含まない. バイナリファイルは変更されたことだけが記録される |
 | `history.csv` | エポックごとの指標と, エポックを始めた時点の学習率 (`lr`, `optimizers` の場合は `lr_<名前>`. エポックの中の変化は `lr_steps.csv`), `step` の `extra` で返した値 |
 | `lr_steps.csv` | Scheduler を使い `scheduler.interval: step` (`optimizers` の場合は名前ごとの `scheduler.interval: step`) の場合だけ (エポックごとに変える設定で再開した場合は保存しない). 更新ごとの通しの番号 (`step`), エポック (`epoch`), その更新に使った学習率 (`lr`, `history.csv` と同じく最初のパラメータのグループの値). 学習を終えたときに保存し, 再開しても続きから記録する |
@@ -776,4 +787,5 @@ echo now > outputs/wine/2026-11-12/10-00-00/STOP   # エポックの途中でも
 - Optimizer と Scheduler の名前に `.` を含めると, そのモジュールを import して自作のクラスを読む. config は学習のスクリプトと同じく, 信頼できるものだけを使う
 - 評価と見本の名前は英数字と `_ . @ -` だけ (先頭は `.` 以外). 名前から実験のディレクトリの外にファイルを書かない
 - `source.yaml` には, コマンドラインの他の引数を残さない (秘密の値を含み得るため)
+- モデルの定義の写し (`model_spec.yaml`) は, プロジェクトの中の普通のファイル (16 MiB まで) だけを, リンク (途中のディレクトリ, リンクの後の `..`, Windows のジャンクションを含む) を辿らずに読む. プロジェクトの外とリンクは写さない. `train.log` には場所を `repr` で書く (改行で偽の行を作らないため)
 - ML-Found はネットワークを使わない. 追加の依存の入れ方は, コマンドと公式の手順の URL を示すだけで, 自分では入れない

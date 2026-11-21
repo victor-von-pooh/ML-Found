@@ -73,12 +73,74 @@ def behavior_probs(
     return probs
 
 
+def model_scores(model: nn.Module, observation: Any) -> torch.Tensor:
+    """
+    推論モードのモデルで, 1 件の観測の出力を勾配なしで求める関数
+
+    Parameters
+    ----------
+    model: nn.Module
+        方策のモデル
+    observation: Any
+        環境の観測
+
+    Returns
+    ----------
+    output: torch.Tensor
+        1 件分の出力 (discrete なら行動ごとのスコア, box なら行動の平均)
+    """
+    # モデルと同じデバイスで, 推論モードにして勾配を記録せずに計算
+    # (1 件の観測の BatchNorm と, Dropout の違いで確率がずれるのを避ける
+    # ため. 元のモードに復帰)
+    device = model_device(model)
+    obs = torch.as_tensor(
+        np.asarray(observation, dtype=np.float32), device=device
+    )
+    training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            output = model(obs.unsqueeze(0))[0]
+    finally:
+        model.train(training)
+
+    return output
+
+
+def gaussian_std(model: nn.Module, size: int) -> torch.Tensor:
+    """
+    連続の行動の方策の標準偏差を, モデルの log_std から求める関数
+
+    Parameters
+    ----------
+    model: nn.Module
+        log_std (行動の要素ごとか 1 つの対数の標準偏差) を持つモデル
+    size: int
+        行動の要素の数
+
+    Returns
+    ----------
+    std: torch.Tensor
+        要素が size 個の標準偏差
+    """
+    # 要素の数が合わない log_std はエラー
+    log_std = torch.as_tensor(model.log_std).reshape(-1)
+    if log_std.numel() not in (1, size):
+        raise ValueError(
+            f"log_std の要素の数 {log_std.numel()} は 1 か行動の要素の数 "
+            f"{size} にしてください"
+        )
+    std = log_std.exp().expand(size)
+
+    return std
+
+
 def select_action(
     model: nn.Module, observation: Any, exploration: Exploration,
     greedy: bool
 ) -> tuple[int, float]:
     """
-    観測から行動を 1 つ選ぶ関数
+    観測から番号で選ぶ行動を 1 つ選ぶ関数
 
     Parameters
     ----------
@@ -98,22 +160,8 @@ def select_action(
     prob: float
         その行動を選んだ確率 (greedy の場合は 1)
     """
-    # モデルと同じデバイスで, 推論モードにして勾配を記録せずにスコアを計算
-    # (1 件の観測の BatchNorm と, Dropout の違いで確率がずれるのを避ける
-    # ため. 元のモードに復帰)
-    device = model_device(model)
-    obs = torch.as_tensor(
-        np.asarray(observation, dtype=np.float32), device=device
-    )
-    training = model.training
-    model.eval()
-    try:
-        with torch.no_grad():
-            logits = model(obs.unsqueeze(0))[0]
-    finally:
-        model.train(training)
-
     # 評価は最良の行動, 学習は探索を入れた分布から選択
+    logits = model_scores(model, observation)
     if greedy:
         action = int(logits.argmax().item())
         prob = 1.0
@@ -123,6 +171,79 @@ def select_action(
     prob = float(probs[action].item())
 
     return action, prob
+
+
+def select_box_action(
+    model: nn.Module, observation: Any, exploration: Exploration,
+    greedy: bool
+) -> tuple[np.ndarray, float]:
+    """
+    観測から連続の行動を, 正規分布の方策で 1 つ選ぶ関数
+
+    Parameters
+    ----------
+    model: nn.Module
+        観測を受け取り行動の平均を返し, log_std を持つモデル
+    observation: Any
+        環境の観測
+    exploration: Exploration
+        探索の設定 (温度を標準偏差に掛ける. greedy の場合は使わない)
+    greedy: bool
+        平均の行動を選ぶ場合は True (評価のエピソード)
+
+    Returns
+    ----------
+    action: np.ndarray
+        選んだ行動 (平らな float32. 空間の範囲で clip する前の値)
+    log_prob: float
+        その行動を選んだ確率密度の対数 (greedy の場合は 0)
+    """
+    # 評価は平均の行動, 学習は温度を掛けた標準偏差の正規分布から選択
+    mean = model_scores(model, observation).float().reshape(-1)
+    if greedy:
+        action = mean.cpu().numpy().astype(np.float32)
+        log_prob = 0.0
+        return action, log_prob
+    with torch.no_grad():
+        std = gaussian_std(model, mean.numel()).to(mean) * (
+            exploration.temperature
+        )
+        distribution = torch.distributions.Normal(mean, std)
+        sample = distribution.sample()
+        log_prob = float(distribution.log_prob(sample).sum().item())
+    action = sample.cpu().numpy().astype(np.float32)
+
+    return action, log_prob
+
+
+def to_env_action(action: Any, space: Any) -> Any:
+    """
+    選んだ行動を, 環境に渡す形にする関数
+
+    Parameters
+    ----------
+    action: Any
+        選んだ行動 (番号か, 平らな連続の行動)
+    space: Any
+        行動の空間 (box の場合は low, high, shape を持つ)
+
+    Returns
+    ----------
+    env_action: Any
+        番号はそのまま, 連続の行動は空間の範囲で clip して形を戻した値
+    """
+    # 番号で選ぶ行動はそのまま
+    if isinstance(action, (int, np.integer)):
+        env_action = action
+        return env_action
+
+    # 空間の範囲 (書き出しの守りの範囲の外側) で clip
+    low = np.asarray(space.low, dtype=np.float64).reshape(-1)
+    high = np.asarray(space.high, dtype=np.float64).reshape(-1)
+    clipped = np.clip(np.asarray(action, dtype=np.float64), low, high)
+    env_action = clipped.astype(np.float32).reshape(tuple(space.shape))
+
+    return env_action
 
 
 def model_device(model: nn.Module) -> torch.device:
@@ -178,7 +299,7 @@ def run_episode(
     env: Any, model: nn.Module, buffer: ExperienceBuffer,
     exploration: Exploration, greedy: bool, seed: Optional[int],
     max_steps: Optional[int], safety_key: Optional[str],
-    success_key: Optional[str]
+    success_key: Optional[str], kind: str = "discrete"
 ) -> dict[str, Any]:
     """
     Gymnasium の形の環境で 1 エピソードを動かし, 経験を貯める関数
@@ -204,6 +325,8 @@ def run_episode(
         安全の違反を表す info のキー
     success_key: Optional[str]
         成功を表す info のキー (最後の歩の値を読む)
+    kind: str = "discrete"
+        行動の空間の種類 (discrete か box)
 
     Returns
     ----------
@@ -215,14 +338,30 @@ def run_episode(
     steps = 0
     done = False
     while not done:
-        action, prob = select_action(model, observation, exploration, greedy)
+        # 連続の行動は clip する前の値を記録 (選んだ確率密度と合わせるため)
+        if kind == "box":
+            action, log_prob = select_box_action(
+                model, observation, exploration, greedy
+            )
+        else:
+            action, prob = select_action(
+                model, observation, exploration, greedy
+            )
+            log_prob = None
         next_observation, reward, terminated, truncated, info = env.step(
-            action
+            to_env_action(action, env.action_space)
         )
-        buffer.add(
-            observation, action, float(reward), prob,
-            is_violation(info, safety_key)
-        )
+        if kind == "box":
+            buffer.add(
+                observation, action, float(reward),
+                violation=is_violation(info, safety_key),
+                behavior_log_prob=log_prob
+            )
+        else:
+            buffer.add(
+                observation, action, float(reward), prob,
+                is_violation(info, safety_key)
+            )
         observation = next_observation
         steps += 1
         done = bool(terminated) or bool(truncated) or (
@@ -239,9 +378,9 @@ def run_episode(
     return stats
 
 
-def check_discrete(env: Any) -> None:
+def action_kind(env: Any) -> str:
     """
-    環境の行動が番号で選ぶ形 (Discrete) であることを確かめる関数
+    環境の行動の空間が, 番号で選ぶ形 (Discrete) か連続 (Box) かを返す関数
 
     Parameters
     ----------
@@ -250,23 +389,68 @@ def check_discrete(env: Any) -> None:
 
     Returns
     ----------
-    None
+    kind: str
+        discrete か box (行動の空間を持たない環境は discrete)
     """
-    # 行動の空間を持つ場合だけ, 0 から始まる Discrete であることを確認
-    # (MultiBinary なども n を持つので, 形が () であることも確認)
+    # 行動の空間が無い場合は番号で選ぶ形として扱う
     space = getattr(env, "action_space", None)
     if space is None:
-        return
-    is_discrete = isinstance(getattr(space, "n", None), (int, np.integer))
-    if not is_discrete or tuple(getattr(space, "shape", ()) or ()) != ():
+        kind = "discrete"
+        return kind
+
+    # 0 から始まる Discrete (MultiBinary なども n を持つので, 形が () で
+    # あることも確認)
+    shape = tuple(getattr(space, "shape", ()) or ())
+    if isinstance(getattr(space, "n", None), (int, np.integer)):
+        if shape != ():
+            raise ValueError(
+                "強化学習の補助は, 行動を番号で選ぶ環境 (Discrete) か連続の"
+                f"行動の環境 (Box) だけに対応します: {space!r}"
+            )
+        if int(getattr(space, "start", 0)) != 0:
+            raise ValueError(
+                "強化学習の補助は, 行動の番号が 0 から始まる環境だけに"
+                f"対応します: {space!r}"
+            )
+        kind = "discrete"
+        return kind
+
+    # 下限と上限と形を持つ Box
+    if not (hasattr(space, "low") and hasattr(space, "high") and shape):
         raise ValueError(
-            "今の強化学習の補助は, 行動を番号で選ぶ環境 (Discrete) だけに"
-            f"対応します: {space!r}"
+            "強化学習の補助は, 行動を番号で選ぶ環境 (Discrete) か連続の"
+            f"行動の環境 (Box) だけに対応します: {space!r}"
         )
-    if int(getattr(space, "start", 0)) != 0:
+    kind = "box"
+
+    return kind
+
+
+def check_box_model(model: nn.Module, exploration: Exploration) -> None:
+    """
+    連続の行動の学習に使うモデルと探索の設定を確かめる関数
+
+    Parameters
+    ----------
+    model: nn.Module
+        方策のモデル
+    exploration: Exploration
+        探索の設定
+
+    Returns
+    ----------
+    None
+    """
+    # 標準偏差は学習するモデルの log_std, 一様に選ぶ割合は番号で選ぶ行動だけ
+    if not isinstance(getattr(model, "log_std", None), torch.Tensor):
         raise ValueError(
-            "今の強化学習の補助は, 行動の番号が 0 から始まる環境だけに"
-            f"対応します: {space!r}"
+            "連続の行動 (Box) の方策のモデルは, 正規分布の対数の標準偏差 "
+            "log_std (nn.Parameter) を持ってください"
+        )
+    if exploration.epsilon > 0.0:
+        raise ValueError(
+            "連続の行動 (Box) では epsilon は使えません (探索は temperature "
+            f"で標準偏差を広げます): {exploration.epsilon}"
         )
 
 
@@ -314,7 +498,9 @@ class RolloutLoader:
             not 0.0 <= gamma <= 1.0
         ):
             raise ValueError(f"gamma は 0 以上 1 以下にしてください: {gamma!r}")
-        check_discrete(env)
+        self.kind = action_kind(env)
+        if self.kind == "box":
+            check_box_model(model, exploration or Exploration())
 
         # 環境, モデル, エポックの長さ, まとめるエピソードの数を保存
         self.env = env
@@ -403,7 +589,7 @@ class RolloutLoader:
             stats = run_episode(
                 self.env, self.model, buffer, self.exploration, False,
                 self.next_seed(), self.max_episode_steps, self.safety_key,
-                self.success_key
+                self.success_key, self.kind
             )
             n_episodes += 1
             n_steps += stats["length"]
@@ -432,7 +618,7 @@ class EvaluationLoader:
         check_count("max_episode_steps", max_episode_steps, optional=True)
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ValueError(f"seed は整数にしてください: {seed!r}")
-        check_discrete(env)
+        self.kind = action_kind(env)
 
         # 評価用の環境, モデル, エピソードの数, 乱数の種を保存
         self.env = env
@@ -482,7 +668,7 @@ class EvaluationLoader:
             run_episode(
                 self.env, self.model, buffer, Exploration(), True,
                 self.seed + index, self.max_episode_steps, self.safety_key,
-                self.success_key
+                self.success_key, self.kind
             )
         batch = buffer.to_batch()
 

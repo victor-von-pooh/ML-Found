@@ -73,7 +73,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `progress.json` | 学習中だけ | 進み具合 (下の「progress.json」). 学習を終えると消す |
 | `model_summary.csv` | エポックのループに入る直前 (設定の確認と再開の復元の後) | パラメータとバッファの一覧 (下の「model_summary.csv」). それより前に止まった実験には無い |
 | `history.csv` | fit を終えたとき (記録が 0 件でも見出しは書く) | エポックごとの記録 (下の「history.csv」) |
-| `final_model.pt` | fit を終えたとき | 最終の重み (`state_dict`, cpu のテンソル) |
+| `final_model.pt` | fit を終えたとき | 最終の重み (`state_dict`, cpu のテンソル). `config.yaml` の `trainer.ema.decay` が null でない実験では, 重みの指数移動平均 (EMA) の重み (名前と形は学習したモデルと同じ) |
 | `<指標>_curve.png`, `lr_curve.png`, `lr_<名前>_curve.png` | fit を終えたとき (記録が 1 件以上) | 学習曲線 |
 | `lr_steps.csv`, `lr_steps.png` | fit を終えたとき (`scheduler.interval: step` で, 更新が 1 回以上の場合) | 更新ごとの学習率. 列は `step`, `epoch`, `lr` (名前付きの Optimizer では `lr_<名前>`) |
 | `best.pt`, `last.pt` | 設定による | チェックポイント. 中の形は決めない (ML-Found で読む) |

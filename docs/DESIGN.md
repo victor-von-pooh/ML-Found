@@ -50,7 +50,7 @@ ML-Found/
 ├── src/ml_found/
 │   ├── config/             # config の型定義, 読み込み, 差分, 起動のしかた
 │   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録, 何の実験か, 評価と見本
-│   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, チェックポイント, 記録, 実験の状態
+│   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, 重みの指数移動平均 (EMA), チェックポイント, 記録, 実験の状態
 │   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, 方策の一式と守り, 守り付きの評価
 │   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿
 ├── examples/
@@ -225,9 +225,11 @@ class MyTrainer(Trainer):
 
 | メソッド | 用途 |
 | --- | --- |
-| `update_parameters(loss)` | 更新の手順を変える. `super().update_parameters(loss)` の後に EMA の重みを更新する, など |
+| `update_parameters(loss)` | 更新の手順を変える. `super().update_parameters(loss)` の後に自分で持つ平均の重みを更新する, など (`trainer.ema.decay` の EMA は `super().update_parameters(loss)` の中で更新される) |
 | `extra_state_dict()` | チェックポイントに加える状態を辞書で返す (EMA の重み, ML-Found の外で作った Optimizer など). `load_extra_state_dict(state)` も合わせて上書きすると, 再開時に戻る |
-| `eval_model()` | 検証, ベストモデルの判定, `final_model.pt` に使うモデルを返す (既定は `self.model`). EMA の重みで検証する場合は EMA のモデルを返す |
+| `eval_model()` | 検証, ベストモデルの判定, `final_model.pt` に使うモデルを返す (既定は `self.model`. `trainer.ema.decay` を使う場合は EMA のモデル). 自分で持つ平均の重みで検証する場合はそのモデルを返す |
+
+EMA は `trainer.ema.decay` の設定だけで使える (「重みの指数移動平均 (EMA)」). 下は, 設定に無い平均の取り方 (更新の間隔を空ける, 減衰率を学習の進み具合で変えるなど) を自分で書く場合の決まりと例.
 
 `eval_model` を上書きした場合の動作.
 
@@ -433,13 +435,14 @@ trainer:
 ```
 
 - 相対パスは, `experiment.output_dir` と同じくプロジェクトのディレクトリから辿る
-- `last.pt` にはベストモデルの重みも含まれるので, `last.pt` だけで再開できる. `trainer.checkpoint.last_with_best: false` の場合は, 同じディレクトリの `best.pt` からベストモデルの重みを戻す. `best.pt` が無いか, `every_n_epochs` で `last.pt` の後に `best.pt` が更新されていてエポックが合わない場合は警告が出て, 再開後に改善しなければ最後のエポックの重みが残る (`run.json` の `final_weights` は `last`). `best_weights_only: true` の `best.pt` と `final_model.pt` は学習の状態を含まないので, 再開に指定すると出力先を作る前にエラーになる
+- `last.pt` にはベストモデルの重みも含まれるので, `last.pt` だけで再開できる. `trainer.checkpoint.last_with_best: false` の場合は, 同じディレクトリの `best.pt` からベストモデルの重みを戻す. `best.pt` の学習しているモデルの重み (`model`) と, 別のモデルから取ったベストモデルの重み (`checkpoint` の `best_model`) のどちらを使うかは, 再開元のチェックポイントに残した `separate_best_model` (ベストモデルの重みを `trainer.ema.decay` の EMA か `eval_model` の上書きの返す別のモデルから取ったか) で決めるので, EMA の有無や `eval_model` の上書きを変えて再開しても再開元のベストモデルの重みが戻る (`separate_best_model` を持たないチェックポイントでは, 再開元の `ema` の有無と今の `eval_model` の上書きで決める). `best.pt` が無いか, `every_n_epochs` で `last.pt` の後に `best.pt` が更新されていてエポックが合わない場合は警告が出て, 再開後に改善しなければ最後のエポックの重みが残る (`run.json` の `final_weights` は `last`). `best_weights_only: true` の `best.pt` と `final_model.pt` は学習の状態を含まないので, 再開に指定すると出力先を作る前にエラーになる
 - `trainer.monitor` や `trainer.mode` を再開元から変えるとエラーになる
 - Early Stopping で止めた学習を再開しても学習しない
 - Scheduler の状態は引数 (`T_max` など) ごと再開元から戻る. config で引数を変えて再開すると効かず, 警告が出る. 例えば `T_max: ${trainer.epochs}` は再開時に `epochs` を増やしても変わらない. `trainer.resume_scheduler: config` にすると, 引数が違う場合は config の引数で Scheduler を作り直し, 再開元と同じステップ数まで進める (再開元で進めた回数が, config の総ステップ数を超える場合はエラー). 再開した後の学習率は, config の引数で通しで学習した場合と同じになる (再開元までのエポックは元の引数で学習したまま). 引数を書き換えるだけでは, 例えば `T_max` を過ぎて 0 になった学習率は戻らないため. 指標で学習率を変える ReduceLROnPlateau は進め直せないので, 警告を出して再開元の状態を使う. 自分で作って渡した Scheduler は対象外. 比べるのは, config から作った直後の Scheduler の状態 (学習の進み具合で変わる値を除く) と, Scheduler が Optimizer に書き込む値 (`OneCycleLR` の `max_lr` など) なので, 名前を変えて持つ引数 (`OneCycleLR` の `epochs` は `total_steps`, `pct_start` は区切りのステップ, `CyclicLR` の `max_lr` は `max_lrs`, `base_lr` は `base_lrs`) の違いも分かる. Optimizer の引数 (`lr` など) の違いは対象外で, 再開元の値が使われる
 - `last.pt` の保存の間隔を空けていて, 再開元の `best.pt` が `last.pt` より後のエポックのベストモデルの場合は, 再開で捨てる履歴のものなので新しい出力先に写さない (`train.log` に警告が出る)
 - `persistent_workers=True` の DataLoader では, ワーカーの乱数の種を最初の 1 回だけ引くので, 再開した学習は通しで学習した場合と一致しない (警告が出る). 一致させたい場合は `num_workers: 0` にする
 - 存在しない `resume_from` は, 出力先を作る前にエラーになる
+- `trainer.ema.decay` の EMA の重みと更新回数も戻る. 再開元と EMA の設定が違う場合は「重みの指数移動平均 (EMA)」の「再開」
 
 同じ `Trainer` で `fit` を呼び直すと, 前の `fit` の続きとして, 最後に終えたエポックの次から `trainer.epochs` の分だけ学習する (3 エポックの後なら 4 から 6). 記録と `last.pt` は同じ実験のディレクトリに続けて書く.
 
@@ -460,7 +463,7 @@ trainer.fit(train_loader, valid_loader)   # エポック 4 から 6 (続き)
 
 ## 17. 学習後のモデル
 
-`fit` の後の `trainer.model` はベストモデルの重みになっている (`trainer.restore_best: true` かつ `select_best: true` の場合). `eval_model` を上書きした場合は, そのモデルの重み (EMA の重みなど) になる.
+`fit` の後の `trainer.model` はベストモデルの重みになっている (`trainer.restore_best: true` かつ `select_best: true` の場合). `trainer.ema.decay` を使った場合と `eval_model` を上書きした場合は, EMA のモデルか上書きで返すモデルの重みになる.
 後から使う場合は `final_model.pt` を読み込む. `final_model.pt` は cpu のテンソルで保存するので, 学習したデバイスに関わらず読み込める.
 
 GAN のように損失が良し悪しの指標にならない場合は, `trainer.select_best: false` にするとベストモデルを選ばず (`best.pt` も作らない), 最後のエポックの重みが残る. 学習の途中で損失の定義が変わる場合 (β-VAE など) のように, ベストモデルは記録しておきたいが最後の重みも残したい場合は `trainer.restore_best: false` にする.
@@ -471,7 +474,36 @@ import torch
 model.load_state_dict(torch.load("outputs/wine/.../final_model.pt"))
 ```
 
-## 18. 何の実験か, データ全体の評価, 見本
+## 18. 重みの指数移動平均 (EMA)
+
+`trainer.ema.decay` に減衰率を書くと, ML-Found が学習するモデルの重みの指数移動平均 (EMA) を持ち, 検証, ベストモデル, `final_model.pt` に使う. 拡散のモデルや画像の生成でよく使う. 既定の `null` では使わない.
+
+```yaml
+# configs/default/train.yaml
+trainer:
+  ema:
+    decay: 0.999         # 更新ごとに EMA = decay × EMA + (1 - decay) × 今の重み
+    use_buffers: false   # BatchNorm の統計量などのバッファは平均せずに写す
+```
+
+- **更新**: パラメータを更新するたびに 1 回, Optimizer の更新の後に更新する (`update_parameters` の中. `torch.optim.swa_utils.AveragedModel` と `get_ema_multi_avg_fn` を使う). 最初の更新では今の重みを写す. 勾配を使わない Optimizer, closure を使う Optimizer, 名前付きの複数の Optimizer でも同じ. `manual_optimization: true` では, `step` の中で更新した後に 1 回更新する. `update_parameters` を上書きする場合は, `super().update_parameters(loss)` を呼ぶと EMA も更新される (呼ばないと更新されない)
+- **バッファ**: `trainer.ema.use_buffers: false` (既定) では, バッファ (BatchNorm の統計量など) を平均せず, 更新のたびに学習しているモデルの値を写す. `true` ではパラメータと同じく平均する
+- **検証と保存に使うモデル**: 検証, 学習用データの評価し直し (`eval_train`), ベストモデルの判定に使うモデルとその重みは EMA のモデル. `final_model.pt` と `fit` の後の `trainer.model` は, EMA のベストモデルの重み (`restore_best: false` か `select_best: false` では最後の EMA の重み). `last.pt` と `best.pt` の `model` は学習しているモデルの重みのまま (再開に使うため) で, EMA の状態 (重み, 更新回数, 減衰率, `use_buffers`) はチェックポイントの `ema` に入れる. EMA のベストモデルの重みは `best.pt` でも `checkpoint` の `best_model` に入れ, 重みだけの `best.pt` (`best_weights_only: true`) の `model` は EMA のベストモデルの重み. どれも「継承して細かく変える」の `eval_model` を上書きした場合と同じ動作
+- **ベストモデルの選び方**: 監視する指標は EMA のモデルで検証した値. 減衰率が大きいと, 学習の始めの EMA は最初の重みを多く含むので, 始めのエポックの検証の値は学習しているモデルの値より悪い (ベストモデルは EMA の値どうしで比べるので, 選び方は変わらない). 検証しない場合は `train/loss` (学習しているモデルで計算した値) で判定し, 記録するのは EMA の重み. EMA の重みの良し悪しで選ぶには検証用のデータを渡す
+- **再開**: `last.pt` の `ema` から EMA の重みと更新回数を戻すので, 再開した学習は通しの学習と一致する (他の状態と同じく「学習の再開」の条件で). エポックの途中で止めた場合 (「学習の外からの確認と中断」) と, 同じ `Trainer` で `fit` を呼び直した場合も, EMA は他の状態と一緒に戻って続く. 再開元と設定が違う場合は次のとおりで, どれも警告を出して `train.log` に残す
+    - 再開元に EMA の状態が無い (EMA を使わなかった実験, `ema` を持たないチェックポイント): 再開した重みから EMA を始める. 再開元のベストモデルは, 値も重みも再開元の学習しているモデルのもの (`last_with_best: false` では再開元の `best.pt` の `model` から戻す). 再開した後は EMA で検証した値と比べる
+    - 再開元が EMA を使い, 今回は使わない: 再開元の EMA の状態は使わない. 再開元のベストモデルは, 値も重みも EMA のもの (`last_with_best: false` では再開元の `best.pt` の `checkpoint` の `best_model` から戻す). 再開した後は学習しているモデルで検証した値と比べる
+    - 減衰率か `use_buffers` が再開元と違う: 戻した EMA の重みから今回の値で続ける
+- **継承の口との関係**: EMA は `trainer.ema_model` (`AveragedModel`. 使わない場合は `None`) が持ち, 既定の `eval_model()` は中のモデル (`trainer.ema_model.module`) を返す. 学習中に生成の見本を作る場合などは `self.eval_model()` を使う. `fit` の後の `trainer.eval_model()` は最後の EMA の重みのままで, EMA のベストモデルの重みを持つのは `trainer.model` (と `final_model.pt`) だけ. 継承したクラスでは `ema_model` という名前の属性を使わない (EMA の更新がその属性を使うので, 自分の EMA を置くと黙って 2 回更新される). `eval_model` を上書きした場合は上書きした方を使う (EMA を持ったまま学習しているモデルで検証する場合など. このとき EMA の重みは `final_model.pt` にならず, チェックポイントの `ema` にだけ残る). EMA の状態は ML-Found がチェックポイントの `ema` に入れるので, `extra_state_dict` に足さなくてよい (`extra` は継承したクラスの状態だけのまま). 継承して EMA を自分で持つ書き方 (「継承して細かく変える」の例) も動くが, `trainer.ema.decay` と両方を使うと 2 つの EMA を持つので, どちらかにする
+- **メモリ**: モデルと同じ大きさの写しをデバイスに持つ. 写しは `Trainer` を作るときに作る (`copy.deepcopy`) ので, 写せないモデルでは `Trainer` の作成でエラーになる (出力先が作られた後なので `run.json` は `failed`)
+- **確かめ**: `trainer.ema.decay` は `null` か, 0 より大きく 1 より小さい数 (真偽値は不可). 誤りは出力先を作る前に見つかる (`check_trainer_config`)
+
+### 他のリポジトリへの影響
+
+- **出力の形**: 版は変えない. `config.yaml` と `diff.yaml` に `trainer.ema` の項目が増える (項目を足す変更). `final_model.pt` は EMA を使っても学習するモデルと同じ名前と形の `state_dict` で, 読み方は変わらない (重みが EMA のものになるだけ). `run.json` の `final_weights` の値 (`best`, `last`, `partial`) の意味も同じで, EMA を使った実験ではどのエポックの EMA の重みかを表す. チェックポイントの中の形は約束の外 (FORMAT.md). 読む側は, `config.yaml` の `trainer.ema.decay` が `null` でなければ `final_model.pt` が EMA の重みと分かる
+- **画面 (ML-Dashboard) の起動のフォームと config の確かめ**: 画面は config の確かめに `check_trainer_config` を使うので, 減衰率の誤りも起動の前に見つかる. 起動のフォームに欄が無くても, experiment の config に `trainer.ema.decay` を書けば使える (画面に欄を足すかは画面が決める. 足す場合は, この項目を知らない版の ML-Found の config では出さない). 画面の submodule の ML-Found がこの項目を知らない版だと, `trainer.ema` を書いた config は「default に無い項目」の誤りになるので, 画面とプロジェクトの ML-Found の版をそろえる
+
+## 19. 何の実験か, データ全体の評価, 見本
 
 実験のディレクトリに, 任意で次の 3 つを書ける (形は [docs/FORMAT.md](FORMAT.md)). 書かなくても学習は変わらず, 書かなかった実験も同じく読める.
 
@@ -561,7 +593,7 @@ save_sample(experiment, "cloud", points, kind="point_cloud",
 
 読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
 
-## 19. 強化学習
+## 20. 強化学習
 
 Gymnasium の形の環境 (`reset(seed=...)` が `(観測, info)` を, `step(行動)` が `(観測, 報酬, 終了, 打ち切り, info)` を返すもの) とやり取りして, 行動を選ぶ方策を学習できる. 別の仕組みは作らず, 環境とのやり取りを「バッチを返す loader」にして, `Trainer` の step とエポックの決まりに乗せる. 使うには追加の依存 `rl` (Gymnasium) を入れる (上の「追加の依存」). 例は `examples/cartpole/` (CartPole を REINFORCE で学習し, 守りと一緒に書き出す).
 
@@ -599,7 +631,7 @@ history = trainer.fit(train_loader, valid_loader)
 - 再開 (`resume_from`) では, モデルと Optimizer は戻るが, 環境の状態と環境の乱数は戻らない
 - `eval_model` を上書きした場合は, `EvaluationLoader` に渡すモデルもそのモデルにする (loader は渡されたモデルで行動を選ぶ)
 
-## 20. 方策の書き出しと守り
+## 21. 方策の書き出しと守り
 
 学習した方策は, 重み, 観測と行動の空間, 守り (行動の範囲, 止める条件, 外れたときの動き) を 1 つのディレクトリ (方策の一式) に書き出す. 置き場は実験のディレクトリの `policy/` を推奨する (形と版は [docs/FORMAT.md](FORMAT.md) の「policy/」).
 
@@ -668,7 +700,7 @@ save_evaluation(experiment, "guarded_episodes", rows, "simulator",
 - `max_steps` で 1 エピソードの歩数を切れる. `seed=None` は環境の乱数の続き
 - 推論の段階 (ML-Inference) と画面でも, 同じ数え方 (`stop` と `handover` で終える) にする
 
-## 21. config の項目
+## 22. config の項目
 
 ML-Found が使う項目と既定値.
 
@@ -717,6 +749,8 @@ ML-Found が使う項目と既定値.
 | `trainer.checkpoint.every_n_epochs` | `1` | `last.pt` を保存するエポックの間隔, 最後のエポックと, エポックの区切りで止めたエポック (Early Stopping, `STOP`, `add_callback`) は必ず保存. `STOP` の `now` でエポックの途中で止めた場合は保存しない |
 | `trainer.checkpoint.best_weights_only` | `false` | `best.pt` にモデルの重みだけを保存する (Optimizer などを含めないので軽いが, 再開には使えない) |
 | `trainer.checkpoint.last_with_best` | `true` | `last.pt` にベストモデルの重みも入れる. `false` にすると軽くなり, 再開時は再開元の `best.pt` から戻す |
+| `trainer.ema.decay` | `null` | 重みの指数移動平均 (EMA) の減衰率 (0 より大きく 1 より小さい数). 書くと EMA の重みで検証し, ベストモデルと `final_model.pt` も EMA の重みにする (「重みの指数移動平均 (EMA)」). `null` の場合は使わない |
+| `trainer.ema.use_buffers` | `false` | EMA でバッファ (BatchNorm の統計量など) も平均するかどうか. `false` の場合は学習しているモデルの値を写す |
 
 ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 `scheduler.interval` を `step` にした場合や, `scheduler.params.mode` を `trainer.mode` と違う値にした場合はエラーになる.
@@ -726,13 +760,13 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 監視する指標が最良値とちょうど同じ値の場合は改善とみなさないので, 正解率のように同じ値を取りやすい指標を監視すると, ベストモデルは最初にその値に達したエポックのままになり, Early Stopping も止まりやすい. `trainer.monitor_tiebreak` に `valid/loss` などを指定すると, 同じ値の場合はその指標で比べ, ベストモデルの判定と Early Stopping の両方に使う. バッチごとの平均の丸め誤差で同じ正解率がわずかに違う値になることがあるので, 相対誤差 1e-6 以内は同じ値とみなす. Early Stopping では, 最良値より悪くないが `min_delta` 未満の改善の場合も比べる指標で判定する (`min_delta` は Early Stopping だけに使い, ベストモデルの判定には使わない). 比べる指標が nan や inf になった場合もエラーで止まる. 再開するときは, 比べる指標と向きを再開元と同じにする (違う場合はエラー). この設定を入れる前のチェックポイントから再開した場合は, 次に監視する指標が改善するまで比べない.
 学習の途中で起きたエラーは `train.log` にも記録する. Optimizer と Scheduler のクラス名と引数 (名前, 必須の引数, 範囲を持つ値), `scheduler.interval`, ReduceLROnPlateau の組み合わせ, デバイス, `trainer.epochs` (1 以上の整数), `trainer.mode`, `trainer.checkpoint.every_n_epochs`, `trainer.valid_every_n_epochs` (1 以上の整数), `trainer.monitor_tiebreak_mode`, `manual_optimization` と `grad_clip_norm`・`log_grad_norm` の組み合わせ, `select_best: false` と Early Stopping・`monitor_tiebreak` の組み合わせの誤り, `trainer.resume_scheduler` の値, `eval_train: false` で `train_eval/` の指標を監視する設定, `auto` と書けない引数の `auto` と, 存在しないか再開に使えない `resume_from` は, 出力先を作る前に見つかる. 範囲を持つ引数が配列 (Adam の `betas` など) の場合は要素ごとに確かめる. 範囲を持たない引数や自作のクラスの値の誤りも, 仮のパラメータで作ってみて見つける. それ以外の `Trainer` の作成のエラー (モデルをデバイスに移せない, 実際のパラメータでだけ起きる Optimizer の誤りなど) は, 出力先が作られた後なので, エラーを `train.log` に書き, `run.json` を `failed` にしてから投げ直す (継承したクラスが `super().__init__()` の後に行う処理のエラーは対象外). 作成の中身は `_build_parts` にあるので, 継承したクラスではこの名前を使わない. 自分で作った Optimizer や Scheduler を `Trainer` に渡す場合も, config の `optimizer` と `scheduler` の名前と組み合わせは確かめるので, 使わない設定も正しい値にしておく.
 
-`last.pt` と `best.pt` には, モデル, Optimizer, Scheduler, 記録の全て (列ごとの数の配列で持つので, エポックが多くても保存は軽い), 乱数の状態が入り, `last.pt` にはベストモデルの重みも入る (`best.pt` では今のモデルがベストモデルなので, 同じ重みを 2 つは持たない. `eval_model` を上書きした場合は別の重みなので持つ). 1 エポックが短い学習 (フルバッチなど) では保存が学習時間の大部分を占めることがあるので, `trainer.checkpoint.every_n_epochs` で `last.pt` の間隔を空けるか, 再開しない場合は `save_best` と `save_last` を `false` にする. `best.pt` は改善するたびに保存するので `every_n_epochs` では減らない (ベストモデルの重みは `last.pt` にも入るので, 再開だけなら `save_best: false` でもよい. ただし `last_with_best: false` と合わせると再開後にベストモデルに戻せないので, `start_experiment` で警告が出る). 大きなモデルでは 1 ファイルが数 GB になるので, 再開に使わない `best.pt` は `best_weights_only: true` で重みだけにし, `last_with_best: false` で `last.pt` からベストモデルの重みを外すと軽くなる (100 万個の引数のモデルと Adam で, 既定の `best.pt` 12 MB と `last.pt` 16 MB が, それぞれ 4 MB と 12 MB). 重みだけの `best.pt` は `weights_only` (true), `epoch`, `monitor`, `best_value`, `model` (重み) の辞書なので, `torch.load(...)["model"]` で読む (`eval_model` を上書きした場合はそのモデルの重み). 継承して加えた状態 (`extra_state_dict`) は入らない.
+`last.pt` と `best.pt` には, モデル, Optimizer, Scheduler, 記録の全て (列ごとの数の配列で持つので, エポックが多くても保存は軽い), 乱数の状態が入り, `last.pt` にはベストモデルの重みも入る (`best.pt` では今のモデルがベストモデルなので, 同じ重みを 2 つは持たない. `trainer.ema.decay` を使う場合と `eval_model` を上書きした場合は別の重みなので持つ). `trainer.ema.decay` を使う場合は EMA の状態 (`ema`) も入り, モデルの重みの分だけ重くなる. 1 エポックが短い学習 (フルバッチなど) では保存が学習時間の大部分を占めることがあるので, `trainer.checkpoint.every_n_epochs` で `last.pt` の間隔を空けるか, 再開しない場合は `save_best` と `save_last` を `false` にする. `best.pt` は改善するたびに保存するので `every_n_epochs` では減らない (ベストモデルの重みは `last.pt` にも入るので, 再開だけなら `save_best: false` でもよい. ただし `last_with_best: false` と合わせると再開後にベストモデルに戻せないので, `start_experiment` で警告が出る). 大きなモデルでは 1 ファイルが数 GB になるので, 再開に使わない `best.pt` は `best_weights_only: true` で重みだけにし, `last_with_best: false` で `last.pt` からベストモデルの重みを外すと軽くなる (100 万個の引数のモデルと Adam で, 既定の `best.pt` 12 MB と `last.pt` 16 MB が, それぞれ 4 MB と 12 MB). 重みだけの `best.pt` は `weights_only` (true), `epoch`, `monitor`, `best_value`, `model` (重み) の辞書なので, `torch.load(...)["model"]` で読む (`trainer.ema.decay` を使う場合は EMA の重み, `eval_model` を上書きした場合はそのモデルの重み). 継承して加えた状態 (`extra_state_dict`) は入らない.
 
 `train.log` のモデルの構造は `print(model)` の内容なので, 中身を `nn.Module` の子として持たない層 (外部ライブラリの層など) は構造が残らない. そのため, 学習を始めるときにパラメータとバッファの一覧を `model_summary.csv` (名前, `parameter` か `buffer`, 持っている層のクラス名, 形, 型, 要素数, 学習するか, 重みを共有している場合は最初の名前) に保存し, 学習するパラメータ, 学習しないパラメータ, バッファの要素数を `train.log` に書く. `nn.Module` のパラメータやバッファとして持たない値 (外部ライブラリの回路の設定など) は残らないので, 再現に必要な情報は, モデルに `extra_repr` を書いて出すと良い.
 
 `experiment.device: auto` は小さなモデルでも GPU を選ぶ (Apple Silicon の Mac では CPU 版の PyTorch でも `mps`). パラメータが少ないモデルや, 中で cpu を使うモデル (外部ライブラリの計算など) は `cpu` を明示した方が速いことがある.
 
-## 22. 出力
+## 23. 出力
 
 実験ごとに `<output_dir>/<name>/<日付>/<時刻>/` が作られる.
 他のシステム (ML-Dashboard など) と受け渡すプロジェクトと実験のディレクトリの形と, その版の決まりは [docs/FORMAT.md](FORMAT.md) にまとめた.
@@ -751,8 +785,8 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | `<指標>_curve.png` | 指標ごとの学習曲線, 学習率の推移 (`lr_curve.png`, `optimizers` の場合は `lr_<名前>_curve.png`. エポックを始めた時点の値) も含む |
 | `lr_steps.png` | `lr_steps.csv` の学習率の推移 (横軸は更新の番号) |
 | `best.pt` | ベストモデルのチェックポイント (`best_weights_only: true` の場合は重みだけ. `select_best: false` の場合は作らない) |
-| `last.pt` | 最後のエポックのチェックポイント, ベストモデルの重みも含む (`last_with_best: false` の場合は含まない). 再開に使う |
-| `final_model.pt` | ベストモデルの重みだけ (`restore_best: false` か `select_best: false` の場合は最後のエポックの重み. `eval_model` を上書きした場合はそのモデルの重み), cpu のテンソル |
+| `last.pt` | 最後のエポックのチェックポイント, ベストモデルの重みも含む (`last_with_best: false` の場合は含まない). `trainer.ema.decay` を使う場合は EMA の状態も含む. 再開に使う |
+| `final_model.pt` | ベストモデルの重みだけ (`restore_best: false` か `select_best: false` の場合は最後のエポックの重み. `trainer.ema.decay` を使った場合は EMA の重み, `eval_model` を上書きした場合はそのモデルの重み), cpu のテンソル |
 | `run.json` | 実験の状態 (`running`, `completed`, `stopped`, `failed`), 開始, 更新, 終了の時刻 (タイムゾーン付き) と所要時間 (`duration_sec`), 予定と終えたエポック数 (`fit` を呼び直した場合は前の `fit` までを含めた数), 再開した最初のエポック (`fit` を呼び直した場合は続きの最初のエポック), 監視する指標とその向き (`mode`), ベストモデルを選ぶか (`select_best`. `false` の場合はベストのエポックと値が `null`), ベストのエポックと値, Early Stopping で止めたエポック, `final_model.pt` の重み (`best`, `last`, エポックの途中で止めて戻せなかった場合 (`eval_model` を上書きし, そのモデルの状態を `extra_state_dict` で保存していない場合を含む) は `partial`), 乱数シード, デバイス, Optimizer ごとの名前 (名前付きの場合), クラスの名前, 受け持つ部分 (名前付きの場合), Scheduler のクラスの名前 (warmup を付けた場合は `SequentialLR(LinearLR, CosineAnnealingLR)` のように中のクラスも. `fit` を呼ぶまで作らない Scheduler は学習を始めるときに書く) (`optimizers`. `Trainer` の作成で失敗した場合は `null`), プロセスの ID とホスト名, エラーの内容, 形式の版. 学習を始めたときに作り, エポックごと (1 秒以上の間隔. 間隔の中の更新は次の進み具合の書き込みと一緒に書く), 再開したときと終了時に更新. `Trainer` の作成で失敗した場合と, `start_experiment` の後に `fit` の外 (データの読み込みやモデルの作成など) で処理されなかったエラーでスクリプトが止まった場合も `failed` (キーボードの割り込みは `stopped`) で書く |
 | `task.yaml` | 任意. 何の実験か (受け持ち, 出力の意味, 正解の種類と出どころ, 作り方, 元にしたもの, データセット). config の `task` か `write_task` で書く (「何の実験か, データ全体の評価, 見本」) |
 | `evaluations/` | 任意. `save_evaluation` で書いたデータ全体の評価 (`<名前>.json`) |
@@ -812,7 +846,7 @@ echo now > outputs/wine/2026-11-12/10-00-00/STOP   # エポックの途中でも
 
 プロセスが強制終了された場合は `running` のまま残るので, 同じ端末であれば `run.json` の `hostname` と `pid` のプロセスが動いているかで見分ける. 別の端末からは, `progress.json` の `updated_at` が長く更新されていないかで見分ける.
 
-## 23. 安全
+## 24. 安全
 
 - チェックポイント, 重み, 方策の一式の重みは `torch.load(weights_only=True)` で読む (任意のコードを動かせる `pickle` を読まない)
 - config は OmegaConf で, ML-EDA の `dataset.yaml` と `task.yaml` は `yaml.safe_load` で読む

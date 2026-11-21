@@ -125,8 +125,8 @@ def gaussian_std(model: nn.Module, size: int) -> torch.Tensor:
     Returns
     ----------
     std: torch.Tensor
-        要素が size 個の標準偏差 (log_std は LOG_STD_MIN 以上
-        LOG_STD_MAX 以下に制限)
+        要素が size 個の標準偏差 (log_std の値は LOG_STD_MIN 以上
+        LOG_STD_MAX 以下に制限し, 勾配は制限せずに通す)
     """
     # log_std の無いモデルと, 要素の数が合わない log_std はエラー
     if not isinstance(getattr(model, "log_std", None), torch.Tensor):
@@ -141,8 +141,13 @@ def gaussian_std(model: nn.Module, size: int) -> torch.Tensor:
             f"{size} にしてください"
         )
 
-    # 発散して標準偏差が 0 か無限大にならないように, 決めた範囲に制限
-    log_std = log_std.clamp(LOG_STD_MIN, LOG_STD_MAX)
+    # 発散して標準偏差が 0 か無限大にならないように, 値は決めた範囲に制限
+    # 勾配はそのまま通し (範囲の外に出た log_std も更新で戻れるように).
+    # 値は 0 の差だけを足すので, 大きな値や無限大でも桁落ちと nan は無し
+    clamped = log_std.clamp(LOG_STD_MIN, LOG_STD_MAX)
+    log_std = clamped.detach() + (
+        log_std - log_std.detach()
+    ).nan_to_num(0.0)
     std = log_std.exp().expand(size)
 
     return std
@@ -355,6 +360,7 @@ def run_episode(
     observation, info = env.reset(seed=seed)
     steps = 0
     done = False
+    ended = False
     while not done:
         # 連続の行動は clip する前の値を記録 (選んだ確率密度と合わせるため)
         if kind == "box":
@@ -382,7 +388,8 @@ def run_episode(
             )
         observation = next_observation
         steps += 1
-        done = bool(terminated) or bool(truncated) or (
+        ended = bool(terminated)
+        done = ended or bool(truncated) or (
             max_steps is not None and steps >= max_steps
         )
 
@@ -391,7 +398,8 @@ def run_episode(
     if success_key is not None and isinstance(info, dict):
         if success_key in info:
             success = bool(info[success_key])
-    stats = buffer.end_episode(success)
+    # 打ち切りの後の価値を見積もれるように, 終了かと最後の観測も記録
+    stats = buffer.end_episode(success, ended, observation)
 
     return stats
 

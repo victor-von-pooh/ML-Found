@@ -40,8 +40,11 @@ class ExperienceBuffer:
         ] = []
         self.current_violations = 0
 
-        # 終えたエピソードごとの集計
+        # 終えたエピソードごとの集計, 終了か (打ち切りでないか), 最後の歩の
+        # 後の観測
         self.episodes: list[dict[str, Any]] = []
+        self.terminated: list[bool] = []
+        self.final_observations: list[np.ndarray] = []
 
     def __len__(self) -> int:
         """
@@ -106,7 +109,8 @@ class ExperienceBuffer:
         self.current_violations += int(bool(violation))
 
     def end_episode(
-        self, success: Optional[bool] = None
+        self, success: Optional[bool] = None, terminated: bool = True,
+        final_observation: Optional[Any] = None
     ) -> dict[str, Any]:
         """
         途中のエピソードを終え, 割引した報酬の和を求めて貯める関数
@@ -114,12 +118,18 @@ class ExperienceBuffer:
         終了 (terminated) と打ち切り (truncated. TimeLimit や
         max_episode_steps) を区別せず, 最後の歩の後の報酬を 0 として
         求める (モンテカルロの REINFORCE). 打ち切りの後の価値を見積もって
-        足す方法は, 価値の関数を持つ方法 (Actor-Critic など) で行う
+        足す方法は, 価値の関数を持つ方法 (ActorCriticStep) で行うので,
+        終了か打ち切りかと最後の歩の後の観測も残す
 
         Parameters
         ----------
         success: Optional[bool] = None
             環境が成功を知らせた場合はその値, 知らせない場合は None
+        terminated: bool = True
+            環境が終了した場合は True, 打ち切り (truncated や歩数の上限)
+            の場合は False
+        final_observation: Optional[Any] = None
+            最後の歩の後の観測, None の場合は最後の歩の観測
 
         Returns
         ----------
@@ -157,6 +167,12 @@ class ExperienceBuffer:
             "success": success
         }
         self.episodes.append(stats)
+        self.terminated.append(bool(terminated))
+        if final_observation is None:
+            final_observation = self.current[-1][0]
+        self.final_observations.append(
+            np.asarray(final_observation, dtype=np.float32)
+        )
         self.current = []
         self.current_violations = 0
 
@@ -177,9 +193,11 @@ class ExperienceBuffer:
             (歩数, 要素の数) の float32), returns, behavior_log_probs,
             behavior_probs (番号の行動の確率. 連続の行動では確率密度で,
             小さい値は 0 にアンダーフローするので使わず,
-            behavior_log_probs を使う) と, エピソードごとの
-            episode_rewards, episode_lengths, episode_violations (環境が
-            成功を知らせた場合は episode_success)
+            behavior_log_probs を使う), rewards と, エピソードごとの
+            episode_rewards, episode_lengths, episode_violations,
+            episode_terminated (終了なら 1, 打ち切りなら 0),
+            final_observations (最後の歩の後の観測) (環境が成功を知らせた
+            場合は episode_success) と, 割引率 gamma (0 次元)
         """
         # 途中のエピソードと空の入れ物はエラー
         if self.current:
@@ -195,6 +213,7 @@ class ExperienceBuffer:
             "returns": torch.tensor(self.returns, dtype=torch.float32),
             "behavior_log_probs": log_probs,
             "behavior_probs": log_probs.exp(),
+            "rewards": torch.tensor(self.rewards, dtype=torch.float32),
             "episode_rewards": torch.tensor(
                 [stats["reward"] for stats in self.episodes],
                 dtype=torch.float32
@@ -206,7 +225,14 @@ class ExperienceBuffer:
             "episode_violations": torch.tensor(
                 [stats["violations"] for stats in self.episodes],
                 dtype=torch.float32
-            )
+            ),
+            "episode_terminated": torch.tensor(
+                self.terminated, dtype=torch.float32
+            ),
+            "final_observations": torch.from_numpy(
+                np.stack(self.final_observations)
+            ),
+            "gamma": torch.tensor(self.gamma, dtype=torch.float32)
         }
 
         # 全てのエピソードで成功が分かる場合だけ成功の列を追加

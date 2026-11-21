@@ -621,6 +621,7 @@ history = trainer.fit(train_loader, valid_loader)
 連続の行動 (Box) の方策のモデルは, 観測から行動の平均を返し, 対数の標準偏差 `log_std` を持つ (下の「連続の行動」).
 
 ```python
+import torch
 from torch import nn
 
 
@@ -640,20 +641,67 @@ class GaussianPolicy(nn.Module):
         return mean
 ```
 
-- **経験の記録**: `ExperienceBuffer` が 1 歩ごとの観測, 行動, 報酬, 実際にその行動を選んだ確率 (連続の行動では確率密度. 対数で持つ) と安全の違反を貯め, エピソードを終えるときに割引した報酬の和を求める. `to_batch()` がテンソルの辞書にする
-- **エポック**: `RolloutLoader` は今の方策でエピソードを集め, `batch_episodes` ごとに 1 つのバッチを返す (バッチごとに 1 回更新するので, 次のバッチは更新した方策で集める). エポックの長さは `episodes` (エピソードの数) か `steps` (歩数. 達したエピソードの終わりまで) のどちらかで決める. 環境の乱数の種は最初の `reset` だけに渡し, 後は環境の乱数を続けて使う. `max_episode_steps` で 1 エピソードの歩数を切れる. 環境の打ち切り (TimeLimit など) と `max_episode_steps` で切ったエピソードも, 終わったもの (最後の歩の後の報酬を 0) として報酬の和を求める (モンテカルロの REINFORCE. 打ち切りの後の価値を足すのは, 価値の関数を持つ方法で行う)
+- **経験の記録**: `ExperienceBuffer` が 1 歩ごとの観測, 行動, 報酬, 実際にその行動を選んだ確率 (連続の行動では確率密度. 対数で持つ) と安全の違反を貯め, エピソードを終えるときに割引した報酬の和を求める. `to_batch()` がテンソルの辞書にする. 1 歩ごとの `observations`, `actions`, `rewards`, `returns` (割引した報酬の和), `behavior_log_probs`, `behavior_probs`, エピソードごとの `episode_rewards`, `episode_lengths`, `episode_violations`, `episode_terminated` (環境の終了なら 1, 打ち切りなら 0), `final_observations` (最後の歩の後の観測), `episode_success` (環境が成功を知らせた場合) と, 割引率 `gamma` (0 次元) を入れる. 自分で loader を書いて `ReinforceStep` に渡す場合は `observations`, `actions`, `returns`, `behavior_probs` (連続の行動では `behavior_log_probs`) とエピソードごとの 3 つの集計が, `ActorCriticStep` に渡す場合はさらに `rewards`, `episode_terminated`, `final_observations`, `gamma` が要る
+- **エポック**: `RolloutLoader` は今の方策でエピソードを集め, `batch_episodes` ごとに 1 つのバッチを返す (バッチごとに 1 回更新するので, 次のバッチは更新した方策で集める). エポックの長さは `episodes` (エピソードの数) か `steps` (歩数. 達したエピソードの終わりまで) のどちらかで決める. 環境の乱数の種は最初の `reset` だけに渡し, 後は環境の乱数を続けて使う. `max_episode_steps` で 1 エピソードの歩数を切れる. 環境の打ち切り (TimeLimit など) と `max_episode_steps` で切ったエピソードも, 終わったもの (最後の歩の後の報酬を 0) として報酬の和を求める (モンテカルロの REINFORCE. 打ち切りの後の価値を足すのは, 下の `ActorCriticStep`)
 - **探索**: `Exploration(temperature, epsilon)` で, 方策の分布を温度で平らにし, `epsilon` の割合で一様に選ぶ. 実際に選んだ確率を記録し, `ReinforceStep` は方策の確率との比 (1 で打ち切る) で重みを補正する. 比の方策の確率は, 行動を選んだときと同じ推論モードで求める (Dropout があっても, 既定の温度 1, `epsilon` 0 では更新の前の比は 1. 損失の勾配は学習モードで求める). 途中で変える場合は `add_callback` の関数で `train_loader.exploration` を差し替える
 - **評価**: `EvaluationLoader` は学習とは別の環境で, 毎回 `seed`, `seed + 1`, ... の種で始めたエピソードを, 最もスコアの高い行動で動かす (エポックの間で比べられる). 全てのエピソードを 1 つのバッチにする
 - **指標**: エピソードごとの報酬の和 (`reward`), 歩数 (`length`), 安全の違反の数 (`violations`. 環境が `info` の `safety_key` (既定 `cost`) に 0 より大きい値を入れた歩の数) を, エピソードの数で重み付けして平均する. `success_key` (`is_success` など) を指定すると, 最後の歩の値から成功の割合 (`success`) も記録する. 学習と検証では方策の損失 (`loss`) とエントロピー (`entropy`) も記録する
 - **損失**: `ReinforceStep` は, バッチの平均を基準 (baseline) にした REINFORCE. 学習の `loss` は方策の勾配の損失, 検証の `loss` は評価の報酬の和の平均の符号を反転した値 (意味が違うので, 監視する指標は `trainer.monitor: valid/reward` と `trainer.mode: max` にする). 検証では, 評価で通った観測ごとの方策のエントロピーの平均 (`valid/entropy`) も記録する
 - **報酬が上限で並ぶ場合**: CartPole のように報酬の和に上限がある環境では, 評価の報酬が上限に達すると後のエポックは同じ値になり, ベストモデルは最初に達したエポックのままになる. `valid/loss` と `valid/length` は `valid/reward` と一緒に動くので, `trainer.monitor_tiebreak` に指定しても比べられない. 報酬と別に動く指標を指定する. 推奨は `trainer.monitor_tiebreak: train/reward` と `trainer.monitor_tiebreak_mode: max` (探索を含む学習のエピソードでも高い報酬を取る方策を選ぶ. 学習の環境の乱数で揺れる). 迷いの少ない方策を選ぶなら `valid/entropy` と `min`. 安全の違反が起きる環境では `valid/violations` と `min` も使える (違反が 0 で並ぶ場合は比べられない)
-- **行動の空間**: 行動を番号で選ぶ環境 (Discrete. 番号は 0 から) と, 連続の行動の環境 (Box) に対応する. 他の空間 (MultiBinary など) はエラー. 価値の関数を使う方法 (Actor-Critic など) は, 自分で loader (経験の集め方) と step を書けば今の仕組みで動かせる (名前付きの複数の Optimizer も使える)
-- **連続の行動**: 方策は正規分布にする. モデルは観測から行動の平均 (要素の数は行動の空間の要素の数) を返し, 観測によらない対数の標準偏差 `log_std` (要素ごとか 1 つの `nn.Parameter`) を持つ (無ければ `RolloutLoader` と step がエラー). 標準偏差は `log_std` を -20 以上 2 以下に制限して求める (発散して標準偏差が 0 か無限大になり, 損失が inf や nan になるのを避けるため). 形が () の Box は未対応 (形を (1,) にする). 学習では平均と標準偏差 (`Exploration` の温度を掛ける) の正規分布から選び, 評価 (`EvaluationLoader`) では平均を選ぶ. `epsilon` は番号で選ぶ行動だけに使え, 連続の行動ではエラーにする. バッチの `actions` は (歩数, 要素の数) の float32 で, 選んだ確率密度の対数を `behavior_log_probs` に入れる (`behavior_probs` は確率密度で, 小さい値は 0 にアンダーフローするので連続の行動では使わない) (`ReinforceStep` は要素ごとの対数の確率密度の和で方策の勾配を求め, 比は対数の差から求める)
+- **行動の空間**: 行動を番号で選ぶ環境 (Discrete. 番号は 0 から) と, 連続の行動の環境 (Box) に対応する. 他の空間 (MultiBinary など) はエラー
+- **連続の行動**: 方策は正規分布にする. モデルは観測から行動の平均 (要素の数は行動の空間の要素の数) を返し, 観測によらない対数の標準偏差 `log_std` (要素ごとか 1 つの `nn.Parameter`) を持つ (無ければ `RolloutLoader` と step がエラー). 標準偏差は `log_std` の値を -20 以上 2 以下に制限して求める (発散して標準偏差が 0 か無限大になり, 損失が inf や nan になるのを避けるため). 制限の外に出た `log_std` も勾配は 0 にならず (値だけを制限し, 勾配はそのまま通す), 更新で範囲の中に戻れる. ただし範囲の外で外向きの勾配 (標準偏差を広げるか狭める向き) が続くと, `log_std` の生の値は動き続ける (使う値は範囲の端のまま). 戻るのに掛かる更新の回数は, 外に出た量で増える. 無限大になった `log_std` は使う値を範囲の端にし, 勾配は 0 にする (戻せないので, モデルを作り直す). 形が () の Box は未対応 (形を (1,) にする). 学習では平均と標準偏差 (`Exploration` の温度を掛ける) の正規分布から選び, 評価 (`EvaluationLoader`) では平均を選ぶ. `epsilon` は番号で選ぶ行動だけに使え, 連続の行動ではエラーにする. バッチの `actions` は (歩数, 要素の数) の float32 で, 選んだ確率密度の対数を `behavior_log_probs` に入れる (`behavior_probs` は確率密度で, 小さい値は 0 にアンダーフローするので連続の行動では使わない) (`ReinforceStep` は要素ごとの対数の確率密度の和で方策の勾配を求め, 比は対数の差から求める)
 - **行動の範囲**: 環境には, 選んだ行動を行動の空間の範囲で clip して渡す. 経験には clip する前の値を記録する (選んだ確率密度と合わせるため). 書き出した方策 (下の「方策の書き出しと守り」) は平均を行動とし (`head` は `deterministic`), 守りの `action_low` と `action_high` (空間の範囲との狭い方) で clip する. 学習の clip は空間の範囲だけなので, 守りで空間より狭くした範囲は学習の間は当たらない. 狭い範囲の中で学ばせる場合は, 環境の行動の空間をその範囲にする (Gymnasium の `RescaleAction` など)
 - 行動を選ぶときは, モデルを一時的に推論モードにする (1 件の観測の BatchNorm と, Dropout で確率がずれるのを避けるため)
 - `RolloutLoader` は学習だけに使う. `trainer.eval_train: true` では, 評価し直しで学習の環境の乱数が進んで結果が変わるので, エラーにする (評価は `EvaluationLoader`)
 - 再開 (`resume_from`) では, モデルと Optimizer は戻るが, 環境の状態と環境の乱数は戻らない
 - `eval_model` を上書きした場合は, `EvaluationLoader` に渡すモデルもそのモデルにする (loader は渡されたモデルで行動を選ぶ)
+
+### 価値の関数を使う方法 (ActorCriticStep)
+
+`ActorCriticStep(value_coef=0.5, entropy_coef=0.0, gae_lambda=0.95, normalize=True)` は, 状態の価値の関数で利得を見積もる Actor-Critic (集めた経験で 1 回だけ更新する形. 利得は GAE). 番号で選ぶ行動と連続の行動のどちらにも使える. PPO のように同じ経験で何度も更新する方法は, 自分で loader と step を書けば今の仕組みで動かせる (名前付きの複数の Optimizer も使える).
+
+```python
+import torch
+from torch import nn
+
+from ml_found.rl import ActorCriticStep
+
+
+class ActorCritic(nn.Module):
+    def __init__(self, obs_dim: int, action_dim: int):
+        # 親クラスのコンストラクタを呼び出す
+        super(ActorCritic, self).__init__()
+
+        # 方策 (平均と log_std) と価値の関数
+        self.mean = nn.Linear(obs_dim, action_dim)
+        self.log_std = nn.Parameter(torch.zeros(action_dim))
+        self.critic = nn.Linear(obs_dim, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 行動の平均 (書き出した方策もこの出力だけを使う)
+        mean = self.mean(x)
+
+        return mean
+
+    def value(self, x: torch.Tensor) -> torch.Tensor:
+        # 状態の価値
+        values = self.critic(x)
+
+        return values
+
+
+model = ActorCritic(obs_dim, action_dim)
+train_loader = RolloutLoader(train_env, model, episodes=10, gamma=0.95)
+valid_loader = EvaluationLoader(valid_env, model, episodes=5)
+step = ActorCriticStep(value_coef=0.5, gae_lambda=0.95)
+trainer = Trainer(model, experiment, step)
+history = trainer.fit(train_loader, valid_loader)
+```
+
+- **モデルの決まり**: モデルは方策の出力 (`forward`. 番号の行動ならスコア, 連続の行動なら平均) に加えて, 観測から状態の価値を返す `value(観測)` (形は (バッチ,) か (バッチ, 1)) を持つ (無ければエラー). 方策と価値の関数を 1 つのモデルにまとめ, 1 つの Optimizer で学習する. 勾配を流す価値は学習モードで, 利得と目標に使う価値は推論モードで勾配なしに求める (行動を選んだときと同じモード. BatchNorm の統計を進めず, Dropout の雑音を入れないため)
+- **利得**: エピソードの後ろから, 1 歩の TD の誤差 (`報酬 + gamma × 次の状態の価値 - 状態の価値`) を `gamma × gae_lambda` で重ねて求める (`gae_lambda` が 0 なら 1 歩の TD, 1 ならモンテカルロ). 環境が終了したエピソードは最後の歩の後の価値を 0, 打ち切り (TimeLimit と `max_episode_steps`) のエピソードは最後の歩の後の観測の価値にする. `gamma` は `RolloutLoader` の値をバッチの `gamma` から使う
+- **損失と指標**: 学習の `loss` は, 方策の勾配の損失 (利得は `normalize` で標準化) + `value_coef ×` 価値の関数の損失 (利得と価値の和を目標にした平均 2 乗誤差) - `entropy_coef ×` エントロピー. 検証は `ReinforceStep` と同じ. 記録する指標は `train/loss`, `train/value_loss`, `train/entropy`, `train/reward`, `train/length`, `train/violations`, `valid/loss` (評価の報酬の和の平均の符号を反転した値), `valid/entropy`, `valid/reward`, `valid/length`, `valid/violations` (`success_key` を指定した場合は `success` も). 監視する指標は `trainer.monitor: valid/reward` と `trainer.mode: max` にする
+- **報酬の尺度**: 価値の関数の損失は報酬の尺度の 2 乗で大きくなる. 1 歩の報酬が大きい環境 (Pendulum は -16 から 0) では, 学習の環境の報酬を縮める (Gymnasium の `TransformReward` など. 検証の環境は元の報酬のままにすると `valid/reward` が元の尺度になる) か, `value_coef` と `trainer.grad_clip_norm` で価値の関数の勾配の大きさを調える
 
 ## 21. 方策の書き出しと守り
 
@@ -691,7 +739,7 @@ result = policy.act(observation)
 - 範囲は有限の数か `None` (制限なし) で書く. nan は守りを黙って外すことになるので, 書き出しでも読み込みでもエラーにする. 守り, 空間, 外れたときの動きの知らない項目 (`observation_hihg` のような書き損じ) もエラーにする
 - 連続の行動は float32 で返す. 0.1 のような範囲は float32 に丸めると少し外に出るので, 外に出た要素は内側の隣の float32 に寄せる. float32 で無限大になる行動と観測 (1e39 など) は, 外れたときの動きにする
 - 書き出しでは `policy.pt` の sha256 を `policy.json` に書き, 読むときに確かめる (違えばエラー)
-- `policy.pt` はモデルの `state_dict` 全体なので, 連続の行動の方策の `log_std` (と価値の関数などの方策の行動に使わない重み) も入る. 書き出した方策の行動は平均で, `log_std` は使わない
+- `policy.pt` はモデルの `state_dict` 全体なので, 連続の行動の方策の `log_std` と, `ActorCriticStep` で学んだ価値の関数 (`value`) の重みも入る. `head` が読むのはモデルの `forward` の出力だけで, `log_std` と `value` は行動に使わない. 読む側は使わないキーがあってよい (`load_policy` には同じ組み立てのモデルを渡すので, 全てのキーを読む)
 - **外れたときの動き** (`fallback`): `stop` (行動を返さず止める. `status` が `stop`), `handover` (行動を返さず元の制御に戻す. `status` が `handover`), `action` (決めた行動. 連続の行動は既定で 0 の行動. `status` が `fallback`)
 - `apply_guards(spec, observation, output)` は, モデルの出力に守りを当てるだけの純粋な関数. 推論の段階 (ML-Inference) は, この関数と `policy.json` で同じ守りを当てられる
 - `load_policy` には, 書き出したときと同じ組み立てのモデルを渡す (重みは一式から読み, cpu で動かす). 一式に入るのはクラスの名前 (`model_class`) だけなので, 組み立て方は `metadata` に書く (下の「組み立て直し」)

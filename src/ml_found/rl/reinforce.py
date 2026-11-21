@@ -73,7 +73,7 @@ def gaussian_policy(
     distribution: torch.distributions.Normal
         (バッチ, 要素の数) の正規分布
     """
-    # 平均は平らにして, 標準偏差は観測によらない
+    # 平らにした平均と, 観測によらない標準偏差
     mean = model(observations).reshape(observations.shape[0], -1)
     if mean.shape[1] != size:
         raise ValueError(

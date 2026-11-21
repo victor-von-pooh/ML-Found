@@ -175,7 +175,9 @@ class ExperienceBuffer:
         batch: dict[str, torch.Tensor]
             1 歩ごとの observations, actions (番号は long, 連続の行動は
             (歩数, 要素の数) の float32), returns, behavior_log_probs,
-            behavior_probs (連続の行動では確率密度) と, エピソードごとの
+            behavior_probs (番号の行動の確率. 連続の行動では確率密度で,
+            小さい値は 0 にアンダーフローするので使わず,
+            behavior_log_probs を使う) と, エピソードごとの
             episode_rewards, episode_lengths, episode_violations (環境が
             成功を知らせた場合は episode_success)
         """

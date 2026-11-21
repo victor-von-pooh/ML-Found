@@ -187,12 +187,13 @@ def test_box_ratio_is_one_and_eval_uses_mean() -> None:
     _, _, ratio = ReinforceStep().chosen(model, batch)
     assert torch.allclose(ratio, torch.ones_like(ratio))
 
-    # 温度で標準偏差を広げると, 記録した確率密度は方策より小さい値になり得る
+    # 温度で標準偏差を広げた分布で選んだ経験は, 比が 1 より小さい要素を含む
     loader = RolloutLoader(
         BoxEnv(), model, episodes=2, exploration=Exploration(temperature=3.0)
     )
     _, _, ratio = ReinforceStep().chosen(model, next(iter(loader)))
     assert torch.all(ratio <= 1.0)
+    assert torch.any(ratio < 1.0)
 
     # 評価は平均 (0) の行動で, 方策のエントロピーも記録
     env = BoxEnv()
@@ -226,9 +227,24 @@ def test_box_loader_checks() -> None:
             exploration=Exploration(epsilon=0.1)
         )
 
-    # 評価は平均だけを使うので log_std が無くてもよい
+    # 評価のエピソードは平均だけで集めるので log_std が無くても動くが,
+    # step の検証のエントロピーには log_std が要るので分かるエラー
     batch = next(iter(EvaluationLoader(BoxEnv(), nn.Linear(1, 1))))
     assert batch["actions"].shape == (50, 1)
+    with pytest.raises(ValueError, match="log_std"):
+        ReinforceStep()(nn.Linear(1, 1), batch, "valid")
+
+    # nn.Parameter でない log_std (バッファなど)
+    model = nn.Linear(1, 1)
+    model.register_buffer("log_std", torch.zeros(1))
+    with pytest.raises(ValueError, match="nn.Parameter"):
+        RolloutLoader(BoxEnv(), model, episodes=1)
+
+    # 形が () の Box は未対応
+    env = BoxEnv()
+    env.action_space.shape = ()
+    with pytest.raises(ValueError, match="未対応"):
+        RolloutLoader(env, box_model(), episodes=1)
 
     # 番号と連続の行動の混ざった経験
     buffer = ExperienceBuffer()
@@ -267,7 +283,7 @@ def test_box_learns_and_exports(tmp_path: Path) -> None:
     trainer = Trainer(model, experiment, ReinforceStep())
     history = trainer.fit(train_loader, valid_loader)
 
-    # 平均の行動が目標 (0.5) に近づく (ベストモデルの重みに戻る)
+    # 目標 (0.5) に近い平均の行動 (ベストモデルの重みに復帰)
     rewards = history.get("valid/reward")
     assert rewards[0] < -0.5
     assert max(rewards) > -0.05
@@ -292,3 +308,91 @@ def test_box_learns_and_exports(tmp_path: Path) -> None:
     rows = evaluate_policy(policy, env, episodes=2, seed=0)
     assert [row["clipped"] for row in rows] == [5, 5]
     assert np.allclose(np.stack(env.actions), 0.2)
+
+
+class MultiBoxEnv(BoxEnv):
+    def __init__(self):
+        # 親クラスのコンストラクタを呼び出す
+        super(MultiBoxEnv, self).__init__()
+
+        # 2 x 2 の形の行動の空間
+        self.action_space = Space(
+            low=[[-1.0, -2.0], [-3.0, -4.0]], high=[[1.0, 2.0], [3.0, 4.0]]
+        )
+
+    def step(
+        self, action: np.ndarray
+    ) -> tuple[np.ndarray, float, bool, bool, dict]:
+        """
+        行動を記録して, 報酬 0 の 1 歩を進める関数
+
+        Parameters
+        ----------
+        action: np.ndarray
+            (2, 2) の連続の行動
+
+        Returns
+        ----------
+        result: tuple[np.ndarray, float, bool, bool, dict]
+            観測, 報酬, 終了, 打ち切り, info
+        """
+        # 渡された行動の記録と歩数の更新
+        self.actions.append(np.array(action))
+        self.t += 1
+        observation = np.array([1.0], dtype=np.float32)
+        result = (observation, 0.0, self.t >= self.length, False, {})
+
+        return result
+
+
+def test_box_multi_dim_and_log_std() -> None:
+    """
+    多次元の行動, 1 つの log_std, 要素の数の違い, log_std の範囲を
+    確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 1 つの log_std を全ての要素に使い, 環境には空間の形で要素ごとに clip
+    torch.manual_seed(0)
+    env = MultiBoxEnv()
+    model = GaussianNet(1, 4)
+    with torch.no_grad():
+        model.log_std = nn.Parameter(torch.full((1,), 1.5))
+    batch = next(iter(RolloutLoader(env, model, episodes=1)))
+    assert batch["actions"].shape == (5, 4)
+    passed = np.stack(env.actions)
+    assert passed.shape == (5, 2, 2)
+    high = np.array([[1.0, 2.0], [3.0, 4.0]])
+    assert np.all(np.abs(passed) <= high)
+    outputs = ReinforceStep()(model, batch, "train")
+    assert torch.isfinite(outputs["loss"])
+
+    # 要素の数が合わない log_std と平均
+    model.log_std = nn.Parameter(torch.zeros(3))
+    with pytest.raises(ValueError, match="log_std の要素の数"):
+        next(iter(RolloutLoader(MultiBoxEnv(), model, episodes=1)))
+    model = GaussianNet(1, 3)
+    with pytest.raises(ValueError, match="出力の要素の数"):
+        ReinforceStep()(model, batch, "train")
+    with pytest.raises(ValueError, match="出力の要素の数"):
+        next(iter(RolloutLoader(MultiBoxEnv(), model, episodes=1)))
+
+    # 発散した log_std でも標準偏差は範囲の中で, 損失は有限
+    model = GaussianNet(1, 4)
+    with torch.no_grad():
+        model.log_std.fill_(1e6)
+    batch = next(iter(RolloutLoader(MultiBoxEnv(), model, episodes=1)))
+    assert torch.all(torch.isfinite(batch["behavior_log_probs"]))
+    outputs = ReinforceStep()(model, batch, "train")
+    assert torch.isfinite(outputs["loss"])
+    with torch.no_grad():
+        model.log_std.fill_(-1e6)
+    batch = next(iter(RolloutLoader(MultiBoxEnv(), model, episodes=1)))
+    outputs = ReinforceStep()(model, batch, "train")
+    assert torch.isfinite(outputs["loss"])

@@ -7,6 +7,10 @@ from torch import nn
 
 from ml_found.rl.buffer import ExperienceBuffer
 
+# 連続の行動の方策の対数の標準偏差の範囲 (発散して inf や nan にしないため)
+LOG_STD_MIN = -20.0
+LOG_STD_MAX = 2.0
+
 
 class Exploration:
     def __init__(self, temperature: float = 1.0, epsilon: float = 0.0):
@@ -121,15 +125,24 @@ def gaussian_std(model: nn.Module, size: int) -> torch.Tensor:
     Returns
     ----------
     std: torch.Tensor
-        要素が size 個の標準偏差
+        要素が size 個の標準偏差 (log_std は LOG_STD_MIN 以上
+        LOG_STD_MAX 以下に制限)
     """
-    # 要素の数が合わない log_std はエラー
-    log_std = torch.as_tensor(model.log_std).reshape(-1)
+    # log_std の無いモデルと, 要素の数が合わない log_std はエラー
+    if not isinstance(getattr(model, "log_std", None), torch.Tensor):
+        raise ValueError(
+            "連続の行動 (Box) の方策のモデルは, 正規分布の対数の標準偏差 "
+            "log_std (nn.Parameter) を持ってください"
+        )
+    log_std = model.log_std.reshape(-1)
     if log_std.numel() not in (1, size):
         raise ValueError(
             f"log_std の要素の数 {log_std.numel()} は 1 か行動の要素の数 "
             f"{size} にしてください"
         )
+
+    # 発散して標準偏差が 0 か無限大にならないように, 決めた範囲に制限
+    log_std = log_std.clamp(LOG_STD_MIN, LOG_STD_MAX)
     std = log_std.exp().expand(size)
 
     return std
@@ -237,9 +250,14 @@ def to_env_action(action: Any, space: Any) -> Any:
         env_action = action
         return env_action
 
-    # 空間の範囲 (書き出しの守りの範囲の外側) で clip
+    # 要素の数の確認と, 空間の範囲 (書き出しの守りの範囲の外側) での clip
     low = np.asarray(space.low, dtype=np.float64).reshape(-1)
     high = np.asarray(space.high, dtype=np.float64).reshape(-1)
+    if np.size(action) != low.size:
+        raise ValueError(
+            f"モデルの出力の要素の数 {np.size(action)} が行動の要素の数 "
+            f"{low.size} と違います"
+        )
     clipped = np.clip(np.asarray(action, dtype=np.float64), low, high)
     env_action = clipped.astype(np.float32).reshape(tuple(space.shape))
 
@@ -392,7 +410,7 @@ def action_kind(env: Any) -> str:
     kind: str
         discrete か box (行動の空間を持たない環境は discrete)
     """
-    # 行動の空間が無い場合は番号で選ぶ形として扱う
+    # 行動の空間が無い場合は番号で選ぶ形
     space = getattr(env, "action_space", None)
     if space is None:
         kind = "discrete"
@@ -415,11 +433,16 @@ def action_kind(env: Any) -> str:
         kind = "discrete"
         return kind
 
-    # 下限と上限と形を持つ Box
-    if not (hasattr(space, "low") and hasattr(space, "high") and shape):
+    # 下限と上限と形を持つ Box (形が () の Box は未対応)
+    if not (hasattr(space, "low") and hasattr(space, "high")):
         raise ValueError(
             "強化学習の補助は, 行動を番号で選ぶ環境 (Discrete) か連続の"
             f"行動の環境 (Box) だけに対応します: {space!r}"
+        )
+    if not shape:
+        raise ValueError(
+            "形が () の Box の行動は未対応です. 形を (1,) にしてください: "
+            f"{space!r}"
         )
     kind = "box"
 
@@ -442,10 +465,10 @@ def check_box_model(model: nn.Module, exploration: Exploration) -> None:
     None
     """
     # 標準偏差は学習するモデルの log_std, 一様に選ぶ割合は番号で選ぶ行動だけ
-    if not isinstance(getattr(model, "log_std", None), torch.Tensor):
+    if not isinstance(getattr(model, "log_std", None), nn.Parameter):
         raise ValueError(
             "連続の行動 (Box) の方策のモデルは, 正規分布の対数の標準偏差 "
-            "log_std (nn.Parameter) を持ってください"
+            "log_std を nn.Parameter で持ってください"
         )
     if exploration.epsilon > 0.0:
         raise ValueError(

@@ -35,19 +35,19 @@ pip install -e ./ML-Found
 - 依存ライブラリは `torch`, `omegaconf`, `numpy`, `tqdm`, `matplotlib` で, インストール時に一緒に入る
 - `-e` を付けてインストールすると, 実験ごとに ML-Found の commit id も記録される. 付けない場合はバージョン番号だけが記録される
 - `examples/minibatch/` を動かす場合は scikit-learn も必要なので, `pip install -e "./ML-Found[examples]"` でインストールする. 例は `python ML-Found/examples/minibatch/train.py` (か `fullbatch`) で動き, 出力は例のディレクトリの `outputs/` にできる (ML-Found の `.gitignore` で除外している)
-- `examples/cartpole/` (強化学習) を動かす場合は Gymnasium も必要なので, `pip install -e "./ML-Found[rl]"` でインストールする (docs/DESIGN.md の「追加の依存」)
+- `examples/cartpole/` と `examples/pendulum/` (強化学習) を動かす場合は Gymnasium も必要なので, `pip install -e "./ML-Found[rl]"` でインストールする (docs/DESIGN.md の「追加の依存」)
 
 プロジェクトの `.gitignore` には `outputs/` を加えておく.
 加えないと, 2 回目以降の実験で前回の出力が未コミットの変更として記録される.
 
-開発する場合は, リポジトリを取ってきて入れ, `pytest` でテストする (rl を入れない場合, CartPole のテストは飛ばす).
+開発する場合は, リポジトリを取ってきて入れ, `pytest` でテストする (rl を入れない場合, CartPole と Pendulum のテストは飛ばす).
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev,examples,rl]"
 pytest
-python examples/minibatch/train.py   # fullbatch, cartpole も同じ
+python examples/minibatch/train.py   # fullbatch, cartpole, pendulum も同じ
 python examples/minibatch/train.py --experiment configs/experiment/examples/ema.yaml   # EMA の重みで検証する例
 ```
 

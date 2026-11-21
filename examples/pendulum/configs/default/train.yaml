@@ -1,0 +1,53 @@
+# ML-Found が使う設定, 書かなかった項目は ML-Found の既定値
+# 学習に要る機能 (Gymnasium). 無ければ出力先を作る前に入れ方を示して停止
+requires: [rl]
+
+experiment:
+  name: pendulum
+  seed: 42
+  device: cpu
+
+optimizer:
+  name: Adam
+  params:
+    lr: 0.001
+
+trainer:
+  epochs: 150
+  grad_clip_norm: 0.5
+  # 検証の評価のエピソードの報酬の和が大きいほど良い
+  monitor: valid/reward
+  mode: max
+
+# プロジェクト固有の設定, 項目は自由に追加可能
+env:
+  id: Pendulum-v1
+  valid_seed: 10000
+
+rollout:
+  episodes: 10
+  batch_episodes: 1
+  gamma: 0.9
+  temperature: 1.0
+  # 学習の環境の報酬に掛ける値 (価値の関数の損失の尺度を調えるため)
+  reward_scale: 0.1
+  safety_key: cost
+
+evaluation:
+  episodes: 5
+
+loss:
+  value_coef: 0.5
+  entropy_coef: 0.0
+  gae_lambda: 0.9
+
+model:
+  hidden_dim: 64
+  log_std: 0.0
+
+# 書き出す方策の守り (トルクの範囲と, 振り子の角速度の止める条件)
+# 学習は空間の範囲 (±2) のトルクで行うので, ±1.5 に絞る守り付きの評価の
+# 報酬は, valid/reward より下がる (振り上げに使える力が小さいため)
+guards:
+  torque_limit: 1.5
+  speed_limit: 7.0

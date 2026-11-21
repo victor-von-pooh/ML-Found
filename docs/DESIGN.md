@@ -51,12 +51,13 @@ ML-Found/
 │   ├── config/             # config の型定義, 読み込み, 差分, 起動のしかた
 │   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録, 何の実験か, 評価と見本
 │   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, 重みの指数移動平均 (EMA), チェックポイント, 記録, 実験の状態
-│   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, 方策の一式と守り, 守り付きの評価
+│   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, Actor-Critic, 方策の一式と守り, 守り付きの評価
 │   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿
 ├── examples/
 │   ├── minibatch/          # wine データセットの分類, DataLoader で学習する例
 │   ├── fullbatch/          # グラフのノード分類, マスクで学習と検証を分ける例
-│   └── cartpole/           # CartPole の方策の学習と, 守りと一緒の書き出し (追加の依存 rl)
+│   ├── cartpole/           # CartPole の方策の学習と, 守りと一緒の書き出し (追加の依存 rl)
+│   └── pendulum/           # Pendulum の連続の行動の方策を Actor-Critic で学習し, 守りと一緒に書き出して守り付きで評価 (追加の依存 rl)
 ├── tests/
 ├── CODING_STYLE.md         # コーディングスタイルの基準
 └── pyproject.toml
@@ -595,7 +596,7 @@ save_sample(experiment, "cloud", points, kind="point_cloud",
 
 ## 20. 強化学習
 
-Gymnasium の形の環境 (`reset(seed=...)` が `(観測, info)` を, `step(行動)` が `(観測, 報酬, 終了, 打ち切り, info)` を返すもの) とやり取りして, 行動を選ぶ方策を学習できる. 別の仕組みは作らず, 環境とのやり取りを「バッチを返す loader」にして, `Trainer` の step とエポックの決まりに乗せる. 使うには追加の依存 `rl` (Gymnasium) を入れる (上の「追加の依存」). 例は `examples/cartpole/` (CartPole を REINFORCE で学習し, 守りと一緒に書き出す).
+Gymnasium の形の環境 (`reset(seed=...)` が `(観測, info)` を, `step(行動)` が `(観測, 報酬, 終了, 打ち切り, info)` を返すもの) とやり取りして, 行動を選ぶ方策を学習できる. 別の仕組みは作らず, 環境とのやり取りを「バッチを返す loader」にして, `Trainer` の step とエポックの決まりに乗せる. 使うには追加の依存 `rl` (Gymnasium) を入れる (上の「追加の依存」). 例は `examples/cartpole/` (CartPole を REINFORCE で学習し, 守りと一緒に書き出す) と `examples/pendulum/` (Pendulum の連続の行動の方策を `ActorCriticStep` で学習し, トルクの範囲と角速度の止める条件の守りと一緒に書き出して `evaluate_policy` で確かめる).
 
 ```python
 from ml_found import Trainer, load_project_config, start_experiment

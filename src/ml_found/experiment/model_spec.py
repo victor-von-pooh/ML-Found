@@ -42,6 +42,12 @@ SKIP_REASONS = {
     "write_failed": "実験のディレクトリに書けませんでした"
 }
 
+# 同じ status でも書いた文字で理由が分かる場合の, train.log に書く説明
+# (末尾が区切りの not_file と, .. の直前が無いかディレクトリでない missing).
+# 記録の場所は正規化して末尾の区切りと .. が消えるので, 書いた文字を添える
+TRAILING_TEXT = "書いた場所 {value!r} は末尾が区切りの, ディレクトリの書き方です"
+CLIMB_TEXT = "書いた場所 {value!r} の .. の直前が無いかディレクトリではありません"
+
 
 @dataclass
 class ModelSpecRead:
@@ -55,6 +61,10 @@ class ModelSpecRead:
     # model.spec が文字でないか参照を解決できない場合の, train.log に書く
     # 知らせ
     notice: Optional[str]
+
+    # 写さなかった理由の, status の説明の代わりに train.log に書く説明
+    # (書いた文字で理由が分かる場合だけ)
+    detail: Optional[str] = None
 
 
 def is_link(path: Path) -> bool:
@@ -431,11 +441,15 @@ def read_model_spec(cfg: DictConfig, project_dir: Path) -> ModelSpecRead:
 
     # リンクの後の .. で link にした場所は, 別のファイルを指して見えない
     # ように書いた文字のまま記録. 末尾の区切り (m.yaml/ と m.yaml/.) は
-    # ディレクトリの書き方
+    # ディレクトリの書き方. 場所の確かめの missing は .. の直前の誤り
+    detail: Optional[str] = None
     if reason == "link" and check_climbs(raw) == "link":
         record["path"] = value
+    if reason == "missing":
+        detail = CLIMB_TEXT.format(value=value)
     if reason is None and value.endswith(TRAILING_SEPARATORS):
         reason = "not_file"
+        detail = TRAILING_TEXT.format(value=value)
 
     # 写してよい場所なら中身を読み, 中身の sha256 を記録
     content: Optional[bytes] = None
@@ -444,7 +458,9 @@ def read_model_spec(cfg: DictConfig, project_dir: Path) -> ModelSpecRead:
     if content is not None:
         record["sha256"] = hashlib.sha256(content).hexdigest()
     record["status"] = reason
-    spec = ModelSpecRead(record=record, content=content, notice=None)
+    spec = ModelSpecRead(
+        record=record, content=content, notice=None, detail=detail
+    )
 
     return spec
 
@@ -542,9 +558,11 @@ def describe_model_spec(
             f"写しました (sha256: {record['sha256']})"
         )
         return message
+    reason = spec.detail or SKIP_REASONS.get(
+        record["status"], record["status"]
+    )
     message = (
-        f"モデルの定義 ({record['path']!r}) を写しませんでした: "
-        f"{SKIP_REASONS.get(record['status'], record['status'])}"
+        f"モデルの定義 ({record['path']!r}) を写しませんでした: {reason}"
     )
 
     return message

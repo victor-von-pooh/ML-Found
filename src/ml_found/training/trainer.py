@@ -2139,9 +2139,9 @@ class Trainer:
             return
 
         # 再開元のエポックがベストモデルなら, そのモデルの重みを使用
-        # ベストモデルの重みを eval_model から取る場合は, 今のモデルと違うので
-        # best.pt から
-        separate = self.checkpoint.separate_best_model
+        # 再開元がベストモデルの重みを eval_model から取っていた場合は, 今の
+        # モデルと違うので best.pt から
+        separate = self.source_separate(state)
         if state["epoch"] == best_epoch and not separate:
             self.checkpoint.best_model_state = copy_state_dict(state["model"])
             return
@@ -2156,14 +2156,17 @@ class Trainer:
                 best_path, map_location="cpu", weights_only=True, mmap=True
             )
             # 重みだけの best.pt はベストモデルの重みそのもの, そうでなければ
-            # 今のモデルの重み (eval_model が別の場合は best_model に保存)
+            # 今のモデルの重み (再開元の eval_model が別の場合は best_model に
+            # 保存. best_model は別の場合だけ入るので, あればそれを使用)
             weights = None
             if best["epoch"] == best_epoch:
                 stored = (best.get("checkpoint") or {}).get("best_model")
-                if best.get("weights_only") or not separate:
+                if best.get("weights_only"):
                     weights = best["model"]
                 elif stored is not None:
                     weights = stored
+                elif not separate:
+                    weights = best["model"]
             if weights is not None:
                 self.checkpoint.best_model_state = copy_state_dict(weights)
                 self.logger.info(
@@ -2191,6 +2194,31 @@ class Trainer:
         )
         self.logger.warning(message)
         warnings.warn(message, stacklevel=2)
+
+    def source_separate(self, state: dict) -> bool:
+        """
+        再開元がベストモデルの重みを学習するモデルと別のモデルから取って
+        いたかを判定する関数
+
+        Parameters
+        ----------
+        state: dict
+            再開元のチェックポイントの内容
+
+        Returns
+        ----------
+        separate: bool
+            config の EMA を使っていたか, 継承して eval_model を上書きして
+            別のモデルを返す場合 (再開元も同じ上書きとみなす) は True
+        """
+        # config の EMA は再開元の ema で, 継承した上書きは今の設定で判定
+        overridden = self.eval_model() is not self.model and not (
+            self.ema_model is not None
+            and self.eval_model() is self.ema_model.module
+        )
+        separate = state.get("ema") is not None or overridden
+
+        return separate
 
     def copy_best(self, source: Path, target: Path) -> None:
         """

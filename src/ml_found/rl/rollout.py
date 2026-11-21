@@ -125,8 +125,8 @@ def gaussian_std(model: nn.Module, size: int) -> torch.Tensor:
     Returns
     ----------
     std: torch.Tensor
-        要素が size 個の標準偏差 (log_std は LOG_STD_MIN 以上
-        LOG_STD_MAX 以下に制限)
+        要素が size 個の標準偏差 (log_std の値は LOG_STD_MIN 以上
+        LOG_STD_MAX 以下に制限し, 勾配は制限せずに通す)
     """
     # log_std の無いモデルと, 要素の数が合わない log_std はエラー
     if not isinstance(getattr(model, "log_std", None), torch.Tensor):
@@ -141,8 +141,10 @@ def gaussian_std(model: nn.Module, size: int) -> torch.Tensor:
             f"{size} にしてください"
         )
 
-    # 発散して標準偏差が 0 か無限大にならないように, 決めた範囲に制限
-    log_std = log_std.clamp(LOG_STD_MIN, LOG_STD_MAX)
+    # 発散して標準偏差が 0 か無限大にならないように, 値は決めた範囲に制限
+    # 勾配はそのまま通し (範囲の外に出た log_std も更新で戻れるように)
+    clamped = log_std.clamp(LOG_STD_MIN, LOG_STD_MAX)
+    log_std = log_std + (clamped - log_std).detach()
     std = log_std.exp().expand(size)
 
     return std

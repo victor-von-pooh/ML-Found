@@ -389,8 +389,12 @@ def test_box_multi_dim_and_log_std() -> None:
         model.log_std.fill_(1e6)
     batch = next(iter(RolloutLoader(MultiBoxEnv(), model, episodes=1)))
     assert torch.all(torch.isfinite(batch["behavior_log_probs"]))
-    outputs = ReinforceStep()(model, batch, "train")
+    outputs = ReinforceStep(entropy_coef=0.1)(model, batch, "train")
     assert torch.isfinite(outputs["loss"])
+
+    # 範囲の外の log_std にも勾配が流れ, 更新で戻れる
+    outputs["loss"].backward()
+    assert torch.all(model.log_std.grad != 0)
     with torch.no_grad():
         model.log_std.fill_(-1e6)
     batch = next(iter(RolloutLoader(MultiBoxEnv(), model, episodes=1)))

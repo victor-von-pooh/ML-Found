@@ -13,12 +13,6 @@
 
 ## 優先度 低
 
-### 画面が使う確かめの関数を公開する
-- 何を: ML-Dashboard が今は内部のモジュールから読んでいる関数を公開の関数にし, `__all__` と文書に入れる. 実験を始める前の確かめ (`start_experiment` が出力先を作る前にする, 名前, 再開のパス, trainer, Optimizer と Scheduler の確かめ. 今は `check_name`, `check_resume_path`, `check_trainer_config`, `check_optim_config`, `missing_data_size_params`, `try_build_optim`) は 1 つの公開の関数にまとめる案. 他は, 名前付きの Optimizer の扱い (`named_views`, `uses_named_optimizers`), Optimizer と Scheduler のクラスの解決 (`resolve_optimizer_class`, `resolve_scheduler_class`), 引数の確かめ (`check_optim_params`, `check_param_values`), config の上書きの読み方 (`parse_overrides`, `params_sections`), 見本の索引の読み込み (`read_samples_index`), 方策の重みのハッシュ (`file_sha256`), 評価のファイルの大きさの上限 (`MAX_EVALUATION_BYTES`. ML-Dashboard はファイルごとの理由を出すために評価を自分で読み, 今は同じ上限を自分でも持つので, 片方だけを変えると食い違う)
-- なぜ: 公開の口が無いので ML-Dashboard が内部のモジュールを読み, ML-Found の中を変えると画面が壊れうる
-- 終わりの条件: ML-Dashboard が要る確かめと読み込みが全て公開の関数にあり, 公開の名前をテストで確かめる
-- つながり: ML-Dashboard の「ML-Found の内部のモジュールを使わない」
-
 ### 大きな学習済みのモデルの微調整の補助
 - 何を: 勾配の蓄積, 混合精度 (bf16 から), 学習するパラメータだけの保存, 重みの一部の読み込みの補助を config の項目にする
 - なぜ: 今は学習のスクリプトか継承したクラスで書く. 学習済みのモデルの微調整 (問題の設定の作り方「微調整」) で毎回同じ手間がかかり, チェックポイントも凍結した重みの分だけ重い

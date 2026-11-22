@@ -132,13 +132,40 @@ def test_batch_terminated_and_final_observation() -> None:
     assert batch["rewards"].shape == (3,)
     assert float(batch["gamma"]) == pytest.approx(0.9)
 
-    # 環境の終了は 1, 最後の観測を渡さない場合は最後の歩の観測
+    # 環境の終了は 1, 終了で最後の観測を渡さない場合は最後の歩の観測
     batch = next(iter(RolloutLoader(ToyEnv(length=2), model, episodes=1)))
     assert batch["episode_terminated"].tolist() == [1.0]
     buffer = ExperienceBuffer()
     buffer.add([7.0], 0, 1.0)
-    buffer.end_episode(terminated=False)
+    buffer.end_episode()
     assert buffer.to_batch()["final_observations"].tolist() == [[7.0]]
+
+
+def test_truncated_episode_needs_final_observation() -> None:
+    """
+    打ち切りのエピソードでは最後の歩の後の観測が要り, 渡した観測を
+    バッチに入れることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 最後の観測の無い打ち切りはエラーで, 途中のエピソードは残る
+    buffer = ExperienceBuffer()
+    buffer.add([7.0], 0, 1.0)
+    with pytest.raises(ValueError, match="最後の歩の後の観測"):
+        buffer.end_episode(terminated=False)
+    assert len(buffer.current) == 1
+
+    # 渡した観測を最後の観測として記録
+    buffer.end_episode(terminated=False, final_observation=[8.0])
+    batch = buffer.to_batch()
+    assert batch["episode_terminated"].tolist() == [0.0]
+    assert batch["final_observations"].tolist() == [[8.0]]
 
 
 def test_actor_critic_checks() -> None:
@@ -367,3 +394,92 @@ def test_estimate_uses_eval_mode_with_batch_norm() -> None:
         fixed = model.value(batch["observations"]).reshape(-1)
     model.train()
     assert torch.allclose(targets - advantages, fixed, atol=1e-6)
+
+
+def hand_batch() -> dict[str, torch.Tensor]:
+    """
+    終了と打ち切りの混ざった, 手で組んだ学習のバッチを作る関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    batch: dict[str, torch.Tensor]
+        3 歩 (2 歩で終了と, 1 歩で打ち切り) のバッチ. returns は
+        REINFORCE の利得にすり替えると損失が変わる値
+    """
+    # 1 つ目は 2 歩で終了, 2 つ目は 1 歩で打ち切り (最後の観測は 5)
+    batch = {
+        "observations": torch.tensor([[1.0], [2.0], [3.0]]),
+        "actions": torch.tensor([0, 1, 0]),
+        "rewards": torch.tensor([1.0, 1.0, 2.0]),
+        "returns": torch.tensor([1.5, 1.0, 2.0]),
+        "behavior_probs": torch.tensor([1.0, 1.0, 1.0]),
+        "behavior_log_probs": torch.tensor([0.0, 0.0, 0.0]),
+        "episode_rewards": torch.tensor([2.0, 2.0]),
+        "episode_lengths": torch.tensor([2.0, 1.0]),
+        "episode_violations": torch.tensor([0.0, 0.0]),
+        "episode_terminated": torch.tensor([1.0, 0.0]),
+        "final_observations": torch.tensor([[9.0], [5.0]]),
+        "gamma": torch.tensor(0.5)
+    }
+
+    return batch
+
+
+def test_policy_loss_uses_estimated_advantages() -> None:
+    """
+    学習の損失の方策の勾配の項が, estimate() の利得 (GAE) を使うことを,
+    手で組んだ損失と比べて確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 状態の価値が観測そのもので, 観測で行動の確率が変わるモデル
+    model = ActorCriticNet(1, 2, gaussian=False)
+    with torch.no_grad():
+        model.critic.weight.fill_(1.0)
+        model.critic.bias.zero_()
+        model.policy.weight.copy_(torch.tensor([[0.5], [-0.5]]))
+    batch = hand_batch()
+
+    # 選んだ行動の対数確率 (探索の確率を方策の確率にそろえて比は 1) と,
+    # test_estimate_matches_hand_calculation と同じ手で求めた利得
+    log_probs = nn.LogSoftmax(dim=-1)(
+        model(batch["observations"])
+    ).detach()
+    chosen = log_probs.gather(1, batch["actions"].unsqueeze(1)).squeeze(1)
+    batch["behavior_probs"] = chosen.exp()
+    batch["behavior_log_probs"] = chosen
+    advantages = torch.tensor([0.75, -1.0, 1.5])
+
+    # 標準化しない利得と, 価値の関数の損失を除いた方策の損失
+    outputs = ActorCriticStep(
+        value_coef=0.0, gae_lambda=0.5, normalize=False
+    )(model, batch, "train")
+    expected = -(advantages * chosen).mean()
+    assert torch.allclose(outputs["loss"], expected)
+
+    # REINFORCE の利得 (割引した報酬の和から平均を引いた値) とは違う
+    reinforce = batch["returns"] - batch["returns"].mean()
+    assert not torch.allclose(outputs["loss"], -(reinforce * chosen).mean())
+
+    # 標準化した利得と, 価値の関数の損失 (価値は観測, 目標は利得と価値の和)
+    outputs = ActorCriticStep(
+        value_coef=0.5, gae_lambda=0.5
+    )(model, batch, "train")
+    normalized = (advantages - advantages.mean()) / (
+        advantages.std() + 1e-8
+    )
+    targets = torch.tensor([1.75, 1.0, 4.5])
+    value_loss = ((torch.tensor([1.0, 2.0, 3.0]) - targets) ** 2).mean()
+    expected = -(normalized * chosen).mean() + 0.5 * value_loss
+    assert torch.allclose(outputs["value_loss"], value_loss)
+    assert torch.allclose(outputs["loss"], expected)

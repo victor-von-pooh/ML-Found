@@ -65,12 +65,12 @@ ML-Found/
 
 ## 5. 追加の依存
 
-任意の機能に要るライブラリは本体の依存に含めず, 追加の依存 (pip の extras) として要るときだけ入れる. ML-Found は機能ごとに「要るもの, 入っているかの確かめ方, 入れ方」の一覧 (登録簿) を持ち, 足りないまま使うと, 次の一手 (pip のコマンドか公式の手順) を案内して止まる.
+任意の機能に要るライブラリは本体の依存に含めず, 追加の依存 (pip の extras) として要るときだけ入れる. ML-Found は機能ごとに「要るもの, 入っているかの確かめ方, 入れ方」の一覧 (登録簿) を持ち, 足りないまま使うと (入っていないか, 版が下限より古い), 次の一手 (pip のコマンドか公式の手順) を案内して止まる.
 
 | 機能 | 要るもの (確かめ方) | 入れ方 |
 | --- | --- | --- |
-| `rl` | `gymnasium` (モジュールが見つかるか) | `pip install -e "./ML-Found[rl]"` (追加の依存 `rl`) |
-| `mujoco` | `gymnasium` と `mujoco` (モジュールが見つかるか) | `pip install -e "./ML-Found[mujoco]"`. 描画には OpenGL が要る ([公式の手順](https://mujoco.readthedocs.io/en/stable/python.html)) |
+| `rl` | `gymnasium` 1.0 以上 (モジュールが見つかるかと版) | `pip install -e "./ML-Found[rl]"` (追加の依存 `rl`) |
+| `mujoco` | `gymnasium` 1.0 以上と `mujoco` (モジュールが見つかるか. `gymnasium` は版も) | `pip install -e "./ML-Found[mujoco]"`. 描画には OpenGL が要る ([公式の手順](https://mujoco.readthedocs.io/en/stable/python.html)) |
 | `ros2` | `rclpy` か `ros2` のコマンドのどちらか | pip では入らない. [公式の手順](https://docs.ros.org/) で入れ, setup のスクリプトを source してから Python を起動する |
 | `cuda` | `torch.cuda.is_available()` | NVIDIA のドライバと, [PyTorch の手順](https://pytorch.org/get-started/locally/) で CUDA 付きの PyTorch |
 | `eda` | `ml_eda` と `pyarrow` (ML-EDA. データセットの読み込みと前処理. 書き出したデータセットは parquet) | `pip install "ml-eda[parquet] @ git+https://github.com/victor-von-pooh/ML-EDA.git"` (追加の依存 `parquet` で pyarrow も入る) |
@@ -81,15 +81,17 @@ ML-Found/
 from ml_found import MissingRequirementError, describe_requirements, require
 
 try:
-    require("rl")  # 無ければ入れ方を示す MissingRequirementError (ImportError の子) を送出
+    require("rl")  # 無いか古ければ入れ方を示す MissingRequirementError (ImportError の子) を送出
 except MissingRequirementError as error:
     print(error)  # 入れ方の案内
 entries = describe_requirements()  # 全ての機能の一覧 (JSON にできる)
 ```
 
-- `describe_requirements(names=None, check=True)` は, 機能ごとに `name`, `description`, `checks` (確かめ方ごとの `kind`, `name`, `ok`, `error`), `match` (`all` か `any`), `available`, `install` (`kind` が `pip` か `guide`, `extra`, `packages`, `url`, `command`, `extra_command`), `note` を返す. 画面 (ML-Dashboard) のカードや, 問題の設定の受け渡し (ML-Quest) で, 足りないものを早めに知らせるのに使う. `check=False` では確かめない (`ok` と `available` が `None`. JSON では null)
-- 確かめ方は import せずにモジュールを探す (`importlib.util.find_spec`) ので, 一覧を作るだけで重いライブラリを読み込まない. ただし版は確かめない (古い版は使うときのエラーになる) のと, `a.b` のような名前では親のパッケージ `a` を import する
-- プロジェクトの機能は `register_requirement(name, description, checks, install, match, note)` で加えられる (`ml_found.utils`. ML-Found の機能の名前は上書きできない)
+- `describe_requirements(names=None, check=True)` は, 機能ごとに `name`, `description`, `checks` (確かめ方ごとの `kind`, `name`, `ok`, `error`, `version`, `min_version`), `match` (`all` か `any`), `available`, `install` (`kind` が `pip` か `guide`, `extra`, `packages`, `url`, `command`, `extra_command`), `note` を返す. 画面 (ML-Dashboard) のカードや, 問題の設定の受け渡し (ML-Quest) で, 足りないものを早めに知らせるのに使う. `check=False` では確かめない (`ok` と `available` が `None`. JSON では null)
+- 確かめ方は import せずにモジュールを探す (`importlib.util.find_spec`) ので, 一覧を作るだけで重いライブラリを読み込まない. ただし `a.b` のような名前では親のパッケージ `a` を import する
+- 版の下限 (`min_version`) を持つ確かめ方は, 見つかったモジュールの版を import せずにパッケージの情報から読み (`importlib.metadata.version`. 読むパッケージの名前は `distribution`, 無ければ `name`), 下限より古ければ満たしていない (`ok` が `false`) とし, `version` に入っている版を, `error` に「版 0.29.1 は古い. 1.0 以上が要る」のような説明を入れる. `require` は入っていない時と同じ入れ方を添え, 1 行目を「要るものの版が足りません: gymnasium (0.29.1. 1.0 以上が要る)」にして止まる (`MissingRequirementError` の `outdated` に版が足りないもの, `missing` に入っていないもの). pip のコマンドは版の指定を含むので, そのまま古い版を入れ替える
+- 下限は pyproject.toml の任意の依存の下限と同じにする (テストで pip の指定と一緒に確かめる) (今は `gymnasium>=1.0` だけ. `mujoco` と段階ごとのライブラリは下限を持たない). 版の文字は PEP 440 の順で比べ (`1.0.dev1 < 1.0a1 < 1.0rc1 < 1.0 < 1.0.post1`. `1.0` と `1.0.0` は同じ), `+` の後のローカルの版 (`2.11.0+cpu` の `cpu`) とエポック (`1!`) は比べない (`1!0.1` は 1.0 以上と見ず, 止まる側に倒れる). 比べ方は ML-Found が持ち, `packaging` には依存しない. 版を読めない場合 (パッケージの情報が無いか, 読めない形の版) は止めず, `ok` を `true` にして `error` に確かめていないことを残す
+- プロジェクトの機能は `register_requirement(name, description, checks, install, match, note)` で加えられる (`ml_found.utils`. ML-Found の機能の名前は上書きできない). `module` の確かめ方には `min_version` と `distribution` も書ける (他の種類に書くか, 読めない版の文字か, `distribution` が pip で入れるときのパッケージの名前の形 (`[` や版の指定や空白を含まない) でなければエラー)
 - `environment_packages(names, include_found=True)` は, プロジェクトの仮想環境を作るときに 1 回の `pip install` に渡す指定の一覧を返す. 先頭が ML-Found 自身 (`ml-found @ git+https://github.com/victor-von-pooh/ML-Found.git`. `include_found=False` で除く) で, 続けて機能の pip の指定を書いた順に並べる (同じ指定は 1 回). pip で入らない機能 (`ros2`, `cuda`) は含めないので, `describe_requirements` の入れ方で案内する. 登録簿に無い名前はエラー. 画面 (ML-Dashboard) がプロジェクトの環境を作るときに使う
 - 段階ごとのライブラリ (`eda`, `modelcontrol`, `inference`) は PyPI に公開していないので, git のリポジトリから入れる. ML-Found の追加の依存 (`extra`) にはしない (ML-Found が他の段階のライブラリに頼らないため)
 

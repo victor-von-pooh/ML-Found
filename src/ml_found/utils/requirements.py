@@ -1,5 +1,7 @@
 import copy
+import importlib.metadata
 import importlib.util
+import re
 import shutil
 from typing import Any, Optional
 
@@ -9,18 +11,19 @@ import torch
 class MissingRequirementError(ImportError):
     def __init__(
         self, feature: str, missing: list[str], install: dict,
-        note: Optional[str] = None
+        note: Optional[str] = None, outdated: Optional[list[str]] = None
     ):
         # 親クラスのコンストラクタを呼び出す
         super(MissingRequirementError, self).__init__(
-            format_missing(feature, missing, install, note)
+            format_missing(feature, missing, install, note, outdated)
         )
 
-        # 機能の名前, 足りないもの, 入れ方, 補足を保存
+        # 機能の名前, 足りないもの, 入れ方, 補足, 版が足りないものを保存
         self.feature = feature
         self.missing = missing
         self.install = install
         self.note = note
+        self.outdated = list(outdated or [])
 
     def __reduce__(self) -> tuple:
         """
@@ -37,7 +40,9 @@ class MissingRequirementError(ImportError):
         """
         # 別のプロセス (DataLoader の worker など) で作り直すための引数
         state = (
-            type(self), (self.feature, self.missing, self.install, self.note)
+            type(self),
+            (self.feature, self.missing, self.install, self.note,
+             self.outdated)
         )
 
         return state
@@ -71,10 +76,14 @@ FOUND_PACKAGE = f"ml-found @ git+{GITHUB}/ML-Found.git"
 # 機能ごとの要るもの, 確かめ方, 入れ方の登録簿
 # checks の kind は module (import できるか), command (コマンドがあるか),
 # function (関数が True を返すか). match は all (全て要る) か any (どれか 1 つ)
+# module の min_version は版の下限 (pyproject.toml の任意の依存の下限と同じ),
+# distribution は版を読むパッケージの名前 (無ければ name と同じ)
 REQUIREMENTS: dict[str, dict[str, Any]] = {
     "rl": {
         "description": "強化学習の環境 (Gymnasium の形の環境を作る)",
-        "checks": [{"kind": "module", "name": "gymnasium"}],
+        "checks": [
+            {"kind": "module", "name": "gymnasium", "min_version": "1.0"}
+        ],
         "match": "all",
         "install": {
             "kind": "pip",
@@ -87,7 +96,7 @@ REQUIREMENTS: dict[str, dict[str, Any]] = {
     "mujoco": {
         "description": "MuJoCo の物理シミュレータ (Gymnasium の MuJoCo の環境)",
         "checks": [
-            {"kind": "module", "name": "gymnasium"},
+            {"kind": "module", "name": "gymnasium", "min_version": "1.0"},
             {"kind": "module", "name": "mujoco"}
         ],
         "match": "all",
@@ -206,9 +215,8 @@ def module_found(name: str) -> bool:
     """
     モジュールを import せずに, 入っているかを確かめる関数
 
-    importlib.util.find_spec で探すので, 版は確かめない (版が古い場合は
-    使うときのエラーになる). a.b のような名前では, 親のパッケージ a は
-    import される
+    importlib.util.find_spec で探す (版は module_version で別に確かめる).
+    a.b のような名前では, 親のパッケージ a は import される
 
     Parameters
     ----------
@@ -229,26 +237,191 @@ def module_found(name: str) -> bool:
     return found
 
 
-def run_check(check: dict) -> tuple[bool, Optional[str]]:
+def module_version(distribution: str) -> Optional[str]:
+    """
+    パッケージを import せずに, 入っている版の文字を読む関数
+
+    Parameters
+    ----------
+    distribution: str
+        パッケージの名前 (pip で入れるときの名前)
+
+    Returns
+    ----------
+    version: Optional[str]
+        版の文字, 読めない場合は None
+    """
+    # パッケージの情報 (dist-info) が無い場合は読めないものとして判定
+    try:
+        version = importlib.metadata.version(distribution)
+    except (importlib.metadata.PackageNotFoundError, ValueError):
+        version = None
+
+    return version
+
+
+# 版の文字の形 (PEP 440 の公開の版と, + の後のローカルの版)
+VERSION_PATTERN = re.compile(
+    r"^v?(?:\d+!)?(?P<release>\d+(?:\.\d+)*)"
+    r"(?:[-_.]?(?P<pre>a|alpha|b|beta|c|rc|pre|preview)[-_.]?(?P<pre_n>\d*))?"
+    r"(?:-(?P<post_implicit>\d+)"
+    r"|[-_.]?(?:post|rev|r)[-_.]?(?P<post_n>\d*))?"
+    r"(?:[-_.]?(?P<dev>dev)[-_.]?(?P<dev_n>\d*))?"
+    r"(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$",
+    re.IGNORECASE
+)
+
+# pip で入れるときのパッケージの名前の形 (PEP 508)
+DISTRIBUTION_PATTERN = re.compile(
+    r"^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$", re.IGNORECASE
+)
+
+# 先行版の印の順 (alpha, beta, release candidate)
+PRE_ORDER = {
+    "a": 0, "alpha": 0, "b": 1, "beta": 1, "c": 2, "rc": 2, "pre": 2,
+    "preview": 2
+}
+
+
+def version_key(text: str) -> Optional[tuple]:
+    """
+    版の文字を, 大小を比べられる組に直す関数
+
+    PEP 440 の順 (1.0.dev1 < 1.0a1 < 1.0rc1 < 1.0 < 1.0.post1) に並べる.
+    1.0 と 1.0.0 は同じ. + の後のローカルの版 (2.11.0+cpu の cpu) と
+    エポック (1!) は比べない. そのため 1!0.1 は 0.1 として比べ, 1.0 以上
+    とは見ない (PEP 440 の順より古く見る側に倒れ, 入れ方を案内して止まる).
+    packaging に依存しないための, 下限の比較に足りるだけの実装
+
+    Parameters
+    ----------
+    text: str
+        版の文字
+
+    Returns
+    ----------
+    key: Optional[tuple]
+        比べるための組, 読めない形の場合は None
+    """
+    # 形の確認
+    match = VERSION_PATTERN.match(text.strip())
+    if match is None:
+        key = None
+        return key
+
+    # 末尾の 0 を除いた数の並び
+    release = [int(part) for part in match["release"].split(".")]
+    while len(release) > 1 and release[-1] == 0:
+        release.pop()
+
+    # 先行版, 後の版, 開発版の順位
+    post = match["post_implicit"] or match["post_n"]
+    has_post = match["post_implicit"] is not None or (
+        match["post_n"] is not None
+    )
+    if match["pre"]:
+        pre = (0, PRE_ORDER[match["pre"].lower()], int(match["pre_n"] or 0))
+    elif match["dev"] and not has_post:
+        pre = (-1, 0, 0)
+    else:
+        pre = (1, 0, 0)
+    post_rank = int(post or 0) if has_post else -1
+    dev = (0, int(match["dev_n"] or 0)) if match["dev"] else (1, 0)
+    key = (tuple(release), pre, post_rank, dev)
+
+    return key
+
+
+def version_at_least(version: str, minimum: str) -> Optional[bool]:
+    """
+    入っている版が下限以上かを確かめる関数
+
+    Parameters
+    ----------
+    version: str
+        入っている版の文字
+    minimum: str
+        版の下限
+
+    Returns
+    ----------
+    enough: Optional[bool]
+        下限以上なら True, 古ければ False, 版の文字が読めない場合は None
+    """
+    # 末尾の 0 を除いた組どうしの比較
+    found, needed = version_key(version), version_key(minimum)
+    if found is None or needed is None:
+        enough = None
+        return enough
+    enough = found >= needed
+
+    return enough
+
+
+def check_module(check: dict) -> tuple[bool, Optional[str], Optional[str]]:
+    """
+    モジュールがあるかと, 版の下限を満たすかを確かめる関数
+
+    Parameters
+    ----------
+    check: dict
+        name と, 任意の min_version と distribution を持つ辞書
+
+    Returns
+    ----------
+    ok: bool
+        あって版の下限を満たす場合は True
+    error: Optional[str]
+        版が足りない場合と版を確かめられない場合の説明, 無ければ None
+    version: Optional[str]
+        入っている版, 無いか読めない場合は None
+    """
+    # モジュールが無ければ版は読まない
+    if not module_found(check["name"]):
+        return False, None, None
+
+    # 版の下限の確認, 版が分からない場合は使えるものとして説明だけ残す
+    minimum = check.get("min_version")
+    version = module_version(check.get("distribution") or check["name"])
+    if minimum is None:
+        return True, None, version
+    if version is None:
+        return True, f"版を読めないので {minimum} 以上かを確かめていない", None
+    enough = version_at_least(version, minimum)
+    if enough is None:
+        error = f"版 {version} を読めないので {minimum} 以上かを確かめていない"
+        return True, error, version
+    if not enough:
+        error = f"版 {version} は古い. {minimum} 以上が要る"
+        return False, error, version
+
+    return True, None, version
+
+
+def run_check(check: dict) -> tuple[bool, Optional[str], Optional[str]]:
     """
     1 つの確かめ方を実行する関数
 
     Parameters
     ----------
     check: dict
-        kind と name (function の場合は function も) を持つ辞書
+        kind と name (function の場合は function, module の場合は任意の
+        min_version と distribution も) を持つ辞書
 
     Returns
     ----------
     ok: bool
         満たしている場合は True
     error: Optional[str]
-        確かめる途中のエラー, 無ければ None
+        確かめる途中のエラーか版が足りない説明, 無ければ None
+    version: Optional[str]
+        module の場合の入っている版, それ以外か読めない場合は None
     """
     # 種類ごとの確認, 関数の例外は満たしていないものとして記録
     error = None
+    version = None
     if check["kind"] == "module":
-        ok = module_found(check["name"])
+        ok, error, version = check_module(check)
     elif check["kind"] == "command":
         ok = shutil.which(check["name"]) is not None
     else:
@@ -258,7 +431,7 @@ def run_check(check: dict) -> tuple[bool, Optional[str]]:
             ok = False
             error = f"{type(exc).__name__}: {exc}"
 
-    return ok, error
+    return ok, error, version
 
 
 def install_command(install: dict) -> Optional[str]:
@@ -311,7 +484,7 @@ def extra_command(install: dict) -> Optional[str]:
 
 def format_missing(
     feature: str, missing: list[str], install: dict,
-    note: Optional[str] = None
+    note: Optional[str] = None, outdated: Optional[list[str]] = None
 ) -> str:
     """
     足りないものと次の一手を伝えるメッセージを作る関数
@@ -326,14 +499,26 @@ def format_missing(
         入れ方の辞書
     note: Optional[str] = None
         補足, None の場合は書かない
+    outdated: Optional[list[str]] = None
+        版が足りないもの (名前と版の説明), None の場合は無し
 
     Returns
     ----------
     message: str
         エラーのメッセージ
     """
-    # 足りないものと, pip のコマンドか公式の手順の案内
-    lines = [f"機能 {feature} に要るものが入っていません: {', '.join(missing)}"]
+    # 足りないものと版が足りないもの
+    lines = []
+    if missing:
+        lines.append(
+            f"機能 {feature} に要るものが入っていません: {', '.join(missing)}"
+        )
+    if outdated:
+        lines.append(
+            f"機能 {feature} に要るものの版が足りません: {', '.join(outdated)}"
+        )
+
+    # pip のコマンドか公式の手順の案内
     if install["kind"] == "pip":
         lines.append(f"次の一手: {install_command(install)}")
         extra = extra_command(install)
@@ -376,10 +561,11 @@ def describe_one(name: str, spec: dict, check: bool) -> dict[str, Any]:
     # 確かめ方ごとの結果 (確かめない場合は null)
     checks = []
     for item in spec["checks"]:
-        ok, error = run_check(item) if check else (None, None)
+        ok, error, version = run_check(item) if check else (None, None, None)
         checks.append(
             {"kind": item["kind"], "name": item["name"], "ok": ok,
-             "error": error}
+             "error": error, "version": version,
+             "min_version": item.get("min_version")}
         )
 
     # all か any で全体の判定
@@ -483,9 +669,21 @@ def require(feature: str) -> None:
     entry = describe_one(feature, get_spec(feature), check=True)
     if entry["available"]:
         return
-    missing = [item["name"] for item in entry["checks"] if not item["ok"]]
+
+    # 無いものと, あるが版が足りないものに分けて案内
+    missing, outdated = [], []
+    for item in entry["checks"]:
+        if item["ok"]:
+            continue
+        if item["version"] is not None and item["min_version"] is not None:
+            outdated.append(
+                f"{item['name']} ({item['version']}. "
+                f"{item['min_version']} 以上が要る)"
+            )
+        else:
+            missing.append(item["name"])
     raise MissingRequirementError(
-        feature, missing, entry["install"], entry["note"]
+        feature, missing, entry["install"], entry["note"], outdated
     )
 
 
@@ -558,6 +756,7 @@ def check_definition(
             raise ValueError(
                 f"function の確かめ方には呼べる function が要ります: {item!r}"
             )
+        check_version_fields(item)
     if match not in ("all", "any"):
         raise ValueError(f"match は all か any にしてください: {match!r}")
 
@@ -570,6 +769,43 @@ def check_definition(
         raise ValueError("pip で入れる場合は install に packages を書いてください")
     if install["kind"] == "guide" and not install.get("url"):
         raise ValueError("公式の手順に案内する場合は install に url を書いてください")
+
+
+def check_version_fields(item: dict) -> None:
+    """
+    確かめ方の版の下限の書き方を確かめる関数
+
+    Parameters
+    ----------
+    item: dict
+        1 つの確かめ方
+
+    Returns
+    ----------
+    None
+    """
+    # 版の下限は module だけに書け, 読める版の文字とパッケージの名前であること
+    fields = [key for key in ("min_version", "distribution") if key in item]
+    if fields and item["kind"] != "module":
+        raise ValueError(
+            f"{', '.join(fields)} は module の確かめ方だけに書けます: {item!r}"
+        )
+    minimum = item.get("min_version")
+    if minimum is not None and (
+        not isinstance(minimum, str) or version_key(minimum) is None
+    ):
+        raise ValueError(
+            f"min_version は 1.0 のような版の文字にしてください: {minimum!r}"
+        )
+    distribution = item.get("distribution")
+    if distribution is not None and (
+        not isinstance(distribution, str)
+        or DISTRIBUTION_PATTERN.match(distribution) is None
+    ):
+        raise ValueError(
+            "distribution は pip で入れるときのパッケージの名前 (版の指定や"
+            f"追加の依存の [ ] を含まない) にしてください: {distribution!r}"
+        )
 
 
 def register_requirement(
@@ -587,7 +823,8 @@ def register_requirement(
         登録簿に出す説明
     checks: list[dict]
         確かめ方 (kind が module, command, function の辞書. function の場合は
-        引数の無い関数を function に入れる)
+        引数の無い関数を function に入れる. module の場合は版の下限
+        min_version と, 版を読むパッケージの名前 distribution を書ける)
     install: dict
         入れ方 (kind が pip なら packages, guide なら url. extra は ML-Found
         の追加の依存の名前で, 無ければ None)

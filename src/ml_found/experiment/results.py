@@ -1,10 +1,12 @@
 from collections.abc import Mapping
+import fnmatch
 import json
 import math
 import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import threading
 from typing import Any, Optional, Union
 import uuid
@@ -44,6 +46,27 @@ SAMPLES_LOCK = threading.Lock()
 # ML-Quest の指標の名前と同じ決まり)
 # 先頭の . は一時ファイルと見分けるために禁止
 NAME_PATTERN = re.compile(r"[A-Za-z0-9_@-][A-Za-z0-9_.@-]*")
+
+# 読む評価のファイルの大きさの上限 (ML-Dashboard の画面と同じ値)
+MAX_EVALUATION_BYTES = 20 * 1024 * 1024
+
+# 評価のファイルの読み込みの 1 回の大きさ
+READ_CHUNK_BYTES = 1 << 20
+
+# 評価のファイルを, リンクを辿らず (O_NOFOLLOW) 待たずに (O_NONBLOCK) 開く旗
+EVALUATION_FILE_FLAGS = (
+    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+)
+
+# evaluations/ を, リンクを辿らずにディレクトリとして開く旗
+EVALUATION_DIR_FLAGS = (
+    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+)
+
+# Windows のジャンクションの印 (lstat の st_reparse_tag)
+JUNCTION_TAG = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
 
 # 評価の種類
 EVALUATION_KINDS = ("table", "curve")
@@ -608,6 +631,216 @@ def save_evaluation(
     return path
 
 
+def can_use_dir_fd() -> bool:
+    """
+    ディレクトリを開いた番号から, リンクを辿らずに調べて開けるかを判定する
+    関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    usable: bool
+        os.open と os.stat が dir_fd を, os.listdir が開いた番号を使え,
+        O_NOFOLLOW がある場合は True (Windows などは False)
+    """
+    usable = (
+        hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd and os.listdir in os.supports_fd
+    )
+
+    return usable
+
+
+def is_plain_dir(info: os.stat_result) -> bool:
+    """
+    lstat の結果が, リンクでもジャンクションでもないディレクトリかを判定する
+    関数
+
+    Parameters
+    ----------
+    info: os.stat_result
+        リンクを辿らずに調べた結果
+
+    Returns
+    ----------
+    plain: bool
+        リンクでもジャンクションでもないディレクトリなら True
+    """
+    plain = stat.S_ISDIR(info.st_mode) and (
+        getattr(info, "st_reparse_tag", 0) != JUNCTION_TAG
+    )
+
+    return plain
+
+
+def open_evaluations_dir(folder: Path) -> tuple[bool, Optional[int]]:
+    """
+    evaluations/ を, リンクを辿らずに確かめて開く関数
+
+    Parameters
+    ----------
+    folder: Path
+        evaluations/ の場所
+
+    Returns
+    ----------
+    opened: tuple[bool, Optional[int]]
+        読めるか (無い, ディレクトリでない, リンクの場合は False) と,
+        開いたディレクトリの番号 (dir_fd を使えない環境と読めない場合は None.
+        閉じるのは呼んだ側)
+    """
+    # 無い場合, ディレクトリでない場合, リンクの場合は読まない
+    try:
+        info = os.lstat(folder)
+    except (OSError, ValueError):
+        opened = (False, None)
+        return opened
+    if not is_plain_dir(info):
+        opened = (False, None)
+        return opened
+    if not can_use_dir_fd():
+        opened = (True, None)
+        return opened
+
+    # 確かめた後にリンクへ入れ替えられても辿らないように開き, 同じものかを確認
+    try:
+        dir_fd = os.open(folder, EVALUATION_DIR_FLAGS)
+    except (OSError, ValueError):
+        opened = (False, None)
+        return opened
+    try:
+        same = os.path.samestat(info, os.fstat(dir_fd))
+    except OSError:
+        same = False
+    if not same:
+        os.close(dir_fd)
+        opened = (False, None)
+        return opened
+    opened = (True, dir_fd)
+
+    return opened
+
+
+def evaluation_names(folder: Path, dir_fd: Optional[int]) -> list[str]:
+    """
+    evaluations/ の評価のファイルの名前を並べる関数
+
+    Parameters
+    ----------
+    folder: Path
+        evaluations/ の場所
+    dir_fd: Optional[int]
+        開いたディレクトリの番号, 無ければ場所から並べる
+
+    Returns
+    ----------
+    names: list[str]
+        名前の順の *.json の名前. 一時ファイル (. で始まる) を除く.
+        並べられない場合は空
+    """
+    try:
+        entries = os.listdir(dir_fd if dir_fd is not None else folder)
+    except OSError:
+        entries = []
+    names = sorted(
+        name for name in entries
+        if fnmatch.fnmatch(name, "*.json") and not name.startswith(".")
+    )
+
+    return names
+
+
+def read_limited(fd: int, limit: int) -> Optional[bytes]:
+    """
+    開いたファイルを, 上限の 1 バイト先までだけ読む関数
+
+    Parameters
+    ----------
+    fd: int
+        開いたファイルの番号 (閉じるのは呼んだ側)
+    limit: int
+        読む大きさの上限 (バイト)
+
+    Returns
+    ----------
+    content: Optional[bytes]
+        ファイルの中身, 上限を超えた場合は None
+    """
+    chunks = []
+    size = 0
+    while size <= limit:
+        chunk = os.read(fd, min(READ_CHUNK_BYTES, limit + 1 - size))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+    if size > limit:
+        return None
+    content = b"".join(chunks)
+
+    return content
+
+
+def read_evaluation_file(
+    folder: Path, name: str, dir_fd: Optional[int]
+) -> Optional[bytes]:
+    """
+    評価のファイルを, 普通のファイルで上限の大きさまでの場合だけ読む関数
+
+    Parameters
+    ----------
+    folder: Path
+        evaluations/ の場所
+    name: str
+        評価のファイルの名前
+    dir_fd: Optional[int]
+        開いたディレクトリの番号, 無ければ場所から開く
+
+    Returns
+    ----------
+    content: Optional[bytes]
+        ファイルの中身. リンク, 普通でないファイル (FIFO など),
+        MAX_EVALUATION_BYTES を超えるファイル, 読めないファイルは None
+    """
+    # 開く前に, リンク, 普通でないファイル (FIFO は開くと止まる),
+    # 大きすぎるファイルを除外
+    try:
+        if dir_fd is not None:
+            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        else:
+            info = os.lstat(folder / name)
+    except (OSError, ValueError):
+        return None
+    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_EVALUATION_BYTES:
+        return None
+
+    # 確かめた後に入れ替えられても辿らず止まらないように開き,
+    # 開いたものが確かめたものと同じ普通のファイルかを確認
+    try:
+        if dir_fd is not None:
+            fd = os.open(name, EVALUATION_FILE_FLAGS, dir_fd=dir_fd)
+        else:
+            fd = os.open(folder / name, EVALUATION_FILE_FLAGS)
+    except (OSError, ValueError):
+        return None
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(
+            info, opened
+        ):
+            return None
+        content = read_limited(fd, MAX_EVALUATION_BYTES)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+    return content
+
+
 def load_evaluations(run_dir: Union[str, os.PathLike]) -> list[dict]:
     """
     実験のディレクトリの評価を全て読む関数
@@ -621,23 +854,33 @@ def load_evaluations(run_dir: Union[str, os.PathLike]) -> list[dict]:
     ----------
     evaluations: list[dict]
         名前の順の評価. evaluations/ が無い実験 (評価を書かなかった実験など)
-        は空. better は列ごとの指標の向きの辞書 (無いファイルは空)
+        と, evaluations/ がリンクの実験は空. better は列ごとの指標の向きの
+        辞書 (無いファイルは空). リンク, 普通でないファイル, 大きすぎる
+        ファイル, 読めないファイルは除く
     """
-    # 一時ファイル (. で始まる) と読めないファイルは無視
+    # evaluations/ 自体がリンクか, ディレクトリでなければ空
     folder = Path(run_dir) / EVALUATIONS_DIR
     evaluations: list[dict] = []
-    if not folder.is_dir():
+    readable, dir_fd = open_evaluations_dir(folder)
+    if not readable:
         return evaluations
-    for path in sorted(folder.glob("*.json")):
-        if path.name.startswith("."):
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(data, dict):
-            data["better"] = read_better(data)
-            evaluations.append(data)
+
+    # 一時ファイル (. で始まる) と読まなかったファイルは無視
+    try:
+        for name in evaluation_names(folder, dir_fd):
+            content = read_evaluation_file(folder, name, dir_fd)
+            if content is None:
+                continue
+            try:
+                data = json.loads(content.decode("utf-8"))
+            except ValueError:
+                continue
+            if isinstance(data, dict):
+                data["better"] = read_better(data)
+                evaluations.append(data)
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
 
     return evaluations
 

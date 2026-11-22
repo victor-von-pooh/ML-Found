@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import re
 import threading
@@ -16,6 +17,7 @@ from ml_found import (
     original_coordinates, save_evaluation, save_sample, task_from_dataset,
     write_task
 )
+from ml_found.experiment import results
 from ml_found.experiment.results import spread_better
 from ml_found.experiment.setup import Experiment
 from ml_found.experiment.task import TASK_FILE
@@ -719,6 +721,100 @@ def test_load_evaluations_better_old_and_unknown(tmp_path: Path) -> None:
         "broken": {}, "odd": {"iou": "higher", "iou_diff": "higher"},
         "old": {}, "mixed": {"a": "higher", "a_baseline": "lower"}
     }
+
+
+def write_evaluation_file(path: Path, name: str) -> None:
+    """
+    評価の JSON のファイルを置く関数
+
+    Parameters
+    ----------
+    path: Path
+        置く場所
+    name: str
+        評価の名前
+
+    Returns
+    ----------
+    None
+    """
+    path.write_text(json.dumps({
+        "name": name, "split": "test", "kind": "table", "x": None,
+        "columns": ["iou"], "rows": [{"iou": 0.5}]
+    }), encoding="utf-8")
+
+
+@pytest.mark.parametrize("dir_fd", [True, False])
+def test_load_evaluations_skips_links_and_large(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dir_fd: bool
+) -> None:
+    """
+    リンク, 普通でないファイル, 大きすぎるファイルを読まずに飛ばすことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        大きさの上限と dir_fd の使い方を差し替える
+    dir_fd: bool
+        開いたディレクトリから開くか (False は Windows などの読み方)
+
+    Returns
+    ----------
+    None
+    """
+    # 実験の外のファイルへのリンク, ディレクトリ, 大きすぎるファイル
+    if not dir_fd:
+        monkeypatch.setattr(results, "can_use_dir_fd", lambda: False)
+    run_dir = tmp_path / "run"
+    folder = run_dir / "evaluations"
+    folder.mkdir(parents=True)
+    write_evaluation_file(folder / "ok.json", "ok")
+    outside = tmp_path / "outside.json"
+    write_evaluation_file(outside, "outside")
+    (folder / "link.json").symlink_to(outside)
+    (folder / "dir.json").mkdir()
+    write_evaluation_file(folder / "large.json", "large")
+    size = (folder / "large.json").stat().st_size
+    write_evaluation_file(folder / "edge.json", "edge")
+    (folder / "edge.json").write_bytes(
+        (folder / "edge.json").read_bytes().ljust(size)
+    )
+    monkeypatch.setattr(results, "MAX_EVALUATION_BYTES", size)
+    (folder / "large.json").write_bytes(
+        (folder / "large.json").read_bytes() + b" "
+    )
+
+    # FIFO は開くと止まるので, 開かずに飛ばす
+    if hasattr(os, "mkfifo"):
+        os.mkfifo(folder / "fifo.json")
+    names = [item["name"] for item in load_evaluations(run_dir)]
+    assert names == ["edge", "ok"]
+
+
+def test_load_evaluations_linked_folder(tmp_path: Path) -> None:
+    """
+    evaluations/ 自体がリンクの実験は空とすることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    write_evaluation_file(outside / "ok.json", "ok")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "evaluations").symlink_to(outside, target_is_directory=True)
+    assert load_evaluations(run_dir) == []
+    assert load_evaluations(tmp_path / "missing") == []
 
 
 @pytest.mark.parametrize(

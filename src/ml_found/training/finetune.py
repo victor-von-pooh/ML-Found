@@ -1,5 +1,6 @@
 import contextlib
 import logging
+import pickle
 from pathlib import Path
 from typing import Any, ContextManager, Optional
 
@@ -138,12 +139,22 @@ def read_init_weights(path: str, project_dir: Path) -> dict:
 
     # 任意のコードが動かないようにテンソルと基本的な型だけを読み込み
     # 大きなファイルでもメモリに読み込まないように参照 (古い形は参照なし)
+    # weights_only が拒む型 (読むとコードを動かせる値) を含むファイルは誤り
+    not_weights = ValueError(
+        "trainer.init_weights.path は state_dict か ML-Found のチェックポイント"
+        f"ではありません: {path!r}"
+    )
     try:
-        state = torch.load(
-            resolved, map_location="cpu", weights_only=True, mmap=True
-        )
-    except RuntimeError:
-        state = torch.load(resolved, map_location="cpu", weights_only=True)
+        try:
+            state = torch.load(
+                resolved, map_location="cpu", weights_only=True, mmap=True
+            )
+        except RuntimeError:
+            state = torch.load(
+                resolved, map_location="cpu", weights_only=True
+            )
+    except pickle.UnpicklingError as error:
+        raise not_weights from error
 
     # ML-Found のチェックポイントはモデルの重みを取り出し
     if (
@@ -157,10 +168,7 @@ def read_init_weights(path: str, project_dir: Path) -> dict:
         isinstance(key, str) and isinstance(value, torch.Tensor)
         for key, value in state.items()
     ):
-        raise ValueError(
-            f"trainer.init_weights.path は重みの辞書 (state_dict) ではありません:"
-            f" {path!r}"
-        )
+        raise not_weights
     weights = state
 
     return weights

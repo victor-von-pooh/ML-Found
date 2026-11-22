@@ -25,8 +25,8 @@ from ml_found.training.ema import (
     build_ema_model, ema_state_dict, reset_ema_model
 )
 from ml_found.training.finetune import (
-    autocast_context, complete_weights, frozen_parameters, load_init_weights,
-    omit_keys
+    autocast_context, complete_weights, frozen_parameters, listed,
+    load_init_weights, omit_keys
 )
 from ml_found.training.history import (
     History, LrSteps, MetricTracker, to_float
@@ -2070,6 +2070,20 @@ class Trainer:
         if not isinstance(meta, dict):
             return
         frozen = meta.get("frozen") or {}
+
+        # 再開元では凍結していて今は学習する重みは, 今のモデルの値から始まる
+        # ので通知
+        trainable = {
+            name for name, parameter in self.model.named_parameters(
+                remove_duplicate=False
+            ) if parameter.requires_grad
+        }
+        unfrozen = sorted(name for name in frozen if name in trainable)
+        if unfrozen:
+            self.logger.warning(
+                "再開元では凍結していて今は学習する重みを, 今のモデルの値で"
+                f"補います: {listed(unfrozen)}"
+            )
 
         # モデルとベストモデルは今のモデルから, EMA は今の EMA から補完
         reference = self.model.state_dict()

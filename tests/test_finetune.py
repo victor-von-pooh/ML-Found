@@ -743,3 +743,64 @@ def test_trainable_only_weights_only_best(tmp_path: Path) -> None:
     assert "head.weight" in best["model"]
     final = read_weights(experiment.run_dir / "final_model.pt")
     assert "backbone.0.weight" in final
+
+
+def test_init_weights_rejects_pickled_objects(tmp_path: Path) -> None:
+    """
+    weights_only で読めない値を含むファイルは, 重みのファイルでないとして
+    出力先を作る前に止まることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # テンソルでない Python のオブジェクト (モデルそのもの) を保存
+    path = tmp_path / "module.pt"
+    torch.save(nn.Linear(1, 1), path)
+    with pytest.raises(ValueError, match="state_dict か ML-Found"):
+        make_experiment(
+            tmp_path, f"trainer:\n  init_weights:\n    path: {path}\n"
+        )
+    assert not (tmp_path / "outputs").exists()
+
+
+def test_trainable_only_resume_warns_unfrozen(tmp_path: Path) -> None:
+    """
+    再開元で凍結していて今は学習する重みを補う場合に, train.log に警告を
+    書くことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 骨格を凍結して, 学習するパラメータだけを保存
+    options = "  checkpoint:\n    trainable_only: true\n"
+    first = make_experiment(
+        tmp_path / "first", SGD + "trainer:\n  epochs: 1\n" + options
+    )
+    Trainer(make_backbone_model(), first, regression_step).fit(
+        make_loader(), make_loader()
+    )
+
+    # 骨格の凍結を外して再開すると, 外した重みの名前を警告
+    resumed = make_experiment(
+        tmp_path / "resumed",
+        SGD + "trainer:\n  epochs: 2\n"
+        f"  resume_from: {first.run_dir / 'last.pt'}\n"
+    )
+    model = make_backbone_model()
+    model.backbone.requires_grad_(True)
+    Trainer(model, resumed, regression_step).fit(make_loader(), make_loader())
+    log = (resumed.run_dir / "train.log").read_text(encoding="utf-8")
+    assert "凍結していて今は学習する重み" in log
+    assert "backbone.0.weight" in log

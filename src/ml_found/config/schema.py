@@ -81,6 +81,10 @@ class CheckpointConfig:
     # 再開時のベストモデルの重みは再開元の best.pt からの復元
     last_with_best: bool = True
 
+    # last.pt と best.pt のモデルの重みを, 学習するパラメータとバッファだけに
+    # するか (凍結したパラメータを省いて軽くする. final_model.pt は全ての重み)
+    trainable_only: bool = False
+
 
 @dataclass
 class EmaConfig:
@@ -91,6 +95,22 @@ class EmaConfig:
     # バッファ (BatchNorm の統計量など) も平均するか. false の場合は
     # 学習しているモデルの値を写す
     use_buffers: bool = False
+
+
+@dataclass
+class InitWeightsConfig:
+    # 学習を始める前にモデルに読む重みのファイル, null の場合は不使用
+    # (state_dict か, model を持つ ML-Found のチェックポイント)
+    path: Optional[str] = None
+
+    # ファイルのキーのうち, 前置きを外して読むものの前置き
+    source_prefix: str = ""
+
+    # 外した後のキーの頭に足す前置き (モデルの一部に読む場合)
+    target_prefix: str = ""
+
+    # true の場合はモデルの全てのキーがそろい, 使わないキーも無いことが必要
+    strict: bool = False
 
 
 @dataclass
@@ -140,6 +160,12 @@ class TrainerConfig:
     # true の場合は逆伝播とパラメータの更新を ML-Found ではなく step の中で実行
     manual_optimization: bool = False
 
+    # 何バッチ分の勾配を貯めてから 1 回更新するか (1 の場合は毎バッチ更新)
+    accumulate_grad_batches: int = 1
+
+    # 計算の精度, fp32 か bf16 (bf16 は順伝播と損失を自動の混合精度で計算)
+    precision: str = "fp32"
+
     # 学習を再開するチェックポイントのパス, null の場合は最初から学習
     resume_from: Optional[str] = None
 
@@ -161,6 +187,11 @@ class TrainerConfig:
 
     # 重みの指数移動平均 (EMA) の設定
     ema: EmaConfig = field(default_factory=EmaConfig)
+
+    # 学習を始める前に読む重み (学習済みのモデルの一部など) の設定
+    init_weights: InitWeightsConfig = field(
+        default_factory=InitWeightsConfig
+    )
 
 
 @dataclass

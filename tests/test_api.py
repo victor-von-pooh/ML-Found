@@ -63,8 +63,9 @@ def test_public_api() -> None:
 SCREEN_NAMES = {
     "ml_found.config": ["load_config", "params_sections", "parse_overrides"],
     "ml_found.experiment": [
-        "MAX_EVALUATION_BYTES", "check_experiment_name", "check_resume_path",
-        "check_trainer_config", "describe_origin", "load_evaluations",
+        "MAX_EVALUATION_BYTES", "check_experiment_name", "check_init_weights",
+        "check_precision", "check_resume_path", "check_trainer_config",
+        "describe_origin", "load_evaluations",
         "load_samples", "load_task", "original_coordinates",
         "read_samples_index"
     ],

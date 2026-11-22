@@ -26,8 +26,11 @@ from ml_found.experiment.task import (
 )
 from ml_found.experiment.uncaught import watch_uncaught_errors
 from ml_found.training.optim import (
-    check_optim_config, class_uses_gradients, resolve_optimizer_class,
-    try_build_optim
+    check_optim_config, class_requires_closure, class_uses_gradients,
+    resolve_optimizer_class, try_build_optim
+)
+from ml_found.training.finetune import (
+    PRECISIONS, check_autocast, read_init_weights
 )
 from ml_found.training.registry import check_optim_params
 from ml_found.utils.device import get_device
@@ -195,6 +198,16 @@ def check_trainer_config(cfg: DictConfig) -> None:
             " と log_grad_norm は使えません"
         )
 
+    # 勾配の蓄積と計算の精度と, 学習を始める前に読む重みの設定の確認
+    check_accumulation(cfg, optimizer_cls)
+    precision = trainer_cfg.precision
+    if precision not in PRECISIONS:
+        raise ValueError(
+            f"trainer.precision は {' か '.join(PRECISIONS)} にしてください: "
+            f"{precision}"
+        )
+    check_init_weights_config(trainer_cfg.init_weights)
+
     # ベストモデルを選ばない設定では, 指標の改善で止める Early Stopping は不可
     if not trainer_cfg.select_best and trainer_cfg.early_stopping.use:
         raise ValueError(
@@ -206,6 +219,124 @@ def check_trainer_config(cfg: DictConfig) -> None:
             "trainer.select_best: false では trainer.monitor_tiebreak は"
             "使えません (ベストモデルを選ばないため)"
         )
+
+
+def check_accumulation(cfg: DictConfig, optimizer_cls: type) -> None:
+    """
+    勾配の蓄積の回数と, 他の設定との組み合わせを確かめる関数
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        学習に使う config
+    optimizer_cls: type
+        config の optimizer.name のクラス
+
+    Returns
+    ----------
+    None
+    """
+    # 回数は 1 以上の整数 (真偽値は不可)
+    count = cfg.trainer.accumulate_grad_batches
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        raise ValueError(
+            "trainer.accumulate_grad_batches は 1 以上の整数にしてください: "
+            f"{count}"
+        )
+    if count == 1:
+        return
+
+    # 貯めた勾配で 1 回更新する手順は, ML-Found が逆伝播して 1 つの
+    # Optimizer で更新する場合だけ
+    if cfg.trainer.manual_optimization:
+        reason = "manual_optimization では使えません (step の中で更新するため)"
+    elif cfg.get("optimizers"):
+        reason = "optimizers では使えません (損失ごとに勾配を求めるため)"
+    elif not class_uses_gradients(optimizer_cls):
+        reason = f"{cfg.optimizer.name} は勾配を使わないので使えません"
+    elif class_requires_closure(optimizer_cls):
+        reason = (
+            f"{cfg.optimizer.name} は closure で損失を計算し直すので使えません"
+        )
+    else:
+        return
+    raise ValueError(f"trainer.accumulate_grad_batches ({count}) は {reason}")
+
+
+def check_init_weights_config(init_cfg: DictConfig) -> None:
+    """
+    学習を始める前に読む重みの設定の型を確かめる関数
+
+    Parameters
+    ----------
+    init_cfg: DictConfig
+        config の trainer.init_weights
+
+    Returns
+    ----------
+    None
+    """
+    # 場所は null か空でない文字, 前置きは文字, strict は真偽値
+    path = init_cfg.path
+    if path is not None and (not isinstance(path, str) or not path.strip()):
+        raise ValueError(
+            "trainer.init_weights.path は null か, 空でないファイルの場所に"
+            f"してください: {path!r}"
+        )
+    for name in ("source_prefix", "target_prefix"):
+        if not isinstance(init_cfg[name], str):
+            raise ValueError(
+                f"trainer.init_weights.{name} は文字にしてください: "
+                f"{init_cfg[name]!r}"
+            )
+    if not isinstance(init_cfg.strict, bool):
+        raise ValueError(
+            "trainer.init_weights.strict は真偽値にしてください: "
+            f"{init_cfg.strict!r}"
+        )
+
+
+def check_precision(cfg: DictConfig, device: torch.device) -> None:
+    """
+    計算の精度 (trainer.precision) を学習のデバイスで使えるかを確かめる関数
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        学習に使う config
+    device: torch.device
+        学習に使うデバイス
+
+    Returns
+    ----------
+    None
+    """
+    # 小さな計算を自動の混合精度で実際に行って確認
+    check_autocast(cfg.trainer.precision, device)
+
+
+def check_init_weights(cfg: DictConfig, project_dir: Path) -> None:
+    """
+    学習を始める前に読む重み (trainer.init_weights.path) のファイルが
+    読めることを確かめる関数
+
+    Parameters
+    ----------
+    cfg: DictConfig
+        学習に使う config
+    project_dir: Path
+        ML-Found を使っているプロジェクトのディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 読まない場合は確認不要
+    if cfg.trainer.init_weights.path is None:
+        return
+
+    # 中身のテンソルは読まずに, 重みの辞書として読めるかまで確認
+    read_init_weights(cfg.trainer.init_weights.path, Path(project_dir))
 
 
 def check_resume_path(cfg: DictConfig, project_dir: Path) -> None:
@@ -436,7 +567,8 @@ def start_experiment(
     # 空の出力先が残らないように, ディレクトリを作る前に config 全体の
     # 参照 (${...}), requires に書いた機能の要るもの, デバイス,
     # Optimizer と Scheduler (クラス, 引数, 仮のパラメータで作れるか) と
-    # 学習の設定, 再開元, config の task の確認
+    # 学習の設定, 計算の精度, 再開元, 始める前に読む重み, config の task の
+    # 確認
     check_references(cfg)
     check_requires(cfg)
     device = get_device(cfg.experiment.device)
@@ -444,7 +576,9 @@ def start_experiment(
     check_optim_params(cfg)
     check_trainer_config(cfg)
     try_build_optim(cfg, device)
+    check_precision(cfg, device)
     check_resume_path(cfg, project_root)
+    check_init_weights(cfg, project_root)
     task = config_task(cfg, project_root)
 
     # 学習を始めるときのモデルの定義 (config に model.spec があれば) を,

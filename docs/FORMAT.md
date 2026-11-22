@@ -73,10 +73,10 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `progress.json` | 学習中だけ | 進み具合 (下の「progress.json」). 学習を終えると消す |
 | `model_summary.csv` | エポックのループに入る直前 (設定の確認と再開の復元の後) | パラメータとバッファの一覧 (下の「model_summary.csv」). それより前に止まった実験には無い |
 | `history.csv` | fit を終えたとき (記録が 0 件でも見出しは書く) | エポックごとの記録 (下の「history.csv」) |
-| `final_model.pt` | fit を終えたとき | 最終の重み (`state_dict`, cpu のテンソル). `config.yaml` の `trainer.ema.decay` が null でない実験では, 重みの指数移動平均 (EMA) の重み (名前と形は学習したモデルと同じ) |
+| `final_model.pt` | fit を終えたとき | 最終の重み (`state_dict`, cpu のテンソル). `config.yaml` の `trainer.ema.decay` が null でない実験では, 重みの指数移動平均 (EMA) の重み (名前と形は学習したモデルと同じ). `trainer.precision` と `trainer.checkpoint.trainable_only` に関わらず, 全ての重み (型はモデルの重みのまま. bf16 の混合精度でも変わらない) |
 | `<指標>_curve.png`, `lr_curve.png`, `lr_<名前>_curve.png` | fit を終えたとき (記録が 1 件以上) | 学習曲線 |
 | `lr_steps.csv`, `lr_steps.png` | fit を終えたとき (`scheduler.interval: step` で, 更新が 1 回以上の場合) | 更新ごとの学習率. 列は `step`, `epoch`, `lr` (名前付きの Optimizer では `lr_<名前>`) |
-| `best.pt`, `last.pt` | 設定による | チェックポイント. 中の形は決めない (ML-Found で読む) |
+| `best.pt`, `last.pt` | 設定による | チェックポイント. 中の形は決めない (ML-Found で読む). `config.yaml` の `trainer.checkpoint.trainable_only` が true の実験では, 学習しないパラメータの重みを含まない |
 | `git_diff.patch` | 未コミットの変更がある場合 | commit id からの差分 |
 | `model_spec.yaml` | `start_experiment` の後. config の `model.spec` の場所にプロジェクトの中の普通のファイル (16 MiB まで) があり, 写せた場合 (再開した学習でも写す) | 学習に使ったモデルの定義 (ML-ModelControl の定義の YAML) の写し. 中身は変えずに写す. 写したかどうかと中身の sha256 は `source.yaml` の `model_spec` |
 | `task.yaml` | 任意. config の `task` か `write_task` で書いた場合 | 何の実験か (下の「task.yaml」). 受け持ち, 出力の意味, 正解の出どころ, 作り方 |

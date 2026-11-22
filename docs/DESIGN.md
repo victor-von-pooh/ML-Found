@@ -33,7 +33,7 @@ PyTorch のモデルを config から自動で学習させる基盤のライブ�
 
 画面 (ML-Dashboard) は, 学習を始める前の確かめ, config の読み方, 実験のディレクトリの読み込みに, 次の公開の名前を使う. 画面が同じ決まりを自分で持たず, ML-Found の中を変えても画面が壊れないため.
 
-- `ml_found.experiment`: `start_experiment` が出力先を作る前にする確かめのうち, 実験の名前 (`check_experiment_name`), 学習の設定 (`check_trainer_config`), 再開元 (`check_resume_path(cfg, project_dir)`). 見本の一覧と形式の版の読み込み (`read_samples_index`). 評価のファイルの大きさの上限 (`MAX_EVALUATION_BYTES`. 画面がファイルごとの理由を出すために評価を自分で読む場合も, `load_evaluations` と同じ上限を使う)
+- `ml_found.experiment`: `start_experiment` が出力先を作る前にする確かめのうち, 実験の名前 (`check_experiment_name`), 学習の設定 (`check_trainer_config`), 計算の精度をデバイスで使えるか (`check_precision(cfg, device)`), 再開元 (`check_resume_path(cfg, project_dir)`), 始める前に読む重み (`check_init_weights(cfg, project_dir)`). 見本の一覧と形式の版の読み込み (`read_samples_index`). 評価のファイルの大きさの上限 (`MAX_EVALUATION_BYTES`. 画面がファイルごとの理由を出すために評価を自分で読む場合も, `load_evaluations` と同じ上限を使う)
 - `ml_found.training`: Optimizer と Scheduler の確かめ (`check_optim_config`, `check_optim_params`, 引数の値の範囲の `check_param_values(cls, params)`, 仮のパラメータで作れるかの `try_build_optim(cfg, device)`, 学習を始めるときに補う Scheduler の引数の `missing_data_size_params`). クラスの解決 (`resolve_optimizer_class`, `resolve_scheduler_class`). 名前付きの Optimizer の扱い (`uses_named_optimizers`, 名前ごとの config を返す `named_views`)
 - `ml_found.config`: 「項目=値」の上書きの読み方 (`parse_overrides`) と, torch のクラスに渡す引数を持つ項目の名前 (`params_sections`. 名前付きの Optimizer の項目も含む)
 - `ml_found.rl`: 方策の重みのハッシュ (`file_sha256`)
@@ -60,7 +60,7 @@ ML-Found/
 ├── src/ml_found/
 │   ├── config/             # config の型定義, 読み込み, 差分, 起動のしかた
 │   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録, 何の実験か, 評価と見本
-│   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, 重みの指数移動平均 (EMA), チェックポイント, 記録, 実験の状態, 生成の画像の FID
+│   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, 重みの指数移動平均 (EMA), 微調整の補助 (混合精度, 始める前に読む重み, 学習するパラメータだけのチェックポイント), チェックポイント, 記録, 実験の状態, 生成の画像の FID
 │   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, Actor-Critic, 方策の一式と守り, 守り付きの評価
 │   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿, 出力先のファイルをリンクを辿らずに読む関数
 ├── examples/
@@ -135,7 +135,7 @@ experiment で書けるのは default にある項目の値だけで, 項目の�
 - 循環する参照 (`a: ${b}` と `b: ${a}` など)
 - 値の決まっていない項目 (`???`) を指す参照. `???` そのものは誤りにしない
 
-誤りの文には解決した値 (環境変数の値など) と OmegaConf の文 (値を含み得る) を入れず, 項目の場所と書いた参照と理由だけを入れる (「24. 安全」). 確かめでは参照を解決するので, 参照の resolver を 1 回呼ぶ. `use_cache` の無い resolver (乱数や時刻など) は, 確かめで得た値と `config.yaml` に保存する値や学習で読む値が別になりうる. 呼ぶと副作用のある resolver は, 呼ぶ回数が 1 回増える.
+誤りの文には解決した値 (環境変数の値など) と OmegaConf の文 (値を含み得る) を入れず, 項目の場所と書いた参照と理由だけを入れる (「25. 安全」). 確かめでは参照を解決するので, 参照の resolver を 1 回呼ぶ. `use_cache` の無い resolver (乱数や時刻など) は, 確かめで得た値と `config.yaml` に保存する値や学習で読む値が別になりうる. 呼ぶと副作用のある resolver は, 呼ぶ回数が 1 回増える.
 
 `start_experiment` は出力先を作る前に, `optimizer.params` と `scheduler.params` の名前がクラスの引数にあるか (typo の確認), 必須の引数 (`StepLR` の `step_size` など) があるか, 値が登録簿の範囲 (下の `describe_optimizers()` などで返すもの. 例: `lr` は 0 以上, `ReduceLROnPlateau` の `factor` は 0 以上 1 未満) に入るかを確かめる. 範囲は意味のある値の範囲で, PyTorch の確認より狭いものもある (`momentum` は 1 以下など). 補間 (`${...}`) は解決した値で確かめ, 範囲を持つ引数に引用符で囲んだ数や真偽値を書いた場合もエラーにする. 値の範囲は torch のクラスだけを確かめ, 自作のクラスは確かめない. 任意の名前の引数 (`**kwargs`) や位置だけの引数を受け取る自作のクラスは確かめない. 最後に, 学習と同じデバイスの仮のパラメータで Optimizer と Scheduler を実際に作ってみて (データの量で決まる引数は仮の値で補う), 範囲を持たない引数の値や自作のクラスの値の誤り (PyTorch やクラスが作るときに出すエラー) も見つける. 値の決まっていない引数 (`???`) がある場合は, 作ってみる確認はしない (解決できない補間は, その前の確認でエラーになる). 自分で作った Optimizer や Scheduler を `Trainer` に渡す場合も, config の引数は確かめるので, 使わない引数は消しておく.
 
@@ -250,7 +250,7 @@ class MyTrainer(Trainer):
 
 | メソッド | 用途 |
 | --- | --- |
-| `update_parameters(loss)` | 更新の手順を変える. `super().update_parameters(loss)` の後に自分で持つ平均の重みを更新する, など (`trainer.ema.decay` の EMA は `super().update_parameters(loss)` の中で更新される) |
+| `update_parameters(loss)` | 更新の手順を変える. `super().update_parameters(loss)` の後に自分で持つ平均の重みを更新する, など (`trainer.ema.decay` の EMA は `super().update_parameters(loss)` の中で更新される). 学習のバッチごとに呼ばれ, 勾配を貯める設定 (`trainer.accumulate_grad_batches`) では更新した回だけ `self.global_step` が増える (自分の処理を更新の回だけにする場合は, 呼ぶ前と後の `global_step` を比べる). バッチ数を持たない loader の端数の更新はエポックの終わりに `update_parameters` の外で行う |
 | `extra_state_dict()` | チェックポイントに加える状態を辞書で返す (EMA の重み, ML-Found の外で作った Optimizer など). `load_extra_state_dict(state)` も合わせて上書きすると, 再開時に戻る |
 | `eval_model()` | 検証, ベストモデルの判定, `final_model.pt` に使うモデルを返す (既定は `self.model`. `trainer.ema.decay` を使う場合は EMA のモデル). 自分で持つ平均の重みで検証する場合はそのモデルを返す |
 
@@ -329,7 +329,7 @@ experiment = start_experiment(cfg, diff, str(project_dir))
 
 ## 11. 更新の手順
 
-- 勾配法の Optimizer は `zero_grad`, `loss.backward()`, 勾配のクリッピング, `optimizer.step()` の順に更新する
+- 勾配法の Optimizer は `zero_grad`, `loss.backward()`, 勾配のクリッピング, `optimizer.step()` の順に更新する. 勾配を貯める設定 (`trainer.accumulate_grad_batches`) では, 決めた数のバッチの勾配を貯めてから 1 回クリップして更新する (「大きな学習済みのモデルの微調整」)
 - LBFGS のように `step` に closure が必要な Optimizer は自動で見分け, 同じバッチで損失と勾配を計算し直す closure を渡す. 見分ける順は, クラスの属性 `requires_closure` (自作の Optimizer が `True` か `False` で宣言), torch の Optimizer の仕様 (LBFGS. `describe_optimizers()` の `requires_closure` と同じ), `step` の `closure` が既定値の無い引数かどうか. 自作の Optimizer で `closure` に既定値があるのに実際には必要な場合は, クラスの本体に `requires_closure = True` と書く (property や `__init__` の中で付けた属性は見ない). closure は `step` を何度も呼ぶので, `step` で予測を貯めるなどの処理は, closure の中では `self.in_closure` が `True` になることを使って飛ばす
 - Nelder-Mead 法のような勾配を使わない Optimizer は, クラスの本体に `uses_gradients = False` と書く. ML-Found は学習でも勾配を計算せず (逆伝播しない), 今のパラメータの損失を求める closure を `step` に渡す (`step` は勾配の記録を止めて呼ぶので, パラメータを直接書き換えてよい). `trainer.grad_clip_norm` と `log_grad_norm` とは一緒に使えない (config で指定した場合は出力先を作る前にエラー). `trainer.valid_grad` は検証だけに効く. `manual_optimization: true` の場合はそちらが優先され, 学習でも勾配を記録して `step` の中で自分で更新する. 登録簿の仕様にも `uses_gradients` を返す
 - 複数の Optimizer を使う場合は, 下の「複数の Optimizer」のように config の `optimizers` に名前付きで書く. 更新の順番が込み入る場合 (識別器を更新した後の値で生成器の損失を求めるなど) は, `trainer.manual_optimization: true` にして `step` の中で更新する. ML-Found は逆伝播, 勾配のクリッピング, 更新を行わず (`grad_clip_norm` と `log_grad_norm` と同時に使うとエラー), 更新回数と Scheduler (`interval` に応じて step ごとかエポックごと) だけを進める. `step` は勾配の流れない損失 (`loss.detach()`) を返してよい
@@ -571,7 +571,57 @@ trainer:
 - **出力の形**: 版は変えない. `config.yaml` と `diff.yaml` に `trainer.ema` の項目が増える (項目を足す変更). `final_model.pt` は EMA を使っても学習するモデルと同じ名前と形の `state_dict` で, 読み方は変わらない (重みが EMA のものになるだけ). `run.json` の `final_weights` の値 (`best`, `last`, `partial`) の意味も同じで, EMA を使った実験ではどのエポックの EMA の重みかを表す. チェックポイントの中の形は約束の外 (FORMAT.md). 読む側は, `config.yaml` の `trainer.ema.decay` が `null` でなければ `final_model.pt` が EMA の重みと分かる
 - **画面 (ML-Dashboard) の起動のフォームと config の確かめ**: 画面は config の確かめに `check_trainer_config` を使うので, 減衰率の誤りも起動の前に見つかる. 起動のフォームに欄が無くても, experiment の config に `trainer.ema.decay` を書けば使える (画面に欄を足すかは画面が決める. 足す場合は, この項目を知らない版の ML-Found の config では出さない). 画面の submodule の ML-Found がこの項目を知らない版だと, `trainer.ema` を書いた config は「default に無い項目」の誤りになるので, 画面とプロジェクトの ML-Found の版をそろえる
 
-## 19. 何の実験か, データ全体の評価, 見本
+## 19. 大きな学習済みのモデルの微調整
+
+学習済みのモデルの一部を凍結して微調整する場合に, 学習のスクリプトか継承したクラスで毎回書く手間を, config の項目にする. 勾配の蓄積, 混合精度 (bf16), 始める前に読む重み, 学習するパラメータだけのチェックポイントの 4 つで, どれも既定では使わない.
+
+```yaml
+# configs/default/train.yaml
+trainer:
+  accumulate_grad_batches: 4     # 4 バッチの勾配を貯めて 1 回更新
+  precision: bf16                # 順伝播と損失を bfloat16 の自動の混合精度で計算
+  init_weights:
+    path: weights/pretrained.pt  # 始める前に読む重み (プロジェクトからの相対パス)
+    source_prefix: encoder.      # ファイルのキーのうちこの前置きで始まるものを
+    target_prefix: backbone.     # この前置きに付け替えて読む
+    strict: false
+  checkpoint:
+    trainable_only: true         # last.pt と best.pt から凍結した重みを省く
+```
+
+**勾配の蓄積** (`trainer.accumulate_grad_batches`. 1 以上の整数, 既定 1): 決めた数のバッチの勾配を貯めてから 1 回更新する. メモリに載る小さなバッチで, 大きなバッチと同じ更新にするため.
+
+- 各バッチの損失を貯める数で割ってから逆伝播するので, 貯めた勾配は損失の平均の勾配になる (同じ大きさのバッチなら, 合わせた大きなバッチの勾配と同じ). 勾配のクリッピングと `train/grad_norm` は貯めた勾配で 1 回
+- エポックの最後の端数 (バッチ数が割り切れない場合) も 1 回更新し, 勾配は貯めた数の平均に直す. 勾配はエポックをまたがない (再開と, エポックの途中で止めた場合がエポックの区切りで決まるので, 通しの学習と一致する). バッチ数を持たない loader では, エポックの終わりに端数を更新する
+- 更新回数 (`global_step`), `scheduler.interval: step` の Scheduler, EMA, 更新ごとの学習率の記録は, 更新した回だけ進む. 学習全体のステップ数 (`auto`, `warmup_ratio`, `OneCycleLR` の総ステップ数) は, エポックごとの更新の回数 (バッチ数を貯める数で割って切り上げた数) で補う. 指標はバッチごとのまま記録する
+- 使えるのは, 勾配を使う 1 つの Optimizer を ML-Found が更新する場合だけ. closure を使う Optimizer (LBFGS など), 勾配を使わない Optimizer, `optimizers`, `manual_optimization` と一緒に書くと, 出力先を作る前にエラー (自分で作って渡した Optimizer は `Trainer` の作成でエラー)
+- BatchNorm の統計はバッチごとに更新されるので, 大きなバッチの学習とは一致しない
+
+**混合精度** (`trainer.precision`. `fp32` か `bf16`, 既定 `fp32`): `bf16` では, 学習, 検証, 学習用データの評価し直しの `step` (closure の中も) を `torch.autocast(device_type, dtype=torch.bfloat16)` の中で呼ぶ. 重み, 勾配, Optimizer の状態, チェックポイント, `final_model.pt` はモデルの重みの型 (普通は float32) のまま. bfloat16 は float32 と同じ指数の幅を持つので, 損失の倍率 (`GradScaler`) は使わない. 逆伝播は autocast の外で行う (PyTorch の勧め). 損失を float32 で求めたい場合は, `step` の中で `pred.float()` にしてから損失を求める.
+
+- 学習のデバイスで使えるかは, 出力先を作る前に小さな行列の積を実際に計算して, 結果が bfloat16 になるかで確かめる (`check_precision`). bfloat16 に対応しない GPU と, 自動の混合精度を持たないデバイスではエラー. cpu, cuda (対応する GPU), mps で使える
+- 再開と同じ `Trainer` での `fit` の呼び直しは, 同じ精度なら通しの学習と一致する. 精度を変えて再開してもよい (止めない)
+- mps での効果の目安 (Apple M3, PyTorch 2.15, `nn.TransformerEncoder` の 6 層, 幅 512, 長さ 256, AdamW): バッチ 32 の 1 回の更新は fp32 が 655 ms, bf16 が 589 ms (1 割ほど速い). 確保したメモリ (`torch.mps.driver_allocated_memory`) は fp32 と bf16 でほぼ同じ (3.3 GB). バッチ 8 を 4 回貯めると, 確保したメモリは 1.2 GB に減り, 1 回の更新は 3% から 8% 遅い. mps では, メモリを減らすのは勾配の蓄積で, bf16 は速さが少し上がるだけ
+
+**始める前に読む重み** (`trainer.init_weights`): `Trainer` を作るとき (EMA の写しと Optimizer を作る前) に, ファイルの重みの一部をモデルに読む. 学習済みの骨格を自分のモデルの一部に読む場合や, 学習するパラメータだけのチェックポイントから新しい学習を始める場合に使う.
+
+- `path` のファイルは, `state_dict` を保存したもの (`final_model.pt` など) か, ML-Found のチェックポイント (`last.pt`, `best.pt`. 中の `model` を読む). 相対パスはプロジェクトのディレクトリから辿る. `torch.load(weights_only=True)` で, テンソルを読み込まずに参照して (`mmap`) 読む. 無いファイルと, 重みの辞書でないファイルは出力先を作る前にエラー (`check_init_weights`)
+- `source_prefix` で始まるキーだけを選び, その前置きを `target_prefix` に付け替えて, モデルにある名前の重みを読む. 形が違う重みと, 1 つも読めない場合 (前置きの誤りなど) はエラー. `strict: true` では, モデルの全ての重みがそろい, 使わない重みも無いことが要る. 読んだ数, ファイルに無いモデルの重み, 使わなかったファイルの重み (10 個まで名前も) は `train.log` に書き, `Trainer` の属性 `init_weights_report` (`loaded`, `missing`, `unused` のキーのリスト) でも読める
+- `trainer.resume_from` で再開する場合も読む (再開元の重みで上書きされ, 学習するパラメータだけのチェックポイントに無い凍結した重みはこの値になる)
+- 凍結 (`requires_grad`) は変えない. 凍結はモデルの組み立て (ML-ModelControl の `train: false` など) か学習のスクリプトで行う. ML-ModelControl の定義の外部の重み (`weights`) と同じことは, 定義に書く方を勧める (付け替えの書き方と報告が多い). この項目は定義を使わないモデルと, ML-Found のチェックポイントを読む場合のため
+
+**学習するパラメータだけのチェックポイント** (`trainer.checkpoint.trainable_only`. 既定 `false`): `true` では, `last.pt` と `best.pt` (重みだけの `best.pt` も) のモデル, ベストモデル, EMA の重みから, 保存するときに学習しない (`requires_grad` が偽の) パラメータを省き, 省いた名前と形を `trainable_only` に残す. バッファ (BatchNorm の統計など) は省かない (学習で変わるため). 凍結した重みの分だけ軽くなる. `final_model.pt` は全ての重みのまま (読む側の約束を変えないため).
+
+- 再開では, 省いた重みを今のモデルの値で補ってから読む. そのため学習のスクリプトは, 再開する場合も同じ凍結した重みを持つモデルを作る (同じ学習済みの重みを読むか, `init_weights` で読む). 省いた名前が今のモデルに無いか形が違う場合と, 省いた名前の他に足りない重みがある場合はエラー. 凍結した重みの値が同じかは確かめない. 再開元では凍結していて今は学習する (凍結を外した) 重みも今のモデルの値で補い, その名前 (10 個まで) を `train.log` に警告として書く
+- 再開元が学習するパラメータだけのチェックポイントかは, 再開元の `trainable_only` で決めるので, 今回の設定に関わらず再開できる. `last_with_best: false` で再開元の `best.pt` からベストモデルの重みを戻す場合も同じく補う
+- エポックの途中で止めた場合と `fit` の呼び直しで戻す重みは, メモリの上の全ての重みなので変わらない
+
+### 他のリポジトリへの影響
+
+- **出力の形**: 版は変えない. `config.yaml` と `diff.yaml` に `trainer.accumulate_grad_batches`, `trainer.precision`, `trainer.init_weights`, `trainer.checkpoint.trainable_only` の項目が増える (項目を足す変更). `final_model.pt` は bf16 でも, 学習するパラメータだけのチェックポイントでも, モデルの重みの型のままの全ての重み. `last.pt` と `best.pt` の中の形は約束の外 (FORMAT.md)
+- **画面 (ML-Dashboard) の起動のフォームと config の確かめ**: 画面が欄を出す項目は `trainer.precision` (文字. 選べる値は `fp32` と `bf16`) と `trainer.accumulate_grad_batches` (1 以上の整数). 値の誤りと組み合わせの誤りは `check_trainer_config`, デバイスで bf16 を使えるかは `check_precision(cfg, device)` (デバイスは `get_device(cfg.experiment.device)`) で, 起動の前に分かる. 欄を出すのは, 画面の submodule の ML-Found がこの項目を知る版の場合だけにする (知らない版では「default に無い項目」の誤りになる). `trainer.init_weights.path` を書いた config は `check_init_weights(cfg, project_dir)` で確かめる
+
+## 20. 何の実験か, データ全体の評価, 見本
 
 実験のディレクトリに, 任意で次の 3 つを書ける (形は [docs/FORMAT.md](FORMAT.md)). 書かなくても学習は変わらず, 書かなかった実験も同じく読める.
 
@@ -661,7 +711,7 @@ save_sample(experiment, "cloud", points, kind="point_cloud",
 
 読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `load_evaluations` は, シンボリックリンク, 普通でないファイル (FIFO など), 20 MiB (公開の `MAX_EVALUATION_BYTES`. 画面も同じ上限を使う) を超えるファイルを読まずに飛ばし, `evaluations/` 自体がリンクの実験は空とする (実験のディレクトリの外を読まず, 止まらないため). 開く前にリンクを辿らずに調べ, 開くときもリンクを辿らず (`O_NOFOLLOW`) 待たずに (`O_NONBLOCK`) 開き, 開いたものが調べたものと同じ普通のファイルかを確かめ, 上限の 1 バイト先までだけ読む. `dir_fd` を使える環境では `evaluations/` をリンクを辿らずに開いた番号から調べて開く (確かめた後に `evaluations/` を入れ替えられても外を読まないため). 実験のディレクトリより上の入れ替わりは確かめない. `load_task` (1 MiB まで) と, `load_samples` と `save_sample` が読む `samples/index.json` (20 MiB まで) も同じ読み方で読む. 読まなかった `task.yaml` は無いものとし (`None`), 読まなかった一覧は読めない一覧とする (`load_samples` は直下の画像だけを返し, `save_sample` は誤りで止まる). `samples/` 自体をリンクにすると, ML-Found は見本を読み書きしない (`load_samples` は一覧も直下の画像も読まずに空を返し, `save_sample` は外にディレクトリを作る前に止まる). `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
 
-## 20. 強化学習
+## 21. 強化学習
 
 Gymnasium の形の環境 (`reset(seed=...)` が `(観測, info)` を, `step(行動)` が `(観測, 報酬, 終了, 打ち切り, info)` を返すもの) とやり取りして, 行動を選ぶ方策を学習できる. 別の仕組みは作らず, 環境とのやり取りを「バッチを返す loader」にして, `Trainer` の step とエポックの決まりに乗せる. 使うには追加の依存 `rl` (Gymnasium) を入れる (上の「追加の依存」). 例は `examples/cartpole/` (CartPole を REINFORCE で学習し, 守りと一緒に書き出す) と `examples/pendulum/` (Pendulum の連続の行動の方策を `ActorCriticStep` で学習し, トルクの範囲と角速度の止める条件の守りと一緒に書き出して `evaluate_policy` で確かめる).
 
@@ -804,7 +854,7 @@ history = trainer.fit(train_loader, valid_loader)
 - **損失と指標**: 学習の `loss` は, 方策の勾配の損失 (利得は `normalize` で標準化) + `value_coef ×` 価値の関数の損失 (利得と価値の和を目標にした平均 2 乗誤差) - `entropy_coef ×` エントロピー. 検証は `ReinforceStep` と同じ. 記録する指標は `train/loss`, `train/value_loss`, `train/entropy`, `train/reward`, `train/length`, `train/violations`, `valid/loss` (評価の報酬の和の平均の符号を反転した値), `valid/entropy`, `valid/reward`, `valid/length`, `valid/violations` (`success_key` を指定した場合は `success` も). 監視する指標は `trainer.monitor: valid/reward` と `trainer.mode: max` にする
 - **報酬の尺度**: 価値の関数の損失は報酬の尺度の 2 乗で大きくなる. 1 歩の報酬が大きい環境 (Pendulum は -16 から 0) では, 学習の環境の報酬を縮める (Gymnasium の `TransformReward` など. 検証の環境は元の報酬のままにすると `valid/reward` が元の尺度になる) か, `value_coef` と `trainer.grad_clip_norm` で価値の関数の勾配の大きさを調える
 
-## 21. 方策の書き出しと守り
+## 22. 方策の書き出しと守り
 
 学習した方策は, 重み, 観測と行動の空間, 守り (行動の範囲, 止める条件, 外れたときの動き) を 1 つのディレクトリ (方策の一式) に書き出す. 置き場は実験のディレクトリの `policy/` を推奨する (形と版は [docs/FORMAT.md](FORMAT.md) の「policy/」).
 
@@ -874,7 +924,7 @@ save_evaluation(experiment, "guarded_episodes", rows, "simulator",
 - `max_steps` で 1 エピソードの歩数を切れる. `seed=None` は環境の乱数の続き
 - 推論の段階 (ML-Inference) と画面でも, 同じ数え方 (`stop` と `handover` で終える) にする
 
-## 22. config の項目
+## 23. config の項目
 
 ML-Found が使う項目と既定値.
 
@@ -911,6 +961,8 @@ ML-Found が使う項目と既定値.
 | `trainer.eval_train` | `false` | 学習の後に学習用データを推論モードで評価し直し, `train_eval/` を付けて記録するかどうか |
 | `trainer.valid_every_n_epochs` | `1` | 検証するエポックの間隔 (1 以上の整数). エポックの番号が割り切れるエポックと予定の最後のエポックだけ検証 (`eval_train` の評価し直しも) し, ベストモデル, Early Stopping, ReduceLROnPlateau を判定する (「検証の間隔」) |
 | `trainer.manual_optimization` | `false` | ML-Found が逆伝播と更新を行わず, `step` の中で更新するかどうか |
+| `trainer.accumulate_grad_batches` | `1` | 何バッチ分の勾配を貯めてから 1 回更新するか (1 以上の整数. 「大きな学習済みのモデルの微調整」). 勾配を使う 1 つの Optimizer を ML-Found が更新する場合だけ |
+| `trainer.precision` | `fp32` | 計算の精度, `fp32` か `bf16`. `bf16` では `step` を bfloat16 の自動の混合精度で計算する (重みの型は変えない) |
 | `trainer.resume_scheduler` | `checkpoint` | 再開時に Scheduler の引数が config と違う場合に, 再開元の状態のまま (`checkpoint`) か, config の引数で作り直して同じステップ数まで進めるか (`config`) |
 | `trainer.resume_from` | `null` | 再開するチェックポイントのパス, 相対パスの場合はプロジェクトのディレクトリから辿る |
 | `trainer.progress_bar` | `true` | 進捗バーを表示するかどうか |
@@ -925,6 +977,11 @@ ML-Found が使う項目と既定値.
 | `trainer.checkpoint.last_with_best` | `true` | `last.pt` にベストモデルの重みも入れる. `false` にすると軽くなり, 再開時は再開元の `best.pt` から戻す |
 | `trainer.ema.decay` | `null` | 重みの指数移動平均 (EMA) の減衰率 (0 より大きく 1 より小さい数). 書くと EMA の重みで検証し, ベストモデルと `final_model.pt` も EMA の重みにする (「重みの指数移動平均 (EMA)」). `null` の場合は使わない |
 | `trainer.ema.use_buffers` | `false` | EMA でバッファ (BatchNorm の統計量など) も平均するかどうか. `false` の場合は学習しているモデルの値を写す |
+| `trainer.checkpoint.trainable_only` | `false` | `last.pt` と `best.pt` のモデルの重みを, 学習するパラメータとバッファだけにする (凍結した重みを省いて軽くする. 再開では今のモデルの値で補う). `final_model.pt` は全ての重み |
+| `trainer.init_weights.path` | `null` | 学習を始める前にモデルに読む重みのファイル (`state_dict` か ML-Found のチェックポイント), 相対パスの場合はプロジェクトのディレクトリから辿る. `null` の場合は読まない |
+| `trainer.init_weights.source_prefix` | `""` | ファイルのキーのうち, この前置きで始まるものだけを前置きを外して読む |
+| `trainer.init_weights.target_prefix` | `""` | 外した後のキーの頭に足す前置き (モデルの一部に読む場合) |
+| `trainer.init_weights.strict` | `false` | モデルの全ての重みがそろい, 使わない重みも無いことを求めるかどうか |
 
 ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 `scheduler.interval` を `step` にした場合や, `scheduler.params.mode` を `trainer.mode` と違う値にした場合はエラーになる.
@@ -934,13 +991,13 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 監視する指標が最良値とちょうど同じ値の場合は改善とみなさないので, 正解率のように同じ値を取りやすい指標を監視すると, ベストモデルは最初にその値に達したエポックのままになり, Early Stopping も止まりやすい. `trainer.monitor_tiebreak` に `valid/loss` などを指定すると, 同じ値の場合はその指標で比べ, ベストモデルの判定と Early Stopping の両方に使う. バッチごとの平均の丸め誤差で同じ正解率がわずかに違う値になることがあるので, 相対誤差 1e-6 以内は同じ値とみなす. Early Stopping では, 最良値より悪くないが `min_delta` 未満の改善の場合も比べる指標で判定する (`min_delta` は Early Stopping だけに使い, ベストモデルの判定には使わない). 比べる指標が nan や inf になった場合もエラーで止まる. 再開するときは, 比べる指標と向きを再開元と同じにする (違う場合はエラー). この設定を入れる前のチェックポイントから再開した場合は, 次に監視する指標が改善するまで比べない.
 学習の途中で起きたエラーは `train.log` にも記録する. Optimizer と Scheduler のクラス名と引数 (名前, 必須の引数, 範囲を持つ値), `scheduler.interval`, ReduceLROnPlateau の組み合わせ, デバイス, `trainer.epochs` (1 以上の整数), `trainer.mode`, `trainer.checkpoint.every_n_epochs`, `trainer.valid_every_n_epochs` (1 以上の整数), `trainer.monitor_tiebreak_mode`, `manual_optimization` と `grad_clip_norm`・`log_grad_norm` の組み合わせ, `select_best: false` と Early Stopping・`monitor_tiebreak` の組み合わせの誤り, `trainer.resume_scheduler` の値, `eval_train: false` で `train_eval/` の指標を監視する設定, `auto` と書けない引数の `auto` と, 存在しないか再開に使えない `resume_from` は, 出力先を作る前に見つかる. 範囲を持つ引数が配列 (Adam の `betas` など) の場合は要素ごとに確かめる. 範囲を持たない引数や自作のクラスの値の誤りも, 仮のパラメータで作ってみて見つける. それ以外の `Trainer` の作成のエラー (モデルをデバイスに移せない, 実際のパラメータでだけ起きる Optimizer の誤りなど) は, 出力先が作られた後なので, エラーを `train.log` に書き, `run.json` を `failed` にしてから投げ直す (継承したクラスが `super().__init__()` の後に行う処理のエラーは対象外). 作成の中身は `_build_parts` にあるので, 継承したクラスではこの名前を使わない. 自分で作った Optimizer や Scheduler を `Trainer` に渡す場合も, config の `optimizer` と `scheduler` の名前と組み合わせは確かめるので, 使わない設定も正しい値にしておく.
 
-`last.pt` と `best.pt` には, モデル, Optimizer, Scheduler, 記録の全て (列ごとの数の配列で持つので, エポックが多くても保存は軽い), 乱数の状態が入り, `last.pt` にはベストモデルの重みも入る (`best.pt` では今のモデルがベストモデルなので, 同じ重みを 2 つは持たない. `trainer.ema.decay` を使う場合と `eval_model` を上書きした場合は別の重みなので持つ). `trainer.ema.decay` を使う場合は EMA の状態 (`ema`) も入り, モデルの重みの分だけ重くなる. 1 エポックが短い学習 (フルバッチなど) では保存が学習時間の大部分を占めることがあるので, `trainer.checkpoint.every_n_epochs` で `last.pt` の間隔を空けるか, 再開しない場合は `save_best` と `save_last` を `false` にする. `best.pt` は改善するたびに保存するので `every_n_epochs` では減らない (ベストモデルの重みは `last.pt` にも入るので, 再開だけなら `save_best: false` でもよい. ただし `last_with_best: false` と合わせると再開後にベストモデルに戻せないので, `start_experiment` で警告が出る). 大きなモデルでは 1 ファイルが数 GB になるので, 再開に使わない `best.pt` は `best_weights_only: true` で重みだけにし, `last_with_best: false` で `last.pt` からベストモデルの重みを外すと軽くなる (100 万個の引数のモデルと Adam で, 既定の `best.pt` 12 MB と `last.pt` 16 MB が, それぞれ 4 MB と 12 MB). 重みだけの `best.pt` は `weights_only` (true), `epoch`, `monitor`, `best_value`, `model` (重み) の辞書なので, `torch.load(...)["model"]` で読む (`trainer.ema.decay` を使う場合は EMA の重み, `eval_model` を上書きした場合はそのモデルの重み). 継承して加えた状態 (`extra_state_dict`) は入らない.
+`last.pt` と `best.pt` には, モデル, Optimizer, Scheduler, 記録の全て (列ごとの数の配列で持つので, エポックが多くても保存は軽い), 乱数の状態が入り, `last.pt` にはベストモデルの重みも入る (`best.pt` では今のモデルがベストモデルなので, 同じ重みを 2 つは持たない. `trainer.ema.decay` を使う場合と `eval_model` を上書きした場合は別の重みなので持つ). `trainer.ema.decay` を使う場合は EMA の状態 (`ema`) も入り, モデルの重みの分だけ重くなる. 凍結した重みの多い微調整では, `trainer.checkpoint.trainable_only: true` で学習しないパラメータの重みを省ける (「大きな学習済みのモデルの微調整」). 1 エポックが短い学習 (フルバッチなど) では保存が学習時間の大部分を占めることがあるので, `trainer.checkpoint.every_n_epochs` で `last.pt` の間隔を空けるか, 再開しない場合は `save_best` と `save_last` を `false` にする. `best.pt` は改善するたびに保存するので `every_n_epochs` では減らない (ベストモデルの重みは `last.pt` にも入るので, 再開だけなら `save_best: false` でもよい. ただし `last_with_best: false` と合わせると再開後にベストモデルに戻せないので, `start_experiment` で警告が出る). 大きなモデルでは 1 ファイルが数 GB になるので, 再開に使わない `best.pt` は `best_weights_only: true` で重みだけにし, `last_with_best: false` で `last.pt` からベストモデルの重みを外すと軽くなる (100 万個の引数のモデルと Adam で, 既定の `best.pt` 12 MB と `last.pt` 16 MB が, それぞれ 4 MB と 12 MB). 重みだけの `best.pt` は `weights_only` (true), `epoch`, `monitor`, `best_value`, `model` (重み) の辞書なので, `torch.load(...)["model"]` で読む (`trainer.ema.decay` を使う場合は EMA の重み, `eval_model` を上書きした場合はそのモデルの重み). 継承して加えた状態 (`extra_state_dict`) は入らない.
 
 `train.log` のモデルの構造は `print(model)` の内容なので, 中身を `nn.Module` の子として持たない層 (外部ライブラリの層など) は構造が残らない. そのため, 学習を始めるときにパラメータとバッファの一覧を `model_summary.csv` (名前, `parameter` か `buffer`, 持っている層のクラス名, 形, 型, 要素数, 学習するか, 重みを共有している場合は最初の名前) に保存し, 学習するパラメータ, 学習しないパラメータ, バッファの要素数を `train.log` に書く. `nn.Module` のパラメータやバッファとして持たない値 (外部ライブラリの回路の設定など) は残らないので, 再現に必要な情報は, モデルに `extra_repr` を書いて出すと良い.
 
 `experiment.device: auto` は小さなモデルでも GPU を選ぶ (Apple Silicon の Mac では CPU 版の PyTorch でも `mps`). パラメータが少ないモデルや, 中で cpu を使うモデル (外部ライブラリの計算など) は `cpu` を明示した方が速いことがある.
 
-## 23. 出力
+## 24. 出力
 
 実験ごとに `<output_dir>/<name>/<日付>/<時刻>/` が作られる.
 他のシステム (ML-Dashboard など) と受け渡すプロジェクトと実験のディレクトリの形と, その版の決まりは [docs/FORMAT.md](FORMAT.md) にまとめた.
@@ -1020,9 +1077,9 @@ echo now > outputs/wine/2026-11-12/10-00-00/STOP   # エポックの途中でも
 
 プロセスが強制終了された場合は `running` のまま残るので, 同じ端末であれば `run.json` の `hostname` と `pid` のプロセスが動いているかで見分ける. 別の端末からは, `progress.json` の `updated_at` が長く更新されていないかで見分ける.
 
-## 24. 安全
+## 25. 安全
 
-- チェックポイント, 重み, 方策の一式の重みは `torch.load(weights_only=True)` で読む (任意のコードを動かせる `pickle` を読まない)
+- チェックポイント, 重み, 方策の一式の重み, 始める前に読む重み (`trainer.init_weights.path`) は `torch.load(weights_only=True)` で読む (任意のコードを動かせる `pickle` を読まない)
 - config は OmegaConf で, ML-EDA の `dataset.yaml` と `task.yaml` は `yaml.safe_load` で読む
 - Optimizer と Scheduler の名前に `.` を含めると, そのモジュールを import して自作のクラスを読む. config は学習のスクリプトと同じく, 信頼できるものだけを使う
 - 評価と見本の名前は英数字と `_ . @ -` だけ (先頭は `.` 以外). 名前から実験のディレクトリの外にファイルを書かない

@@ -42,7 +42,7 @@
 - 待っているもの: 記録した軌跡のデータセット (ML-EDA の「型ごとのデータの約束」) と, それを使う実例
 
 ### 型ごとの指標の共有
-- 何を: NDCG, Qini, Chamfer, FID のような型ごとの指標の計算を, 共有の場所に置く (FID は今は ML-Found の `FrechetInceptionDistance`)
+- 何を: NDCG, Qini, Chamfer, FID のような型ごとの指標の計算を, 共有の場所に置く (FID は ML-Found の `FrechetInceptionDistance`)
 - 待っているもの: 2 つ以上の段階で同じ計算が要る実例. それまではプロジェクトに書く
 
 ### 追加の依存の登録簿に機能を足す

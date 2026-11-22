@@ -50,7 +50,7 @@ SAMPLES_LOCK = threading.Lock()
 # 先頭の . は一時ファイルと見分けるために禁止
 NAME_PATTERN = re.compile(r"[A-Za-z0-9_@-][A-Za-z0-9_.@-]*")
 
-# 読む評価のファイルの大きさの上限 (ML-Dashboard の画面と同じ値)
+# 読む評価のファイルの大きさの上限 (公開. 画面も評価を読むときに使う)
 MAX_EVALUATION_BYTES = 20 * 1024 * 1024
 
 # 読む見本の一覧の大きさの上限 (評価と同じ値)

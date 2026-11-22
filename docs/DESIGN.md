@@ -29,6 +29,16 @@ PyTorch のモデルを config から自動で学習させる基盤のライブ�
 | 受け持ち, 出力の形, 正解の種類と出どころの値の名前 | ML-Quest と ML-EDA の名前を写す | 無し |
 | モデルの定義 (ML-ModelControl の定義の YAML. config の `model.spec`) | 中身を読まずに実験に写す (`model_spec.yaml`. ml_modelcontrol には頼らない) | 無し (ファイルのまま写す) |
 | 追加の依存の登録簿 (`describe_requirements`, `environment_packages`) と, Optimizer と Scheduler の登録簿 (`describe_optimizers`, `describe_schedulers`) | 持つ (ML-Dashboard と ML-Quest が読む. ML-Quest の骨組みは, 学習のスクリプトが import する段階のライブラリ (`eda`, `modelcontrol`, `inference`) だけを config の `requires` に書く) | 無し (関数の戻り値) |
+| 画面が使う確かめと読み込みの関数 (下の一覧) | 持つ (ML-Dashboard が使う. 公開するのは各パッケージの `__all__` にある名前だけで, 中のモジュールの名前と場所は約束しない) | 無し (関数の戻り値) |
+
+画面 (ML-Dashboard) は, 学習を始める前の確かめ, config の読み方, 実験のディレクトリの読み込みに, 次の公開の名前を使う. 画面が同じ決まりを自分で持たず, ML-Found の中を変えても画面が壊れないため.
+
+- `ml_found.experiment`: `start_experiment` が出力先を作る前にする確かめのうち, 実験の名前 (`check_experiment_name`), 学習の設定 (`check_trainer_config`), 再開元 (`check_resume_path(cfg, project_dir)`). 見本の一覧と形式の版の読み込み (`read_samples_index`). 評価のファイルの大きさの上限 (`MAX_EVALUATION_BYTES`. 画面がファイルごとの理由を出すために評価を自分で読む場合も, `load_evaluations` と同じ上限を使う)
+- `ml_found.training`: Optimizer と Scheduler の確かめ (`check_optim_config`, `check_optim_params`, 引数の値の範囲の `check_param_values(cls, params)`, 仮のパラメータで作れるかの `try_build_optim(cfg, device)`, 学習を始めるときに補う Scheduler の引数の `missing_data_size_params`). クラスの解決 (`resolve_optimizer_class`, `resolve_scheduler_class`). 名前付きの Optimizer の扱い (`uses_named_optimizers`, 名前ごとの config を返す `named_views`)
+- `ml_found.config`: 「項目=値」の上書きの読み方 (`parse_overrides`) と, torch のクラスに渡す引数を持つ項目の名前 (`params_sections`. 名前付きの Optimizer の項目も含む)
+- `ml_found.rl`: 方策の重みのハッシュ (`file_sha256`)
+
+始める前の確かめは 1 つの関数にまとめず, 1 つずつ出す. 画面は必須の引数の不足 (学習のスクリプトが `start_experiment` の前に補う場合がある) を止めずに注意にし, デバイスの誤りも残りを確かめてから返し, 仮の Optimizer は cpu で作るので, 確かめの順と扱いが `start_experiment` (最初の誤りで止まる) と違うため.
 
 ## 3. 用語
 
@@ -649,7 +659,7 @@ save_sample(experiment, "cloud", points, kind="point_cloud",
 
 `original_coordinates(点群, 項目["convention"])` は, `load_samples` が返した点群の見本の座標を元の座標 (`値 × scale - shift`) に戻す (画面が符号を取り違えないため). `samples/index.json` は形式の版 (`format_version`. 今は 2) を持ち, 版の無い一覧 (版 1. `shift` が逆の向き) は `load_samples` が今の意味に写して返す. 新しい版の一覧の見本は, `convention` を null にし, `newer_version: true` を付けて返す (docs/FORMAT.md の「samples」).
 
-読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `load_evaluations` は, シンボリックリンク, 普通でないファイル (FIFO など), 20 MiB (ML-Dashboard の画面と同じ上限) を超えるファイルを読まずに飛ばし, `evaluations/` 自体がリンクの実験は空とする (実験のディレクトリの外を読まず, 止まらないため). 開く前にリンクを辿らずに調べ, 開くときもリンクを辿らず (`O_NOFOLLOW`) 待たずに (`O_NONBLOCK`) 開き, 開いたものが調べたものと同じ普通のファイルかを確かめ, 上限の 1 バイト先までだけ読む. `dir_fd` を使える環境では `evaluations/` をリンクを辿らずに開いた番号から調べて開く (確かめた後に `evaluations/` を入れ替えられても外を読まないため). 実験のディレクトリより上の入れ替わりは確かめない. `load_task` (1 MiB まで) と, `load_samples` と `save_sample` が読む `samples/index.json` (20 MiB まで) も同じ読み方で読む. 読まなかった `task.yaml` は無いものとし (`None`), 読まなかった一覧は読めない一覧とする (`load_samples` は直下の画像だけを返し, `save_sample` は誤りで止まる). `samples/` 自体をリンクにすると, ML-Found は見本を読み書きしない (`load_samples` は一覧も直下の画像も読まずに空を返し, `save_sample` は外にディレクトリを作る前に止まる). `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
+読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `load_evaluations` は, シンボリックリンク, 普通でないファイル (FIFO など), 20 MiB (公開の `MAX_EVALUATION_BYTES`. 画面も同じ上限を使う) を超えるファイルを読まずに飛ばし, `evaluations/` 自体がリンクの実験は空とする (実験のディレクトリの外を読まず, 止まらないため). 開く前にリンクを辿らずに調べ, 開くときもリンクを辿らず (`O_NOFOLLOW`) 待たずに (`O_NONBLOCK`) 開き, 開いたものが調べたものと同じ普通のファイルかを確かめ, 上限の 1 バイト先までだけ読む. `dir_fd` を使える環境では `evaluations/` をリンクを辿らずに開いた番号から調べて開く (確かめた後に `evaluations/` を入れ替えられても外を読まないため). 実験のディレクトリより上の入れ替わりは確かめない. `load_task` (1 MiB まで) と, `load_samples` と `save_sample` が読む `samples/index.json` (20 MiB まで) も同じ読み方で読む. 読まなかった `task.yaml` は無いものとし (`None`), 読まなかった一覧は読めない一覧とする (`load_samples` は直下の画像だけを返し, `save_sample` は誤りで止まる). `samples/` 自体をリンクにすると, ML-Found は見本を読み書きしない (`load_samples` は一覧も直下の画像も読まずに空を返し, `save_sample` は外にディレクトリを作る前に止まる). `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
 
 ## 20. 強化学習
 

@@ -61,7 +61,7 @@ class Experiment:
     model_spec_source: Optional[Path] = None
 
 
-def check_name(name: str) -> None:
+def check_experiment_name(name: str) -> None:
     """
     実験の名前が出力先のディレクトリ名として使えることを確かめる関数
 
@@ -317,7 +317,7 @@ def make_run_dir(
         <output_dir>/<name>/<日付>/<時刻>/ のディレクトリ
     """
     # 実験の名前の確認
-    check_name(name)
+    check_experiment_name(name)
 
     # 日付のディレクトリまで作成
     date_dir = project_dir / output_dir / name / now.strftime("%Y-%m-%d")

@@ -156,6 +156,12 @@ def test_run_directory_matches_format(
     assert status["format_version"] == FORMAT_VERSION == 1
     assert status["status"] == "completed"
 
+    # optimizers の 1 つの項目 (Scheduler を使わない場合の引数は null)
+    assert set(status["optimizers"][0]) == {
+        "name", "optimizer", "modules", "scheduler", "scheduler_params"
+    }
+    assert status["optimizers"][0]["scheduler_params"] is None
+
     # history.csv は epoch, lr と, 接頭辞の付いた指標の列
     with open(run_dir / "history.csv", encoding="utf-8") as file:
         rows = list(csv.DictReader(file))

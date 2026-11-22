@@ -251,9 +251,11 @@ def test_named_records_losses_and_lrs(tmp_path: Path) -> None:
     )
     assert status["optimizers"] == [
         {"name": "first", "optimizer": "SGD", "modules": ["first"],
-         "scheduler": None},
+         "scheduler": None, "scheduler_params": None},
         {"name": "second", "optimizer": "Adam", "modules": ["second"],
-         "scheduler": "StepLR"}
+         "scheduler": "StepLR", "scheduler_params": {
+             "step_size": 1, "gamma": 0.5
+         }}
     ]
 
 

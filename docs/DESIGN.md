@@ -52,7 +52,7 @@ ML-Found/
 │   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録, 何の実験か, 評価と見本
 │   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, 重みの指数移動平均 (EMA), チェックポイント, 記録, 実験の状態
 │   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, Actor-Critic, 方策の一式と守り, 守り付きの評価
-│   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿
+│   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿, 出力先のファイルをリンクを辿らずに読む関数
 ├── examples/
 │   ├── minibatch/          # wine データセットの分類, DataLoader で学習する例
 │   ├── fullbatch/          # グラフのノード分類, マスクで学習と検証を分ける例
@@ -606,7 +606,7 @@ save_sample(experiment, "cloud", points, kind="point_cloud",
 
 `original_coordinates(点群, 項目["convention"])` は, `load_samples` が返した点群の見本の座標を元の座標 (`値 × scale - shift`) に戻す (画面が符号を取り違えないため). `samples/index.json` は形式の版 (`format_version`. 今は 2) を持ち, 版の無い一覧 (版 1. `shift` が逆の向き) は `load_samples` が今の意味に写して返す. 新しい版の一覧の見本は, `convention` を null にし, `newer_version: true` を付けて返す (docs/FORMAT.md の「samples」).
 
-読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `load_evaluations` は, シンボリックリンク, 普通でないファイル (FIFO など), 20 MiB (ML-Dashboard の画面と同じ上限) を超えるファイルを読まずに飛ばし, `evaluations/` 自体がリンクの実験は空とする (実験のディレクトリの外を読まず, 止まらないため). 開く前にリンクを辿らずに調べ, 開くときもリンクを辿らず (`O_NOFOLLOW`) 待たずに (`O_NONBLOCK`) 開き, 開いたものが調べたものと同じ普通のファイルかを確かめ, 上限の 1 バイト先までだけ読む. `dir_fd` を使える環境では `evaluations/` をリンクを辿らずに開いた番号から調べて開く (確かめた後に `evaluations/` を入れ替えられても外を読まないため). 実験のディレクトリより上の入れ替わりは確かめない. `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
+読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `load_evaluations` は, シンボリックリンク, 普通でないファイル (FIFO など), 20 MiB (ML-Dashboard の画面と同じ上限) を超えるファイルを読まずに飛ばし, `evaluations/` 自体がリンクの実験は空とする (実験のディレクトリの外を読まず, 止まらないため). 開く前にリンクを辿らずに調べ, 開くときもリンクを辿らず (`O_NOFOLLOW`) 待たずに (`O_NONBLOCK`) 開き, 開いたものが調べたものと同じ普通のファイルかを確かめ, 上限の 1 バイト先までだけ読む. `dir_fd` を使える環境では `evaluations/` をリンクを辿らずに開いた番号から調べて開く (確かめた後に `evaluations/` を入れ替えられても外を読まないため). 実験のディレクトリより上の入れ替わりは確かめない. `load_task` (1 MiB まで) と, `load_samples` と `save_sample` が読む `samples/index.json` (20 MiB まで) も同じ読み方で読む. 読まなかった `task.yaml` は無いものとし (`None`), 読まなかった一覧は読めない一覧とする (`load_samples` は直下の画像だけを返し, `save_sample` は誤りで止まる). `samples/` 自体がリンクの実験は, 一覧も直下の画像も読まず (`load_samples` は空), `save_sample` は外にディレクトリを作る前に止まる. `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
 
 ## 20. 強化学習
 
@@ -942,9 +942,9 @@ history = trainer.fit(train_loader, valid_loader)
 
 `run.json` と `progress.json` は, 書きかけを読まないように一時ファイルに書いてから置き換える. ディスクまで書き出す (fsync) のは `run.json` の開始と終了のときだけ. ダッシュボードや別の端末のスクリプトから, 学習中の状態と進み具合を読める. 書き込めない場合 (ディスクの不足など) は `train.log` に警告を 1 回残し, 学習は続ける. 状態は `Trainer.fit` が書くので, `fit` を使わずに `train_epochs` などを直接呼んだ場合は `running` のまま終わりが残らない (下の処理されなかったエラーは記録する).
 
-学習中の実験のディレクトリに `STOP` という名前のファイルを置くと (中身が `now` 以外の場合), そのエポックを終えたところで学習を止める. 結果 (`final_model.pt` など) を保存し, 状態を `stopped` にする. `checkpoint.save_last` が true の場合は, 保存の間隔に関係なく `last.pt` も保存するので, そこから再開できる. 1 エポックが長い学習ですぐに止めたい場合は, 下のように `STOP` に `now` と書く. 予定の最後のエポックで置いた場合と, Early Stopping と同じエポックで止まった場合は `completed` になる. `STOP` は学習を止めた後も残るので, 同じ出力先で `fit` をやり直す場合は消しておく (同じ `Trainer` で `fit` を呼び直す場合は, ML-Found が消す).
+学習中の実験のディレクトリに `STOP` という名前のファイルを置くと (中身が `now` 以外の場合), そのエポックを終えたところで学習を止める. 結果 (`final_model.pt` など) を保存し, 状態を `stopped` にする. `checkpoint.save_last` が true の場合は, 保存の間隔に関係なく `last.pt` も保存するので, そこから再開できる. 1 エポックが長い学習ですぐに止めたい場合は, 下のように `STOP` に `now` と書く. 予定の最後のエポックで置いた場合と, Early Stopping と同じエポックで止まった場合は `completed` になる. `STOP` は学習を止めた後も残るので, 同じ出力先で `fit` をやり直す場合は消しておく (同じ `Trainer` で `fit` を呼び直す場合は, ML-Found が消す). 止める要求とするのはリンクでない普通のファイルの `STOP` だけで, リンク, ディレクトリ, FIFO は要求が無いものとする. エポックの区切りの確かめは, 毎エポック行うのでファイルを開かずに調べるだけにする (FIFO でも止まらない).
 
-`STOP` に `now` と書くと, エポックの途中でも止める (バッチを終えるたびに, 前に確かめてから 1 秒以上空いていれば確かめる). 途中のエポックは捨てて記録に加えず, 最後に終えたエポックの状態に戻す. そのエポックの最後のフェーズ (検証, 検証しない場合は `eval_train` の評価し直しか学習. 判定しないエポックでは学習) の最後のバッチで気付いた場合は, 中身の無い `STOP` と同じくエポックの区切りで止める.
+`STOP` に `now` と書くと, エポックの途中でも止める (バッチを終えるたびに, 前に確かめてから 1 秒以上空いていれば確かめる). 中身は `load_evaluations` と同じ読み方で 1 KiB まで読み, 超える場合は中身の無い `STOP` と同じくエポックの区切りで止める. 途中のエポックは捨てて記録に加えず, 最後に終えたエポックの状態に戻す. そのエポックの最後のフェーズ (検証, 検証しない場合は `eval_train` の評価し直しか学習. 判定しないエポックでは学習) の最後のバッチで気付いた場合は, 中身の無い `STOP` と同じくエポックの区切りで止める.
 
 - 前のエポックの `last.pt` (学習を始めたエポックなら始めた時点) から, モデル, Optimizer, Scheduler, 更新回数 (`global_step`), 乱数, 継承したクラスが加えた状態 (`extra_state_dict`) をメモリの上でも戻す. `last.pt` は, この `fit` で前のエポックに保存したもの (エポックと更新回数が合うもの) だけを使う. ただし学習の後に, 設定に応じてモデルの重みはベストモデルや `eval_model` の重みに置き換わる. 続きを学習する場合は, 同じ `Trainer` で `fit` を呼び直すか (「学習の再開」), `last.pt` から再開する
 - `final_model.pt` は, `restore_best` と `select_best` でベストモデルがあればその重み. そうでなければ戻した重み. `every_n_epochs` などで前のエポックの `last.pt` が無い場合と, `eval_model` を上書きしてそのモデルの状態を `extra_state_dict` で保存していない場合 (戻した後もそのモデルの重みが変わらない場合) は, 途中までの重みが残り, 警告が出て `run.json` の `final_weights` が `partial` になる
@@ -961,7 +961,7 @@ echo now > outputs/wine/2026-11-12/10-00-00/STOP   # エポックの途中でも
 
 `start_experiment` の後に `fit` の外で起きて処理されなかったエラー (データの読み込みの失敗など) も, `train.log` に traceback を残し, `run.json` を `failed` (キーボードの割り込みは `stopped`) で書く. `start_experiment` が `sys.excepthook` を元のものに繋いで置き換えて記録するので, スクリプトを変える必要は無く, エラーの表示と終了コードは変わらない.
 
-- 記録するのは, `run.json` が無い場合 (学習を始める前に止まった場合) と `running` のままの場合 (`fit` を使わずに `train_epochs` などを直接呼んだ場合) だけ. `fit` と `Trainer` の作成が記録したエラーと, `fit` で終えた実験 (学習の後のテストデータの評価で起きたエラーなど) は書き換えない. `train_epochs` を直接呼んだ実験は終わりが記録されないので, 学習を終えた後のエラーでも `failed` になる
+- 記録するのは, `run.json` が無い場合 (学習を始める前に止まった場合. `load_evaluations` と同じ読み方で読み, リンク, 普通でないファイル, 1 MiB を超えるファイルも無いものとする) と `running` のままの場合 (`fit` を使わずに `train_epochs` などを直接呼んだ場合) だけ. `fit` と `Trainer` の作成が記録したエラーと, `fit` で終えた実験 (学習の後のテストデータの評価で起きたエラーなど) は書き換えない. `train_epochs` を直接呼んだ実験は終わりが記録されないので, 学習を終えた後のエラーでも `failed` になる
 - 同じプロセスで `start_experiment` を何度も呼んだ場合は, 最後に始めた実験に記録する
 - ノートブックと IPython のセルで起きたエラーは, カーネルが動き続けて `sys.excepthook` を通らないので記録しない (`run.json` が無い実験はダッシュボードで未完了に見える). `sys.exit()` での終了と, メインでないスレッドで起きたエラーも記録しない. 後から別のライブラリ (traceback の表示を変えるものなど) が `sys.excepthook` を元のものに繋がずに置き換えた場合も記録しない
 
@@ -976,5 +976,5 @@ echo now > outputs/wine/2026-11-12/10-00-00/STOP   # エポックの途中でも
 - `source.yaml` には, コマンドラインの他の引数を残さない (秘密の値を含み得るため)
 - config の参照の誤りの文には, 解決した値と OmegaConf の文を入れない (環境変数の値などの秘密を出さないため). ただし `config.yaml` は解決した値で保存するので, 環境変数の参照 (`${oc.env:...}`) で config に秘密の値 (トークンなど) を入れない. 秘密の値は学習のスクリプトで環境変数から読む
 - モデルの定義の写し (`model_spec.yaml`) は, プロジェクトの中の普通のファイル (16 MiB まで) だけを, リンク (途中のディレクトリ, リンクの後の `..`, Windows のジャンクションを含む) を辿らずに読む. プロジェクトの外とリンクは写さない. `train.log` には場所を `repr` で書く (改行で偽の行を作らないため)
-- `load_evaluations` は `evaluations/` の普通のファイル (20 MiB まで) だけを, リンク (`evaluations/` 自体と Windows のジャンクションを含む) を辿らずに読む. FIFO などの普通でないファイルは開かない
+- 実験のディレクトリのファイルは, 普通のファイルだけを, リンクを辿らずに大きさの上限までだけ読む. FIFO などの普通でないファイルは開かない. 対象と上限は, `load_evaluations` の `evaluations/*.json` (20 MiB), `load_samples` と `save_sample` の `samples/index.json` (20 MiB), `load_task` の `task.yaml` (1 MiB), 処理されなかったエラーの記録の `run.json` (1 MiB), 学習中の `STOP` (中身は 1 KiB). `evaluations/` と `samples/` 自体がリンク (Windows のジャンクションを含む) なら中を読まない
 - ML-Found はネットワークを使わない. 追加の依存の入れ方は, コマンドと公式の手順の URL を示すだけで, 自分では入れない

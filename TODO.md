@@ -13,12 +13,6 @@
 
 ## 優先度 低
 
-### 出力先の他のファイルの読み込みでリンクと普通でないファイルを読まない
-- 何を: `load_evaluations` と同じ読み方 (開く前にリンクを辿らずに調べ, `O_NOFOLLOW` と `O_NONBLOCK` で開き, 開いたものが同じ普通のファイルかを確かめ, 上限 + 1 バイトまでだけ読む) を, 出力先の他のファイルを読む所にも当てる. 対象は `STOP` (学習中に `training/status.py` が読む), `run.json` (`read_run_status`. 処理されなかったエラーの記録で読む), `task.yaml` (`load_task`), `samples/index.json` (`read_samples_index`. `load_samples` と `save_sample` で読む). 読み方は `experiment/results.py` の `read_evaluation_file` などを共通の関数にして使う. ファイルごとの大きさの上限を決める
-- なぜ: 今は `STOP` と `run.json` が FIFO だと読み込みが止まり (`STOP` は学習が止まる), 4 つともリンクを辿って実験の外のファイルを読み, 大きさの上限も無いため
-- 終わりの条件: 4 つの読み込みがリンク, FIFO, 大きすぎるファイルを読まず, それぞれの扱い (`STOP` は要求が無い, 他は無いか読めないもの) がテストで分かる
-- つながり: 無し
-
 ### 画面が使う確かめの関数を公開する
 - 何を: ML-Dashboard が今は内部のモジュールから読んでいる関数を公開の関数にし, `__all__` と文書に入れる. 実験を始める前の確かめ (`start_experiment` が出力先を作る前にする, 名前, 再開のパス, trainer, Optimizer と Scheduler の確かめ. 今は `check_name`, `check_resume_path`, `check_trainer_config`, `check_optim_config`, `missing_data_size_params`, `try_build_optim`) は 1 つの公開の関数にまとめる案. 他は, 名前付きの Optimizer の扱い (`named_views`, `uses_named_optimizers`), Optimizer と Scheduler のクラスの解決 (`resolve_optimizer_class`, `resolve_scheduler_class`), 引数の確かめ (`check_optim_params`, `check_param_values`), config の上書きの読み方 (`parse_overrides`, `params_sections`), 見本の索引の読み込み (`read_samples_index`), 方策の重みのハッシュ (`file_sha256`)
 - なぜ: 公開の口が無いので ML-Dashboard が内部のモジュールを読み, ML-Found の中を変えると画面が壊れうる

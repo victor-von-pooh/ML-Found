@@ -9,7 +9,8 @@ from omegaconf import DictConfig, OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
 from ml_found.config.source import relative_to_project
-from ml_found.experiment.results import JUNCTION_TAG, new_temp
+from ml_found.experiment.results import new_temp
+from ml_found.utils.files import JUNCTION_TAG
 
 # モデルの定義の場所を書く config の項目
 MODEL_SPEC_KEY = "model.spec"

@@ -22,6 +22,7 @@ from ml_found.experiment.results import spread_better
 from ml_found.experiment.setup import Experiment
 from ml_found.experiment.task import TASK_FILE
 from ml_found.training.trainer import Trainer
+from ml_found.utils import files
 from test_trainer import make_experiment, make_loader, regression_step
 
 
@@ -767,7 +768,7 @@ def test_load_evaluations_skips_links_and_large(
     """
     # 実験の外のファイルへのリンク, ディレクトリ, 大きすぎるファイル
     if not dir_fd:
-        monkeypatch.setattr(results, "can_use_dir_fd", lambda: False)
+        monkeypatch.setattr(files, "can_use_dir_fd", lambda: False)
     run_dir = tmp_path / "run"
     folder = run_dir / "evaluations"
     folder.mkdir(parents=True)

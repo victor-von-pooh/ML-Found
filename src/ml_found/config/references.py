@@ -1,3 +1,4 @@
+import os
 import re
 from typing import Any, Union
 
@@ -10,6 +11,40 @@ from omegaconf.errors import (
 
 # resolver が出した誤りの種類を, OmegaConf の文の先頭から読むための形
 RAISED_PATTERN = re.compile(r"^(\w+) raised while resolving interpolation")
+
+# oc.env が無い環境変数で出す文から, 環境変数の名前を読むための形
+ENV_PATTERN = re.compile(
+    r"^KeyError raised while resolving interpolation: "
+    r"\"Environment variable '([^']*)' not found\""
+)
+
+
+def is_missing_env(message: str, expression: str) -> bool:
+    """
+    参照の誤りが, oc.env の無い環境変数によるものかを判定する関数
+
+    Parameters
+    ----------
+    message: str
+        OmegaConf が出した誤りの文
+    expression: str
+        config に書いた参照 (${...})
+
+    Returns
+    ----------
+    missing: bool
+        oc.env の文の形で, その名前の環境変数が本当に無い場合は True,
+        自作の resolver が出した KeyError などは False
+    """
+    # 文の形と参照の oc.env に加え, 名前の環境変数が無いことの確認
+    # 値は読まずに有無だけを確認
+    matched = ENV_PATTERN.match(message)
+    missing = (
+        matched is not None and "oc.env:" in expression
+        and matched.group(1) not in os.environ
+    )
+
+    return missing
 
 
 def describe_reason(error: OmegaConfBaseException, expression: str) -> str:
@@ -53,7 +88,7 @@ def describe_reason(error: OmegaConfBaseException, expression: str) -> str:
             return reason
         raised = RAISED_PATTERN.match(message)
         if raised is not None:
-            if raised.group(1) == "KeyError" and "oc.env:" in expression:
+            if is_missing_env(message, expression):
                 reason = "環境変数がありません (既定値を書くか環境変数を設定)"
                 return reason
             reason = f"resolver が誤り ({raised.group(1)}) を出しました"

@@ -48,6 +48,23 @@ def fail(value: Any) -> str:
     raise RuntimeError(f"作れません: {value}")
 
 
+def lookup(value: Any) -> str:
+    """
+    いつも KeyError を出す resolver の関数
+
+    Parameters
+    ----------
+    value: Any
+        参照に書いた引数
+
+    Returns
+    ----------
+    result: str
+        返さない
+    """
+    raise KeyError(f"Environment variable '{value}' not found")
+
+
 @pytest.fixture
 def resolvers() -> Iterator[None]:
     """
@@ -64,9 +81,11 @@ def resolvers() -> Iterator[None]:
     # 登録して使わせ, 他のテストに残さないように最後に解除
     register("test_double", lambda value: int(value) * 2)
     register("test_fail", fail)
+    register("test_lookup", lookup)
     yield
     OmegaConf.clear_resolver("test_double")
     OmegaConf.clear_resolver("test_fail")
+    OmegaConf.clear_resolver("test_lookup")
 
 
 def project_config(tmp_path: Path, extra: dict) -> DictConfig:
@@ -111,6 +130,8 @@ def project_config(tmp_path: Path, extra: dict) -> DictConfig:
          r"size: .*\(登録されていない resolver です"),
         ({"size": "${test_fail:1}"},
          r"size: .*\(resolver が誤り \(RuntimeError\) を出しました\)"),
+        ({"size": "${test_lookup:${oc.env:ML_FOUND_NO_SUCH,HOME}}"},
+         r"size: .*\(resolver が誤り \(KeyError\) を出しました\)"),
         ({"a": "${b}", "b": "${a}"},
          r"a: '\$\{b\}' \(参照が循環しています\)\n\tb: '\$\{a\}'"),
         ({"a": "???", "b": "${a}"},

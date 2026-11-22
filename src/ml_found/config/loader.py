@@ -6,6 +6,7 @@ from typing import Any, Optional, Sequence
 from omegaconf import DictConfig, OmegaConf, open_dict
 from omegaconf.errors import OmegaConfBaseException
 
+from ml_found.config.references import check_references
 from ml_found.config.schema import Config, NamedOptimizerConfig
 from ml_found.config.source import remember_source
 
@@ -418,14 +419,13 @@ def get_diff(default_cfg: DictConfig, cfg: DictConfig) -> dict:
     diff: dict
         変わった項目ごとの default の値と experiment の値
     """
+    # 解決できない参照を, 項目の場所を添えて先に確認
+    check_references(cfg)
+    check_references(default_cfg, "default の config")
+
     # 比べやすいように両方の平坦化
-    try:
-        default_flat = flatten(
-            OmegaConf.to_container(default_cfg, resolve=True)
-        )
-        cfg_flat = flatten(OmegaConf.to_container(cfg, resolve=True))
-    except OmegaConfBaseException as e:
-        raise ValueError(f"config の ${{...}} を解決できません: {e}") from e
+    default_flat = flatten(OmegaConf.to_container(default_cfg, resolve=True))
+    cfg_flat = flatten(OmegaConf.to_container(cfg, resolve=True))
 
     # 追加, 削除, 変更された項目を両方のキーから収集
     keys = list(default_flat) + [k for k in cfg_flat if k not in default_flat]

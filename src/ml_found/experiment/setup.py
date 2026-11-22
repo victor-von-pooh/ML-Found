@@ -10,6 +10,7 @@ from omegaconf.errors import OmegaConfBaseException
 import torch
 
 from ml_found.config.loader import format_diff, save_config
+from ml_found.config.references import check_references
 from ml_found.config.source import save_source
 from ml_found.experiment.env_info import (
     collect_env_info, get_git_diff, log_env_info
@@ -432,10 +433,11 @@ def start_experiment(
     else:
         project_root = Path(project_dir).resolve()
 
-    # 空の出力先が残らないように, ディレクトリを作る前に config の
-    # requires に書いた機能の要るもの, デバイス,
+    # 空の出力先が残らないように, ディレクトリを作る前に config 全体の
+    # 参照 (${...}), requires に書いた機能の要るもの, デバイス,
     # Optimizer と Scheduler (クラス, 引数, 仮のパラメータで作れるか) と
     # 学習の設定, 再開元, config の task の確認
+    check_references(cfg)
     check_requires(cfg)
     device = get_device(cfg.experiment.device)
     check_optim_config(cfg)

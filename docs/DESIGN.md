@@ -606,7 +606,7 @@ save_sample(experiment, "cloud", points, kind="point_cloud",
 
 `original_coordinates(点群, 項目["convention"])` は, `load_samples` が返した点群の見本の座標を元の座標 (`値 × scale - shift`) に戻す (画面が符号を取り違えないため). `samples/index.json` は形式の版 (`format_version`. 今は 2) を持ち, 版の無い一覧 (版 1. `shift` が逆の向き) は `load_samples` が今の意味に写して返す. 新しい版の一覧の見本は, `convention` を null にし, `newer_version: true` を付けて返す (docs/FORMAT.md の「samples」).
 
-読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
+読む側は `load_task`, `load_evaluations`, `load_samples` で読める (無い実験では `None` か空のリスト). `load_evaluations` は, シンボリックリンク, 普通でないファイル (FIFO など), 20 MiB (ML-Dashboard の画面と同じ上限) を超えるファイルを読まずに飛ばし, `evaluations/` 自体がリンクの実験は空とする (実験のディレクトリの外を読まず, 止まらないため). 開く前にリンクを辿らずに調べ, 開くときもリンクを辿らず (`O_NOFOLLOW`) 待たずに (`O_NONBLOCK`) 開き, 開いたものが調べたものと同じ普通のファイルかを確かめ, 上限の 1 バイト先までだけ読む. `dir_fd` を使える環境では `evaluations/` をリンクを辿らずに開いた番号から調べて開く (確かめた後に `evaluations/` を入れ替えられても外を読まないため). 実験のディレクトリより上の入れ替わりは確かめない. `describe_origin(task["target"]["origin"])` は, 指標が何との一致かの説明の文を返す (画面が指標の横に出すため). 新しい版の ML-Found が書いた `task.yaml` は, `load_task` が正解の出どころを分からないもの (`unknown`) に置き換え, `newer_version: true` を付けて返す (意味の変わったかもしれない欄から「処理を超えられない」と言い切らないため). 版が整数でない `task.yaml` は誤り.
 
 ## 20. 強化学習
 
@@ -976,4 +976,5 @@ echo now > outputs/wine/2026-11-12/10-00-00/STOP   # エポックの途中でも
 - `source.yaml` には, コマンドラインの他の引数を残さない (秘密の値を含み得るため)
 - config の参照の誤りの文には, 解決した値と OmegaConf の文を入れない (環境変数の値などの秘密を出さないため). ただし `config.yaml` は解決した値で保存するので, 環境変数の参照 (`${oc.env:...}`) で config に秘密の値 (トークンなど) を入れない. 秘密の値は学習のスクリプトで環境変数から読む
 - モデルの定義の写し (`model_spec.yaml`) は, プロジェクトの中の普通のファイル (16 MiB まで) だけを, リンク (途中のディレクトリ, リンクの後の `..`, Windows のジャンクションを含む) を辿らずに読む. プロジェクトの外とリンクは写さない. `train.log` には場所を `repr` で書く (改行で偽の行を作らないため)
+- `load_evaluations` は `evaluations/` の普通のファイル (20 MiB まで) だけを, リンク (`evaluations/` 自体と Windows のジャンクションを含む) を辿らずに読む. FIFO などの普通でないファイルは開かない
 - ML-Found はネットワークを使わない. 追加の依存の入れ方は, コマンドと公式の手順の URL を示すだけで, 自分では入れない

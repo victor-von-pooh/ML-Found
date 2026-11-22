@@ -9,7 +9,7 @@ from omegaconf import DictConfig, OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
 from ml_found.config.source import relative_to_project
-from ml_found.experiment.results import new_temp
+from ml_found.experiment.results import JUNCTION_TAG, new_temp
 
 # モデルの定義の場所を書く config の項目
 MODEL_SPEC_KEY = "model.spec"
@@ -26,9 +26,6 @@ CHUNK_BYTES = 1 << 20
 
 # ディレクトリを表す場所の終わり (m.yaml/ と m.yaml/.)
 TRAILING_SEPARATORS = ("/", "/.", os.sep, os.sep + ".")
-
-# Windows のジャンクションの印 (lstat の st_reparse_tag)
-JUNCTION_TAG = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
 
 # 写さなかった理由ごとの, train.log に書く説明
 SKIP_REASONS = {

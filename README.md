@@ -1,6 +1,6 @@
 # ML-Found
 
-「機械学習を全て GUI 上で行う」うちの「モデルの学習・評価」の段階のライブラリ. PyTorch のモデルを config から学習させ, 実験ごとの記録を残す. 画面のアプリ [ML-Dashboard](https://github.com/victor-von-pooh/ML-Dashboard) が使う.
+「機械学習を全て GUI 上で行う」うちの「モデルの学習・評価」の段階のライブラリ. PyTorch のモデルを config から学習させ, 実験ごとの記録を残す. 画面のアプリは [ML-Dashboard](https://github.com/victor-von-pooh/ML-Dashboard).
 
 ## できること
 
@@ -14,7 +14,17 @@
 - **重みの指数移動平均 (EMA)**: `trainer.ema.decay` に減衰率を書くだけで, EMA の重みで検証し, ベストモデルと `final_model.pt` も EMA の重みにする. EMA の状態はチェックポイントに入り, 再開しても通しの学習と一致する
 - **Lightning などに依存しない**: 素の PyTorch だけで書いている
 - **強化学習と方策の書き出し (任意)**: Gymnasium の形の環境とのやり取りを loader にして, 同じ `Trainer` で方策を学習し, 守り (行動の範囲, 止める条件, 外れたときの動き) と一緒に書き出せる. 再開では環境の乱数と状態も戻り, 通しの学習と一致する
+- **何の実験かと評価, 見本**: 実験の `task.yaml` (`write_task`, `task_from_dataset`), 学習の後のデータ全体の評価 (`save_evaluation`, `load_evaluations`), 入力と予測と正解の見本 (`save_sample`, `load_samples`) を, 実験の記録に残して読める
 - **追加の依存の案内**: 任意の機能 (強化学習, MuJoCo, ROS 2, CUDA, 他の段階のライブラリ ML-EDA, ML-ModelControl, ML-Inference) ごとに, 要るもの, 入っているかの確かめ方 (版の下限があれば版も), 入れ方の一覧を持ち, 足りなければ次の一手を案内して止まる
+
+## どのアプリから使われるか
+
+| 相手 | 使うもの |
+| --- | --- |
+| ML-Dashboard (学習・評価) | 実験のディレクトリ (config, 履歴, 進み具合, 評価, 見本) の読み取りと, config の確認と学習の起動. 追加の依存の案内 (`describe_requirements`) |
+| ML-Quest (問題の設定) | プロジェクトの形. 問題の設定から書き出す骨組みはこの形で動く |
+| ML-Inference (推論) | 実験のディレクトリの学習した重みと config |
+| ML-ModelControl, ML-EDA | モデルの定義は実験の出力先に写し (`Experiment.model_spec_path`), データセットは `task_from_dataset` で説明を読む |
 
 ## 導入
 

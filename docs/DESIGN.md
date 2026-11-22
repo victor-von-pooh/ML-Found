@@ -993,6 +993,17 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 
 `last.pt` と `best.pt` には, モデル, Optimizer, Scheduler, 記録の全て (列ごとの数の配列で持つので, エポックが多くても保存は軽い), 乱数の状態が入り, `last.pt` にはベストモデルの重みも入る (`best.pt` では今のモデルがベストモデルなので, 同じ重みを 2 つは持たない. `trainer.ema.decay` を使う場合と `eval_model` を上書きした場合は別の重みなので持つ). `trainer.ema.decay` を使う場合は EMA の状態 (`ema`) も入り, モデルの重みの分だけ重くなる. 凍結した重みの多い微調整では, `trainer.checkpoint.trainable_only: true` で学習しないパラメータの重みを省ける (「大きな学習済みのモデルの微調整」). 1 エポックが短い学習 (フルバッチなど) では保存が学習時間の大部分を占めることがあるので, `trainer.checkpoint.every_n_epochs` で `last.pt` の間隔を空けるか, 再開しない場合は `save_best` と `save_last` を `false` にする. `best.pt` は改善するたびに保存するので `every_n_epochs` では減らない (ベストモデルの重みは `last.pt` にも入るので, 再開だけなら `save_best: false` でもよい. ただし `last_with_best: false` と合わせると再開後にベストモデルに戻せないので, `start_experiment` で警告が出る). 大きなモデルでは 1 ファイルが数 GB になるので, 再開に使わない `best.pt` は `best_weights_only: true` で重みだけにし, `last_with_best: false` で `last.pt` からベストモデルの重みを外すと軽くなる (100 万個の引数のモデルと Adam で, 既定の `best.pt` 12 MB と `last.pt` 16 MB が, それぞれ 4 MB と 12 MB). 重みだけの `best.pt` は `weights_only` (true), `epoch`, `monitor`, `best_value`, `model` (重み) の辞書なので, `torch.load(...)["model"]` で読む (`trainer.ema.decay` を使う場合は EMA の重み, `eval_model` を上書きした場合はそのモデルの重み). 継承して加えた状態 (`extra_state_dict`) は入らない.
 
+`best.pt` の保存の間隔の設定は持たない. ML_tester の 06 と同じ形のフルバッチの学習 (1 次元の関数を近似するパラメータ数 8,513 の MLP, Adam, 5000 エポックのうち 2438 回改善, 1 エポックは約 1 ms, Apple M3 の cpu, PyTorch 2.15.0) を設定ごとに 3 回ずつ回し, `train.log` の学習時間を比べた. 保存が占める割合は, 保存しない設定 (`save_best` と `save_last` が `false`) との平均の差を, その設定の平均の学習時間で割った値.
+
+| 設定 (`trainer.checkpoint`) | 学習時間の平均 (最小から最大) | その設定の学習時間のうち保存が占める割合 |
+| --- | --- | --- |
+| `save_best: false`, `save_last: false` | 4.8 秒 (4.5 から 5.2 秒) | - |
+| `every_n_epochs: 5000`, `best_weights_only: true` | 6.0 秒 (5.3 から 6.6 秒) | 約 2 割 (`best.pt` の 1 回の保存は約 0.5 ms) |
+| `every_n_epochs: 5000` | 7.8 秒 (7.0 から 8.5 秒) | 約 4 割 |
+| 既定 | 14.2 秒 (13.7 から 14.8 秒) | 約 7 割 |
+
+重みだけの `best.pt` の保存は学習時間の大部分を占めないので, 間隔を空けるより, `best.pt` が常にベストモデルの重みを持つことを優先する. ただし 1 エポックが ms 級で毎エポック改善する学習では, 重みだけの `best.pt` でも約 2 割の上乗せがあり, 省く場合は `save_best: false` にする (ベストモデルの重みは `last.pt` に入る).
+
 `train.log` のモデルの構造は `print(model)` の内容なので, 中身を `nn.Module` の子として持たない層 (外部ライブラリの層など) は構造が残らない. そのため, 学習を始めるときにパラメータとバッファの一覧を `model_summary.csv` (名前, `parameter` か `buffer`, 持っている層のクラス名, 形, 型, 要素数, 学習するか, 重みを共有している場合は最初の名前) に保存し, 学習するパラメータ, 学習しないパラメータ, バッファの要素数を `train.log` に書く. `nn.Module` のパラメータやバッファとして持たない値 (外部ライブラリの回路の設定など) は残らないので, 再現に必要な情報は, モデルに `extra_repr` を書いて出すと良い.
 
 `experiment.device: auto` は小さなモデルでも GPU を選ぶ (Apple Silicon の Mac では CPU 版の PyTorch でも `mps`). パラメータが少ないモデルや, 中で cpu を使うモデル (外部ライブラリの計算など) は `cpu` を明示した方が速いことがある.

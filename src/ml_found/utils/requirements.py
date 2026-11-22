@@ -271,6 +271,11 @@ VERSION_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+# pip で入れるときのパッケージの名前の形 (PEP 508)
+DISTRIBUTION_PATTERN = re.compile(
+    r"^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$", re.IGNORECASE
+)
+
 # 先行版の印の順 (alpha, beta, release candidate)
 PRE_ORDER = {
     "a": 0, "alpha": 0, "b": 1, "beta": 1, "c": 2, "rc": 2, "pre": 2,
@@ -284,8 +289,9 @@ def version_key(text: str) -> Optional[tuple]:
 
     PEP 440 の順 (1.0.dev1 < 1.0a1 < 1.0rc1 < 1.0 < 1.0.post1) に並べる.
     1.0 と 1.0.0 は同じ. + の後のローカルの版 (2.11.0+cpu の cpu) と
-    エポック (1!) は比べない. packaging に依存しないための, 下限の比較に
-    足りるだけの実装
+    エポック (1!) は比べない. そのため 1!0.1 は 0.1 として比べ, 1.0 以上
+    とは見ない (PEP 440 の順より古く見る側に倒れ, 入れ方を案内して止まる).
+    packaging に依存しないための, 下限の比較に足りるだけの実装
 
     Parameters
     ----------
@@ -778,7 +784,7 @@ def check_version_fields(item: dict) -> None:
     ----------
     None
     """
-    # 版の下限は module だけに書け, 読める版の文字であること
+    # 版の下限は module だけに書け, 読める版の文字とパッケージの名前であること
     fields = [key for key in ("min_version", "distribution") if key in item]
     if fields and item["kind"] != "module":
         raise ValueError(
@@ -790,6 +796,15 @@ def check_version_fields(item: dict) -> None:
     ):
         raise ValueError(
             f"min_version は 1.0 のような版の文字にしてください: {minimum!r}"
+        )
+    distribution = item.get("distribution")
+    if distribution is not None and (
+        not isinstance(distribution, str)
+        or DISTRIBUTION_PATTERN.match(distribution) is None
+    ):
+        raise ValueError(
+            "distribution は pip で入れるときのパッケージの名前 (版の指定や"
+            f"追加の依存の [ ] を含まない) にしてください: {distribution!r}"
         )
 
 

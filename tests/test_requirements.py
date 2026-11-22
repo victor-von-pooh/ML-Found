@@ -1,5 +1,7 @@
 import json
 import pickle
+import re
+from pathlib import Path
 from typing import Callable, Optional
 
 import pytest
@@ -544,6 +546,7 @@ class FixedVersion:
         ("1.0.post1", "1.0", True),
         ("1.0.post1.dev2", "1.0.post1", False),
         ("v1.0", "1.0", True),
+        ("1!0.1", "1.0", False),
         ("abc", "1.0", None)
     ]
 )
@@ -712,6 +715,17 @@ def test_register_requirement_min_version(
             pip
         )
 
+    # 版の指定, 追加の依存, 空白を含むパッケージの名前はエラー
+    for distribution in ["x[extra]", "x>=1.0", "x y", " x", ""]:
+        with pytest.raises(ValueError, match="distribution"):
+            register_requirement(
+                "a", "",
+                [{"kind": "module", "name": "x", "min_version": "1.0",
+                  "distribution": distribution}],
+                pip
+            )
+    assert "a" not in requirements.REQUIREMENTS
+
 
 class FoundAll:
     def __call__(self, name: str) -> bool:
@@ -758,3 +772,75 @@ class RecordVersion:
         version = "1.5"
 
         return version
+
+
+def pyproject_minimums() -> dict[str, str]:
+    """
+    pyproject.toml の任意の依存から, パッケージごとの版の下限を読む関数
+
+    Python 3.10 には tomllib が無いので, 引用符で囲んだ指定を正規表現で
+    読む
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    minimums: dict[str, str]
+        パッケージの名前と下限 (>= の後の版)
+    """
+    # optional-dependencies の節だけを読む
+    path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    text = path.read_text(encoding="utf-8")
+    section = text.split("[project.optional-dependencies]", 1)[1]
+    section = section.split("\n[", 1)[0]
+    minimums = {}
+    for name, version in re.findall(
+        r'"([A-Za-z0-9._-]+)\s*>=\s*([^",;\s]+)"', section
+    ):
+        minimums[name.lower()] = version
+
+    return minimums
+
+
+def test_min_versions_match_pyproject() -> None:
+    """
+    登録簿の版の下限と pip の指定の下限が, pyproject.toml の任意の依存の
+    下限と同じことを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    minimums = pyproject_minimums()
+    assert minimums.get("gymnasium") == "1.0"
+
+    # ML-Found が持つ機能の確かめ方と pip の指定ごとの比較
+    compared = 0
+    for name in requirements.BUILTIN_NAMES:
+        spec = requirements.REQUIREMENTS[name]
+        for item in spec["checks"]:
+            if item.get("min_version") is None:
+                continue
+            distribution = item.get("distribution") or item["name"]
+            assert minimums.get(distribution.lower()) == item["min_version"]
+            compared += 1
+        for package in spec["install"]["packages"]:
+            found = re.fullmatch(r"([A-Za-z0-9._-]+)>=(\S+)", package)
+            if found is None or found[1].lower() not in minimums:
+                continue
+            assert minimums[found[1].lower()] == found[2]
+
+            # pip の指定の下限は確かめ方の下限とも同じ
+            checks = [
+                item for item in spec["checks"]
+                if (item.get("distribution") or item["name"]).lower()
+                == found[1].lower()
+            ]
+            assert [item.get("min_version") for item in checks] == [found[2]]
+    assert compared >= 2

@@ -1,6 +1,6 @@
 # ML-Found
 
-「機械学習を全て GUI 上で行う」うちの「モデルの学習・評価」の段階のライブラリ. PyTorch のモデルを config から学習させ, 実験ごとの記録を残す. 画面のアプリ [ML-Dashboard](https://github.com/victor-von-pooh/ML-Dashboard) が使う.
+「機械学習を全て GUI 上で行う」うちの「モデルの学習・評価」の段階のライブラリ. PyTorch のモデルを config から学習させ, 実験ごとの記録を残す. 画面のアプリは [ML-Dashboard](https://github.com/victor-von-pooh/ML-Dashboard).
 
 ## できること
 
@@ -9,12 +9,22 @@
 - **default と experiment の 2 段の config**: default を基準とし, experiment には差分だけを書く. experiment で default に無い項目を書くとエラーになるので, default を壊さずに実験できる
 - **実験の記録**: 実行ごとに `outputs/<名前>/<日付>/<時刻>/` を作り, config 全体, default との差分, git の commit id と未コミットの変更の差分, OS や PyTorch やパッケージの情報を残す
 - **ミニバッチ学習とフルバッチ学習の両対応**: DataLoader でも, グラフ全体のような 1 つのデータでも, 同じ書き方で学習できる
-- **torch の Optimizer と Scheduler をそのまま使える**: クラス名と引数を config に書くだけで, `torch.optim` にあるものを使える. closure が必要な LBFGS も自動で見分けて使える
+- **torch の Optimizer と Scheduler をそのまま使える**: クラス名と引数を config に書くだけで, `torch.optim` にあるものを使える. closure が必要な LBFGS も自動で見分けて使える. Scheduler は学習の始めの warmup (`scheduler.warmup_steps`, `warmup_ratio`) と, 学習全体のステップ数に合わせた引数の補い (`auto`) も書ける. 自分で作って渡した Scheduler は `run.json` に残る. GAN や Actor-Critic のように, 部分ごとに別の損失と Optimizer で更新する複数の Optimizer も書ける
 - **ベストモデルと再開**: 監視する指標が最も良いモデルを保存して最後に戻す. Early Stopping, 勾配クリッピング, チェックポイントからの再開にも対応する
 - **重みの指数移動平均 (EMA)**: `trainer.ema.decay` に減衰率を書くだけで, EMA の重みで検証し, ベストモデルと `final_model.pt` も EMA の重みにする. EMA の状態はチェックポイントに入り, 再開しても通しの学習と一致する
 - **Lightning などに依存しない**: 素の PyTorch だけで書いている
 - **強化学習と方策の書き出し (任意)**: Gymnasium の形の環境とのやり取りを loader にして, 同じ `Trainer` で方策を学習し, 守り (行動の範囲, 止める条件, 外れたときの動き) と一緒に書き出せる. 再開では環境の乱数と状態も戻り, 通しの学習と一致する
+- **何の実験かと評価, 見本**: 実験の `task.yaml` (`write_task`, `task_from_dataset`), 学習の後のデータ全体の評価 (`save_evaluation`, `load_evaluations`), 入力と予測と正解の見本 (`save_sample`, `load_samples`) を, 実験の記録に残して読める
 - **追加の依存の案内**: 任意の機能 (強化学習, MuJoCo, ROS 2, CUDA, 他の段階のライブラリ ML-EDA, ML-ModelControl, ML-Inference) ごとに, 要るもの, 入っているかの確かめ方 (版の下限があれば版も), 入れ方の一覧を持ち, 足りなければ次の一手を案内して止まる
+
+## どのアプリから使われるか
+
+| 相手 | 使うもの |
+| --- | --- |
+| ML-Dashboard (学習・評価) | 実験のディレクトリ (config, 履歴, 進み具合, 評価, 見本) の読み取りと, config の確認と学習の起動. 追加の依存の案内 (`describe_requirements`), Optimizer と Scheduler の登録簿 (`describe_optimizers`, `describe_schedulers`) |
+| ML-Quest (問題の設定) | プロジェクトの形. 問題の設定から書き出す骨組みはこの形で動く. 追加の依存の案内と, Optimizer と Scheduler の登録簿 |
+| ML-Inference (推論) | 実験のディレクトリの学習した重みと config. 強化学習の方策の一式 `policy/` (`policy.json` と `policy.pt`, 守り) |
+| ML-ModelControl, ML-EDA | モデルの定義は実験の出力先に写し (`Experiment.model_spec_path`), データセットは `task_from_dataset` で説明を読む |
 
 ## 導入
 

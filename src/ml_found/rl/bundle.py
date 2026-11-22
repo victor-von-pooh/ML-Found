@@ -780,7 +780,8 @@ def check_observation(spec: dict, observation: Any) -> list[str]:
     try:
         raw = np.asarray(observation)
         obs = raw.astype(np.float64)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
+        # 桁の大きな整数は float にできず OverflowError
         reasons = [f"観測を数の配列にできない ({exc})"]
         return reasons
     if raw.dtype.kind not in NUMERIC_KINDS:
@@ -906,7 +907,7 @@ def apply_guards(
     # 出力が数の配列でないか, 有限でない場合も外れたときの動き
     try:
         values = np.asarray(output, dtype=np.float64).reshape(-1)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         result = fallback_result(spec, [f"モデルの出力を数にできない ({exc})"])
         return result
     if not np.all(np.isfinite(values)):

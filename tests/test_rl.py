@@ -461,6 +461,34 @@ def test_apply_guards_discrete_and_stop() -> None:
     assert apply_guards(spec, [0.9], [3.0, 1.0, 0.0])["status"] == "stop"
 
 
+def test_apply_guards_huge_integer() -> None:
+    """
+    float にできない桁の大きな整数の観測とモデルの出力は, 誤りにせずに
+    外れたときの動きにすることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    huge = 10 ** 400
+    spec = box_spec()
+
+    # 観測 (JSON の大きな整数のリテラルを読んだ値) はモデルの前に外れる
+    result = apply_guards(spec, [1, huge], [0.5, 0.1])
+    assert result["status"] == "fallback"
+    assert result["action"].tolist() == [0.0, 0.0]
+    assert result["reasons"][0].startswith("観測を数の配列にできない")
+
+    # モデルの出力も同じく外れたときの動き
+    result = apply_guards(spec, [0.0, 0.0], [0.0, huge])
+    assert result["status"] == "fallback"
+    assert result["reasons"][0].startswith("モデルの出力を数にできない")
+
+
 def test_make_guards_errors() -> None:
     """
     空間と食い違う守りを書き出す前に止めることを確かめる関数

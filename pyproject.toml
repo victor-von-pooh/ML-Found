@@ -33,6 +33,9 @@ mujoco = [
     "gymnasium>=1.0",
     "mujoco"
 ]
+fid = [
+    "pytorch-fid"
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

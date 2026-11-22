@@ -119,7 +119,8 @@ class ExperienceBuffer:
         max_episode_steps) を区別せず, 最後の歩の後の報酬を 0 として
         求める (モンテカルロの REINFORCE). 打ち切りの後の価値を見積もって
         足す方法は, 価値の関数を持つ方法 (ActorCriticStep) で行うので,
-        終了か打ち切りかと最後の歩の後の観測も残す
+        終了か打ち切りかと最後の歩の後の観測も残す. 打ち切りでは最後の歩の
+        後の観測が要る (無いと行動の前の観測で見積もるため)
 
         Parameters
         ----------
@@ -129,7 +130,8 @@ class ExperienceBuffer:
             環境が終了した場合は True, 打ち切り (truncated や歩数の上限)
             の場合は False
         final_observation: Optional[Any] = None
-            最後の歩の後の観測, None の場合は最後の歩の観測
+            最後の歩の後の観測. 打ち切りでは必須で, 終了で None の場合は
+            最後の歩の観測 (終了の後の価値は 0 なので使わない)
 
         Returns
         ----------
@@ -137,9 +139,14 @@ class ExperienceBuffer:
             エピソードの報酬の和 (reward), 歩数 (length), 安全の違反の数
             (violations), 成功 (success)
         """
-        # 歩の無いエピソードはエラー
+        # 歩の無いエピソードと, 最後の観測の無い打ち切りはエラー
         if not self.current:
             raise ValueError("歩の無いエピソードは終えられません")
+        if not terminated and final_observation is None:
+            raise ValueError(
+                "打ち切り (terminated=False) では, 最後の歩の後の観測を "
+                "final_observation に渡してください"
+            )
 
         # 後ろから割引した報酬の和の計算
         returns = []

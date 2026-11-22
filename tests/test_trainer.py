@@ -1,4 +1,5 @@
 import csv
+import functools
 import json
 from pathlib import Path
 from typing import Callable
@@ -1016,6 +1017,37 @@ def warmup_factor(epoch: int) -> float:
     return factor
 
 
+def linear_warmup_factor(
+    step: int, *, num_warmup_steps: int, num_training_steps: int
+) -> float:
+    """
+    transformers の get_linear_schedule_with_warmup と同じ形で, warmup の後に
+    直線で下げる学習率の倍率を返す関数
+
+    Parameters
+    ----------
+    step: int
+        Scheduler を進めた回数
+    num_warmup_steps: int
+        warmup のステップ数
+    num_training_steps: int
+        学習全体のステップ数
+
+    Returns
+    ----------
+    factor: float
+        学習率の倍率
+    """
+    if step < num_warmup_steps:
+        return step / max(1, num_warmup_steps)
+    factor = max(
+        0.0, (num_training_steps - step)
+        / max(1, num_training_steps - num_warmup_steps)
+    )
+
+    return factor
+
+
 def test_scheduler_params_of_classes() -> None:
     """
     run.json に書く Scheduler の主な引数が, Scheduler の種類ごとに JSON で
@@ -1044,6 +1076,26 @@ def test_scheduler_params_of_classes() -> None:
     optimizer = torch.optim.SGD(nn.Linear(1, 1).parameters(), lr=0.1)
     anonymous = lr_scheduler.LambdaLR(optimizer, lambda epoch: 1.0)
     assert scheduler_params(anonymous) == {"lr_lambdas": ["<lambda>"]}
+
+    # partial (transformers の warmup の形) は元の関数と固定した引数
+    optimizer = torch.optim.SGD(nn.Linear(1, 1).parameters(), lr=0.1)
+    warmup = lr_scheduler.LambdaLR(
+        optimizer, functools.partial(
+            linear_warmup_factor, num_warmup_steps=10,
+            num_training_steps=100
+        )
+    )
+    assert scheduler_params(warmup) == {
+        "lr_lambdas": [{
+            "function": "linear_warmup_factor", "args": [],
+            "keywords": {"num_warmup_steps": 10, "num_training_steps": 100}
+        }]
+    }
+
+    # MultiStepLR の区切りは回数の辞書ではなく小さい順の並び
+    optimizer = torch.optim.SGD(nn.Linear(1, 1).parameters(), lr=0.1)
+    multi = lr_scheduler.MultiStepLR(optimizer, milestones=[4, 2, 2])
+    assert scheduler_params(multi) == {"milestones": [2, 2, 4], "gamma": 0.1}
 
     # ReduceLROnPlateau は無限大の値 (best, mode_worse) を書かない
     optimizer = torch.optim.SGD(nn.Linear(1, 1).parameters(), lr=0.1)

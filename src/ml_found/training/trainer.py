@@ -1,5 +1,7 @@
+from collections import Counter
 import contextlib
 import copy
+import functools
 import math
 from pathlib import Path
 import shutil
@@ -216,12 +218,15 @@ def json_value(value: Any) -> Any:
     ----------
     converted: Any
         数, 文字, 真偽値, null と, それらのリストと辞書. 無限大と非数は
-        文字, それ以外の書けない値は文字の表し
+        文字, 回数の辞書 (MultiStepLR の milestones) は小さい順の並び,
+        それ以外の書けない値は文字の表し
     """
     # 配列と NumPy の数は Python の値に直してから変換
     if hasattr(value, "tolist") and not isinstance(value, (list, tuple)):
         value = value.tolist()
-    if value is None or isinstance(value, (bool, int, str)):
+    if isinstance(value, Counter):
+        converted = json_value(sorted(value.elements()))
+    elif value is None or isinstance(value, (bool, int, str)):
         converted = value
     elif isinstance(value, float):
         converted = value if math.isfinite(value) else str(value)
@@ -235,9 +240,9 @@ def json_value(value: Any) -> Any:
     return converted
 
 
-def callable_name(function: Callable) -> str:
+def describe_callable(function: Callable) -> Union[str, dict]:
     """
-    Scheduler に渡した関数の名前を返す関数
+    Scheduler に渡した関数を, run.json に書ける形で表す関数
 
     Parameters
     ----------
@@ -246,14 +251,26 @@ def callable_name(function: Callable) -> str:
 
     Returns
     ----------
-    name: str
-        関数の名前 (無名の関数は <lambda>), オブジェクトはクラスの名前
+    described: Union[str, dict]
+        関数の名前 (無名の関数は <lambda>), オブジェクトはクラスの名前.
+        functools.partial は, 元の関数 (function) と固定した引数 (args,
+        keywords) の辞書
     """
-    name = getattr(function, "__name__", None)
-    if not isinstance(name, str):
-        name = type(function).__name__
+    # partial は元の関数と固定した引数 (transformers の warmup など)
+    if isinstance(function, functools.partial):
+        described = {
+            "function": describe_callable(function.func),
+            "args": json_value(function.args),
+            "keywords": json_value(function.keywords)
+        }
+        return described
 
-    return name
+    # 関数の名前, 名前を持たないオブジェクトはクラスの名前
+    described = getattr(function, "__name__", None)
+    if not isinstance(described, str):
+        described = type(function).__name__
+
+    return described
 
 
 def scheduler_params(
@@ -311,14 +328,15 @@ def scheduler_params(
     if isinstance(scheduler, lr_scheduler.CyclicLR):
         params["base_lrs"] = json_value(state.get("base_lrs"))
 
-    # 渡した関数 (状態には残らない) の名前
+    # 渡した関数 (状態には残らない) の名前と, partial で固定した引数
     if hasattr(scheduler, "lr_lambdas"):
         params["lr_lambdas"] = [
-            callable_name(function) for function in scheduler.lr_lambdas
+            describe_callable(function)
+            for function in scheduler.lr_lambdas
         ]
     custom = getattr(scheduler, "_scale_fn_custom", None)
     if custom is not None:
-        params["scale_fn"] = callable_name(custom)
+        params["scale_fn"] = describe_callable(custom)
 
     # OneCycleLR が Optimizer に書き込む引数の値 (max_lr など)
     if isinstance(scheduler, lr_scheduler.OneCycleLR):

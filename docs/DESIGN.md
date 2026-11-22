@@ -747,7 +747,7 @@ history = trainer.fit(train_loader, valid_loader)
 ```
 
 - **モデルの決まり**: モデルは方策の出力 (`forward`. 番号の行動ならスコア, 連続の行動なら平均) に加えて, 観測から状態の価値を返す `value(観測)` (形は (バッチ,) か (バッチ, 1)) を持つ (無ければエラー). 方策と価値の関数を 1 つのモデルにまとめ, 1 つの Optimizer で学習する. 勾配を流す価値は学習モードで, 利得と目標に使う価値は推論モードで勾配なしに求める (行動を選んだときと同じモード. BatchNorm の統計を進めず, Dropout の雑音を入れないため)
-- **利得**: エピソードの後ろから, 1 歩の TD の誤差 (`報酬 + gamma × 次の状態の価値 - 状態の価値`) を `gamma × gae_lambda` で重ねて求める (`gae_lambda` が 0 なら 1 歩の TD, 1 ならモンテカルロ). 環境が終了したエピソードは最後の歩の後の価値を 0, 打ち切り (TimeLimit と `max_episode_steps`) のエピソードは最後の歩の後の観測の価値にする. `gamma` は `RolloutLoader` の値をバッチの `gamma` から使う
+- **利得**: エピソードの後ろから, 1 歩の TD の誤差 (`報酬 + gamma × 次の状態の価値 - 状態の価値`) を `gamma × gae_lambda` で重ねて求める (`gae_lambda` が 0 なら 1 歩の TD, 1 ならモンテカルロ). 環境が終了したエピソードは最後の歩の後の価値を 0, 打ち切り (TimeLimit と `max_episode_steps`) のエピソードは最後の歩の後の観測の価値にする. `gamma` は `RolloutLoader` の値をバッチの `gamma` から使う. 足し合わせは, 報酬と価値の勾配を切って CPU の 64 ビットの配列にまとめ, バッチの全ての歩を後ろから 1 回で重ねて (エピソードの最後の歩で重ねを切る) から, 報酬と同じデバイスと型のテンソルに戻す (GPU で 1 歩ずつの小さな処理を並べないため)
 - **損失と指標**: 学習の `loss` は, 方策の勾配の損失 (利得は `normalize` で標準化) + `value_coef ×` 価値の関数の損失 (利得と価値の和を目標にした平均 2 乗誤差) - `entropy_coef ×` エントロピー. 検証は `ReinforceStep` と同じ. 記録する指標は `train/loss`, `train/value_loss`, `train/entropy`, `train/reward`, `train/length`, `train/violations`, `valid/loss` (評価の報酬の和の平均の符号を反転した値), `valid/entropy`, `valid/reward`, `valid/length`, `valid/violations` (`success_key` を指定した場合は `success` も). 監視する指標は `trainer.monitor: valid/reward` と `trainer.mode: max` にする
 - **報酬の尺度**: 価値の関数の損失は報酬の尺度の 2 乗で大きくなる. 1 歩の報酬が大きい環境 (Pendulum は -16 から 0) では, 学習の環境の報酬を縮める (Gymnasium の `TransformReward` など. 検証の環境は元の報酬のままにすると `valid/reward` が元の尺度になる) か, `value_coef` と `trainer.grad_clip_norm` で価値の関数の勾配の大きさを調える
 

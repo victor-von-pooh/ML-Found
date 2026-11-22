@@ -465,15 +465,20 @@ class Checkpoint:
         # ベストモデルの重みを別のモデルから取る場合は, その重みを残す
         if improved and self.save_best:
             if self.best_weights_only:
+                # 学習しないパラメータを省いた内容では, 省いた重みを使用
+                stored = (state.get("checkpoint") or {}).get(
+                    "best_model", self.best_model_state
+                )
                 weights = (
-                    self.best_model_state if self.separate_best_model
-                    else state["model"]
+                    stored if self.separate_best_model else state["model"]
                 )
                 best_state = {
                     "weights_only": True, "epoch": state["epoch"],
                     "monitor": state["monitor"],
                     "best_value": self.best_value, "model": weights
                 }
+                if "trainable_only" in state:
+                    best_state["trainable_only"] = state["trainable_only"]
             elif self.separate_best_model:
                 best_state = state
             else:

@@ -24,6 +24,10 @@ from ml_found.training.callbacks import (
 from ml_found.training.ema import (
     build_ema_model, ema_state_dict, reset_ema_model
 )
+from ml_found.training.finetune import (
+    autocast_context, complete_weights, frozen_parameters, load_init_weights,
+    omit_keys
+)
 from ml_found.training.history import (
     History, LrSteps, MetricTracker, to_float
 )
@@ -598,6 +602,16 @@ class Trainer:
         # モデルをデバイスに移して保存
         self.model = model.to(self.device)
 
+        # config に学習を始める前に読む重みがあれば, EMA の写しを作る前に
+        # 読み込み
+        # (再開する場合も, 再開元に無い学習しないパラメータの値に使用)
+        self.init_weights_report: Optional[dict] = None
+        init_cfg = self.trainer_cfg.init_weights
+        if init_cfg.path is not None:
+            self.init_weights_report = load_init_weights(
+                self.model, init_cfg, experiment.project_dir, self.logger
+            )
+
         # config で EMA を使う場合は, 重みの指数移動平均を持つモデルを作成
         # (学習するモデルの写しを同じデバイスに用意)
         self.ema_model: Optional[optim.swa_utils.AveragedModel] = None
@@ -689,9 +703,30 @@ class Trainer:
                 "trainer.grad_clip_norm と log_grad_norm は使えません"
             )
 
+        # 勾配の蓄積は, ML-Found が逆伝播して 1 つの Optimizer で更新する場合
+        # だけ (自分で作って渡した Optimizer も同じ確認)
+        self.accumulate_grad_batches = int(
+            self.trainer_cfg.accumulate_grad_batches
+        )
+        if self.accumulate_grad_batches > 1 and (
+            self.named or not self.use_gradients or self.use_closure
+            or self.trainer_cfg.manual_optimization
+        ):
+            raise ValueError(
+                "trainer.accumulate_grad_batches は, 勾配を使う 1 つの Optimizer"
+                " を ML-Found が更新する場合だけ使えます (closure を使う "
+                "Optimizer, 勾配を使わない Optimizer, optimizers, "
+                "manual_optimization では使えません)"
+            )
+        # 今の更新に向けて勾配を貯めたバッチの数
+        self.accumulated = 0
+
         # closure で使う学習時のバッチと, 最後に求めた勾配のノルムの入れ物を用意
         self.current_batch: Any = None
         self.last_grad_norm: Optional[Union[float, dict[str, float]]] = None
+
+        # 学習のバッチがエポックの最後のものかどうかの印 (勾配の端数の更新用)
+        self.last_batch_of_epoch = False
 
         # closure の中で step を呼んでいるかどうかの印を用意
         # closure は step を何度も呼ぶので, 予測を貯める処理などを飛ばすのに使用
@@ -903,6 +938,24 @@ class Trainer:
         outputs = self.step_fn(model, batch, phase)
 
         return outputs
+
+    def autocast(self) -> contextlib.AbstractContextManager:
+        """
+        trainer.precision に合わせた自動の混合精度の範囲を作る関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        context: contextlib.AbstractContextManager
+            bf16 の場合は torch.autocast, fp32 の場合は何もしない範囲
+        """
+        # 学習のデバイスで, 設定の精度の範囲を作成
+        context = autocast_context(self.trainer_cfg.precision, self.device)
+
+        return context
 
     def add_callback(self, fn: Callable[[dict], Optional[bool]]) -> None:
         """
@@ -1235,7 +1288,8 @@ class Trainer:
             self.in_closure = True
             try:
                 with torch.enable_grad():
-                    outputs = self.step(self.current_batch, "train")
+                    with self.autocast():
+                        outputs = self.step(self.current_batch, "train")
                     loss = self.check_outputs(outputs, "train")
                     loss.backward()
             finally:
@@ -1278,7 +1332,7 @@ class Trainer:
             # 勾配を計算しない範囲で, 今のパラメータの損失を計算
             self.in_closure = True
             try:
-                with torch.no_grad():
+                with torch.no_grad(), self.autocast():
                     outputs = self.step(self.current_batch, "train")
                     loss = self.check_outputs(outputs, "train")
             finally:
@@ -1424,6 +1478,10 @@ class Trainer:
         """
         損失から勾配を求めてパラメータを更新する関数
 
+        学習のバッチごとに呼ぶ. 勾配を貯める設定 (accumulate_grad_batches が
+        2 以上) では, 貯める数か, エポックの最後のバッチに達した回だけ更新し,
+        更新した回だけ global_step が増える
+
         Parameters
         ----------
         loss: torch.Tensor
@@ -1452,6 +1510,22 @@ class Trainer:
         elif self.use_closure:
             self.optimizer.step(self.make_closure())
 
+        # 勾配を貯める場合は, 決めた数か, エポックの最後のバッチまで貯めて更新
+        # (損失を貯める数で割り, 貯めた勾配が損失の平均の勾配になるように)
+        elif self.accumulate_grad_batches > 1:
+            if self.accumulated == 0:
+                self.optimizer.zero_grad()
+            (loss / self.accumulate_grad_batches).backward()
+            self.accumulated += 1
+            if (
+                self.accumulated < self.accumulate_grad_batches
+                and not self.last_batch_of_epoch
+            ):
+                self.last_grad_norm = None
+                return
+            self.apply_accumulated()
+            return
+
         # 勾配法では勾配を初期化して逆伝播し, クリップしてから更新
         else:
             self.optimizer.zero_grad()
@@ -1459,6 +1533,51 @@ class Trainer:
             self.last_grad_norm = self.clip_gradients()
             self.optimizer.step()
 
+        # EMA, 更新回数, Scheduler の進行
+        self.after_update()
+
+    def apply_accumulated(self) -> None:
+        """
+        貯めた勾配でパラメータを更新する関数
+
+        貯めたバッチの数が accumulate_grad_batches より少ない (エポックの最後の
+        端数) 場合は, 勾配を貯めた数の平均に直してから更新する
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        # 端数は, 損失を割った数と貯めた数の比で勾配を補正
+        count = self.accumulated
+        self.accumulated = 0
+        if count < self.accumulate_grad_batches:
+            scale = self.accumulate_grad_batches / count
+            for group in self.optimizer.param_groups:
+                for parameter in group["params"]:
+                    if parameter.grad is not None:
+                        parameter.grad.mul_(scale)
+
+        # クリップしてから更新し, 更新の後の処理
+        self.last_grad_norm = self.clip_gradients()
+        self.optimizer.step()
+        self.after_update()
+
+    def after_update(self) -> None:
+        """
+        パラメータを 1 回更新した後に, EMA, 更新回数, Scheduler を進める関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
         # EMA を使う場合は, 更新した重みで指数移動平均を更新
         if self.ema_model is not None:
             self.ema_model.update_parameters(self.model)
@@ -1507,6 +1626,10 @@ class Trainer:
         tracker = MetricTracker()
         self.on_epoch_start(phase)
 
+        # 勾配を貯める数は, 学習のエポックごとに数え直し
+        if train:
+            self.accumulated = 0
+
         # 学習時 (勾配を使う Optimizer か, 自分で更新する設定の場合) と,
         # 検証時にも勾配を使う設定の場合だけ勾配を計算
         if train:
@@ -1540,14 +1663,19 @@ class Trainer:
                 batch = move_to_device(batch, self.device)
                 n_batches += 1
 
-                # 決めた範囲だけ勾配を計算
-                with torch.set_grad_enabled(grad_enabled):
+                # 決めた範囲だけ勾配を計算 (bf16 では自動の混合精度)
+                with torch.set_grad_enabled(grad_enabled), self.autocast():
                     outputs = self.expand_named_loss(self.step(batch, phase))
 
                 # 戻り値を確かめて, 学習時は closure 用にバッチを保存して更新
+                # 勾配を貯める場合は, エポックの最後のバッチで端数も更新
+                is_last = total_batches is not None and (
+                    n_batches >= total_batches
+                )
                 loss = self.check_outputs(outputs, phase)
                 if train:
                     self.current_batch = batch
+                    self.last_batch_of_epoch = is_last
                     self.update_parameters(loss)
 
                 # サンプル数で重み付けして指標の加算
@@ -1574,11 +1702,18 @@ class Trainer:
 
                 # エポックの途中で止める要求 (STOP に now) の確認
                 # 最後のバッチの後は, エポックの区切りで止める処理に任せる
-                is_last = total_batches is not None and (
-                    n_batches >= total_batches
-                )
                 if not is_last and self.run_status.stop_now_requested():
                     raise StopWithinEpoch()
+
+        # バッチの数が分からない loader で貯めた勾配の端数を, エポックの
+        # 終わりに更新 (勾配のノルムは最後のバッチの重みで記録)
+        if train and self.accumulated > 0:
+            self.apply_accumulated()
+            if self.trainer_cfg.log_grad_norm:
+                grad_metrics: dict = {}
+                self.add_grad_norm(grad_metrics)
+                tracker.update(grad_metrics, int(n))
+        self.last_batch_of_epoch = False
 
         # フェーズの終わりの進み具合の書き出し (間隔の中なら次の機会に)
         self.run_status.progress(
@@ -1872,7 +2007,90 @@ class Trainer:
             "extra": self.extra_state_dict()
         }
 
+        # 学習するパラメータだけを残す設定では, 学習しないパラメータを除外
+        if self.trainer_cfg.checkpoint.trainable_only:
+            state = self.omit_frozen(state)
+
         return state
+
+    def omit_frozen(self, state: dict) -> dict:
+        """
+        チェックポイントの内容から学習しないパラメータの重みを除く関数
+
+        モデル, ベストモデル, EMA の重みから除き, 除いた名前と形を
+        trainable_only に残す (再開では今のモデルの値で補う)
+
+        Parameters
+        ----------
+        state: dict
+            チェックポイントとして保存する内容
+
+        Returns
+        ----------
+        light: dict
+            学習しないパラメータを除いた写し (他の値は共有)
+        """
+        # 今のモデルの学習しないパラメータを, 重みの辞書ごとに除外
+        frozen = frozen_parameters(self.model)
+        light = dict(state)
+        light["model"] = omit_keys(state["model"], frozen)
+        if isinstance(state.get("checkpoint"), dict):
+            light["checkpoint"] = {
+                **state["checkpoint"],
+                "best_model": omit_keys(
+                    state["checkpoint"].get("best_model"), frozen
+                )
+            }
+        if isinstance(state.get("ema"), dict):
+            light["ema"] = {
+                **state["ema"],
+                "state": omit_keys(state["ema"]["state"], frozen, "module.")
+            }
+        light["trainable_only"] = {"frozen": frozen}
+
+        return light
+
+    def complete_frozen(self, state: dict) -> None:
+        """
+        学習するパラメータだけのチェックポイントの重みを, 今のモデルの学習
+        しないパラメータの値で補う関数
+
+        Parameters
+        ----------
+        state: dict
+            再開元のチェックポイントの内容, モデル, ベストモデル, EMA の重みを
+            書き換える
+
+        Returns
+        ----------
+        None
+        """
+        # 学習しないパラメータを除いていないチェックポイントはそのまま
+        meta = state.get("trainable_only")
+        if not isinstance(meta, dict):
+            return
+        frozen = meta.get("frozen") or {}
+
+        # モデルとベストモデルは今のモデルから, EMA は今の EMA から補完
+        reference = self.model.state_dict()
+        state["model"] = complete_weights(
+            state["model"], reference, frozen
+        )
+        checkpoint_state = state.get("checkpoint")
+        if (
+            isinstance(checkpoint_state, dict)
+            and checkpoint_state.get("best_model") is not None
+        ):
+            checkpoint_state["best_model"] = complete_weights(
+                checkpoint_state["best_model"], reference, frozen,
+                label="checkpoint.best_model", copy=True
+            )
+        ema = state.get("ema")
+        if isinstance(ema, dict) and self.ema_model is not None:
+            ema["state"] = complete_weights(
+                ema["state"], self.ema_model.state_dict(), frozen,
+                prefix="module.", label="ema"
+            )
 
     def loader_states(self) -> dict:
         """
@@ -2082,6 +2300,9 @@ class Trainer:
                 "再開には使えません. last.pt を指定してください"
             )
 
+        # 学習するパラメータだけのチェックポイントは, 今のモデルで補完
+        self.complete_frozen(state)
+
         # 監視する指標や向きが変わると最良値を比べられないので同じものに制限
         if (state["monitor"], state["mode"]) != (
             monitor, self.trainer_cfg.mode
@@ -2184,6 +2405,8 @@ class Trainer:
             state["checkpoint"] = self.checkpoint.state_dict()
             if not self.trainer_cfg.checkpoint.last_with_best:
                 state = without_best_model(state)
+            if self.trainer_cfg.checkpoint.trainable_only:
+                state = self.omit_frozen(state)
             save_checkpoint(state, run_dir / "last.pt")
 
         # 続きのエポックとパラメータの更新回数から開始
@@ -2422,6 +2645,13 @@ class Trainer:
                 elif not separate:
                     weights = best["model"]
             if weights is not None:
+                # 学習するパラメータだけの best.pt は今のモデルで補完
+                meta = best.get("trainable_only")
+                if isinstance(meta, dict):
+                    weights = complete_weights(
+                        weights, self.model.state_dict(),
+                        meta.get("frozen") or {}, label=best_path.name
+                    )
                 self.checkpoint.best_model_state = copy_state_dict(weights)
                 self.logger.info(
                     f"ベストモデル (エポック {best_epoch}) の重みを "
@@ -2522,12 +2752,15 @@ class Trainer:
                 # model (学習しているモデル) ではなく best_model の重み
                 stored = (best.get("checkpoint") or {}).get("best_model")
                 weights = best["model"] if stored is None else stored
-                save_checkpoint({
+                light = {
                     "weights_only": True, "epoch": best["epoch"],
                     "monitor": best["monitor"],
                     "best_value": self.checkpoint.best_value,
                     "model": weights
-                }, target)
+                }
+                if "trainable_only" in best:
+                    light["trainable_only"] = best["trainable_only"]
+                save_checkpoint(light, target)
                 return
         shutil.copyfile(source, target)
 
@@ -2568,6 +2801,14 @@ class Trainer:
         else:
             self.log_scheduler(self.scheduler)
         self.log_monitor(monitor)
+
+        # 計算の精度, 勾配を貯めるバッチ数, チェックポイントの重みの範囲を記録
+        trainable_only = self.trainer_cfg.checkpoint.trainable_only
+        self.logger.info(
+            f"計算の精度: {self.trainer_cfg.precision}, 勾配を貯めるバッチ数: "
+            f"{self.accumulate_grad_batches}, チェックポイントの重み: "
+            f"{'学習するパラメータとバッファだけ' if trainable_only else '全て'}"
+        )
 
     def optimizer_info(self) -> list[dict]:
         """
@@ -3132,7 +3373,7 @@ class Trainer:
         per_epoch = 1
         if self.scheduler_interval == "step":
             try:
-                per_epoch = len(train_loader)
+                per_epoch = self.updates_per_epoch(len(train_loader))
                 if per_epoch == 0:
                     raise ValueError("train の loader が空です")
             except TypeError as error:
@@ -3406,6 +3647,25 @@ class Trainer:
         self.logger.warning(message)
         warnings.warn(message, stacklevel=2)
 
+    def updates_per_epoch(self, n_batches: int) -> int:
+        """
+        1 エポックのバッチ数から, パラメータを更新する回数を求める関数
+
+        Parameters
+        ----------
+        n_batches: int
+            1 エポックのバッチ数
+
+        Returns
+        ----------
+        updates: int
+            勾配を貯める数で割って切り上げた回数 (端数も 1 回更新)
+        """
+        # 貯める数ごとに 1 回, エポックの最後の端数も 1 回
+        updates = math.ceil(n_batches / self.accumulate_grad_batches)
+
+        return updates
+
     def plan_total_steps(
         self, train_loader: Iterable, continuing: bool = False
     ) -> None:
@@ -3428,7 +3688,7 @@ class Trainer:
             per_epoch = 1
         else:
             try:
-                per_epoch = len(train_loader)
+                per_epoch = self.updates_per_epoch(len(train_loader))
             except TypeError:
                 return
         total = self.end_epoch * per_epoch

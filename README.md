@@ -12,6 +12,7 @@
 - **torch の Optimizer と Scheduler をそのまま使える**: クラス名と引数を config に書くだけで, `torch.optim` にあるものを使える. closure が必要な LBFGS も自動で見分けて使える. Scheduler は学習の始めの warmup (`scheduler.warmup_steps`, `warmup_ratio`) と, 学習全体のステップ数に合わせた引数の補い (`auto`) も書ける. 自分で作って渡した Scheduler は `run.json` に残る. GAN や Actor-Critic のように, 部分ごとに別の損失と Optimizer で更新する複数の Optimizer も書ける
 - **ベストモデルと再開**: 監視する指標が最も良いモデルを保存して最後に戻す. Early Stopping, 勾配クリッピング, チェックポイントからの再開にも対応する
 - **重みの指数移動平均 (EMA)**: `trainer.ema.decay` に減衰率を書くだけで, EMA の重みで検証し, ベストモデルと `final_model.pt` も EMA の重みにする. EMA の状態はチェックポイントに入り, 再開しても通しの学習と一致する
+- **大きな学習済みのモデルの微調整**: 勾配の蓄積 (`trainer.accumulate_grad_batches`), bf16 の混合精度 (`trainer.precision: bf16`), 始める前に重みの一部を前置きを付け替えて読む (`trainer.init_weights`), 凍結した重みを省いたチェックポイント (`trainer.checkpoint.trainable_only`) を config に書くだけで使える. どれも再開しても通しの学習と一致する
 - **Lightning などに依存しない**: 素の PyTorch だけで書いている
 - **強化学習と方策の書き出し (任意)**: Gymnasium の形の環境とのやり取りを loader にして, 同じ `Trainer` で方策を学習し, 守り (行動の範囲, 止める条件, 外れたときの動き) と一緒に書き出せる. 再開では環境の乱数と状態も戻り, 通しの学習と一致する
 - **何の実験かと評価, 見本**: 実験の `task.yaml` (`write_task`, `task_from_dataset`), 学習の後のデータ全体の評価 (`save_evaluation`, `load_evaluations`), 入力と予測と正解の見本 (`save_sample`, `load_samples`) を, 実験の記録に残して読める

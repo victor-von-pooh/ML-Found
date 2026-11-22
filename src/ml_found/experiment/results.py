@@ -17,6 +17,9 @@ import numpy as np
 import torch
 
 from ml_found.training.status import now_iso
+from ml_found.utils.files import (
+    is_plain_dir, open_plain_dir, read_plain_file
+)
 
 # データ全体の評価と見本を置くディレクトリの名前
 EVALUATIONS_DIR = "evaluations"
@@ -50,23 +53,8 @@ NAME_PATTERN = re.compile(r"[A-Za-z0-9_@-][A-Za-z0-9_.@-]*")
 # 読む評価のファイルの大きさの上限 (ML-Dashboard の画面と同じ値)
 MAX_EVALUATION_BYTES = 20 * 1024 * 1024
 
-# 評価のファイルの読み込みの 1 回の大きさ
-READ_CHUNK_BYTES = 1 << 20
-
-# 評価のファイルを, リンクを辿らず (O_NOFOLLOW) 待たずに (O_NONBLOCK) 開く旗
-EVALUATION_FILE_FLAGS = (
-    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
-)
-
-# evaluations/ を, リンクを辿らずにディレクトリとして開く旗
-EVALUATION_DIR_FLAGS = (
-    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-)
-
-# Windows のジャンクションの印 (lstat の st_reparse_tag)
-JUNCTION_TAG = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+# 読む見本の一覧の大きさの上限 (評価と同じ値)
+MAX_SAMPLES_INDEX_BYTES = 20 * 1024 * 1024
 
 # 評価の種類
 EVALUATION_KINDS = ("table", "curve")
@@ -631,99 +619,6 @@ def save_evaluation(
     return path
 
 
-def can_use_dir_fd() -> bool:
-    """
-    ディレクトリを開いた番号から, リンクを辿らずに調べて開けるかを判定する
-    関数
-
-    Parameters
-    ----------
-    None
-
-    Returns
-    ----------
-    usable: bool
-        os.open と os.stat が dir_fd を, os.listdir が開いた番号を使え,
-        O_NOFOLLOW がある場合は True (Windows などは False)
-    """
-    usable = (
-        hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
-        and os.stat in os.supports_dir_fd and os.listdir in os.supports_fd
-    )
-
-    return usable
-
-
-def is_plain_dir(info: os.stat_result) -> bool:
-    """
-    lstat の結果が, リンクでもジャンクションでもないディレクトリかを判定する
-    関数
-
-    Parameters
-    ----------
-    info: os.stat_result
-        リンクを辿らずに調べた結果
-
-    Returns
-    ----------
-    plain: bool
-        リンクでもジャンクションでもないディレクトリなら True
-    """
-    plain = stat.S_ISDIR(info.st_mode) and (
-        getattr(info, "st_reparse_tag", 0) != JUNCTION_TAG
-    )
-
-    return plain
-
-
-def open_evaluations_dir(folder: Path) -> tuple[bool, Optional[int]]:
-    """
-    evaluations/ を, リンクを辿らずに確かめて開く関数
-
-    Parameters
-    ----------
-    folder: Path
-        evaluations/ の場所
-
-    Returns
-    ----------
-    opened: tuple[bool, Optional[int]]
-        読めるか (無い, ディレクトリでない, リンクの場合は False) と,
-        開いたディレクトリの番号 (dir_fd を使えない環境と読めない場合は None.
-        閉じるのは呼んだ側)
-    """
-    # 無い場合, ディレクトリでない場合, リンクの場合は読まない
-    try:
-        info = os.lstat(folder)
-    except (OSError, ValueError):
-        opened = (False, None)
-        return opened
-    if not is_plain_dir(info):
-        opened = (False, None)
-        return opened
-    if not can_use_dir_fd():
-        opened = (True, None)
-        return opened
-
-    # 確かめた後にリンクへ入れ替えられても辿らないように開き, 同じものかを確認
-    try:
-        dir_fd = os.open(folder, EVALUATION_DIR_FLAGS)
-    except (OSError, ValueError):
-        opened = (False, None)
-        return opened
-    try:
-        same = os.path.samestat(info, os.fstat(dir_fd))
-    except OSError:
-        same = False
-    if not same:
-        os.close(dir_fd)
-        opened = (False, None)
-        return opened
-    opened = (True, dir_fd)
-
-    return opened
-
-
 def evaluation_names(folder: Path, dir_fd: Optional[int]) -> list[str]:
     """
     evaluations/ の評価のファイルの名前を並べる関数
@@ -753,94 +648,6 @@ def evaluation_names(folder: Path, dir_fd: Optional[int]) -> list[str]:
     return names
 
 
-def read_limited(fd: int, limit: int) -> Optional[bytes]:
-    """
-    開いたファイルを, 上限の 1 バイト先までだけ読む関数
-
-    Parameters
-    ----------
-    fd: int
-        開いたファイルの番号 (閉じるのは呼んだ側)
-    limit: int
-        読む大きさの上限 (バイト)
-
-    Returns
-    ----------
-    content: Optional[bytes]
-        ファイルの中身, 上限を超えた場合は None
-    """
-    chunks = []
-    size = 0
-    while size <= limit:
-        chunk = os.read(fd, min(READ_CHUNK_BYTES, limit + 1 - size))
-        if not chunk:
-            break
-        chunks.append(chunk)
-        size += len(chunk)
-    if size > limit:
-        return None
-    content = b"".join(chunks)
-
-    return content
-
-
-def read_evaluation_file(
-    folder: Path, name: str, dir_fd: Optional[int]
-) -> Optional[bytes]:
-    """
-    評価のファイルを, 普通のファイルで上限の大きさまでの場合だけ読む関数
-
-    Parameters
-    ----------
-    folder: Path
-        evaluations/ の場所
-    name: str
-        評価のファイルの名前
-    dir_fd: Optional[int]
-        開いたディレクトリの番号, 無ければ場所から開く
-
-    Returns
-    ----------
-    content: Optional[bytes]
-        ファイルの中身. リンク, 普通でないファイル (FIFO など),
-        MAX_EVALUATION_BYTES を超えるファイル, 読めないファイルは None
-    """
-    # 開く前に, リンク, 普通でないファイル (FIFO は開くと止まる),
-    # 大きすぎるファイルを除外
-    try:
-        if dir_fd is not None:
-            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-        else:
-            info = os.lstat(folder / name)
-    except (OSError, ValueError):
-        return None
-    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_EVALUATION_BYTES:
-        return None
-
-    # 確かめた後に入れ替えられても辿らず止まらないように開き,
-    # 開いたものが確かめたものと同じ普通のファイルかを確認
-    try:
-        if dir_fd is not None:
-            fd = os.open(name, EVALUATION_FILE_FLAGS, dir_fd=dir_fd)
-        else:
-            fd = os.open(folder / name, EVALUATION_FILE_FLAGS)
-    except (OSError, ValueError):
-        return None
-    try:
-        opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(
-            info, opened
-        ):
-            return None
-        content = read_limited(fd, MAX_EVALUATION_BYTES)
-    except OSError:
-        return None
-    finally:
-        os.close(fd)
-
-    return content
-
-
 def load_evaluations(run_dir: Union[str, os.PathLike]) -> list[dict]:
     """
     実験のディレクトリの評価を全て読む関数
@@ -861,14 +668,16 @@ def load_evaluations(run_dir: Union[str, os.PathLike]) -> list[dict]:
     # evaluations/ 自体がリンクか, ディレクトリでなければ空
     folder = Path(run_dir) / EVALUATIONS_DIR
     evaluations: list[dict] = []
-    readable, dir_fd = open_evaluations_dir(folder)
+    readable, dir_fd = open_plain_dir(folder)
     if not readable:
         return evaluations
 
     # 一時ファイル (. で始まる) と読まなかったファイルは無視
     try:
         for name in evaluation_names(folder, dir_fd):
-            content = read_evaluation_file(folder, name, dir_fd)
+            content = read_plain_file(
+                folder, name, MAX_EVALUATION_BYTES, dir_fd
+            )
             if content is None:
                 continue
             try:
@@ -1429,12 +1238,51 @@ def read_samples_index(path: Path) -> tuple[list[dict], int]:
     ----------
     result: tuple[list[dict], int]
         見本の項目の並び (ファイルが無ければ空) と形式の版
-        (ファイルが無ければ今の版, 版の無い一覧は 1)
+        (ファイルが無ければ今の版, 版の無い一覧は 1). 一覧がリンク,
+        普通でないファイル, MAX_SAMPLES_INDEX_BYTES を超えるファイルの場合と,
+        samples/ がリンクの場合は ValueError
     """
-    if not path.is_file():
+    # samples/ か一覧が無い場合と, samples/ がディレクトリでないファイルの
+    # 場合 (sample_folder が誤りにする) は一覧が無いもの
+    root = path.parent
+    try:
+        root_info = os.lstat(root)
+    except FileNotFoundError:
         result = ([], SAMPLES_FORMAT_VERSION)
         return result
-    data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError(f"見本の一覧を読めません: {path}") from error
+    if not stat.S_ISDIR(root_info.st_mode) and not stat.S_ISLNK(
+        root_info.st_mode
+    ):
+        result = ([], SAMPLES_FORMAT_VERSION)
+        return result
+    if not is_plain_dir(root_info):
+        raise ValueError(
+            f"samples/ がリンクなので見本の一覧を読みません: {path}"
+        )
+    if not os.path.lexists(path):
+        result = ([], SAMPLES_FORMAT_VERSION)
+        return result
+
+    # リンク, 普通でないファイル, 大きすぎるファイルは読めない一覧
+    readable, dir_fd = open_plain_dir(root)
+    if not readable:
+        raise ValueError(f"見本の一覧を読めません: {path}")
+    try:
+        content = read_plain_file(
+            root, path.name, MAX_SAMPLES_INDEX_BYTES, dir_fd
+        )
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
+    if content is None:
+        raise ValueError(
+            "見本の一覧が, リンク, 普通でないファイル, "
+            f"{MAX_SAMPLES_INDEX_BYTES} バイトを超えるファイルのどれかか, "
+            f"読めません: {path}"
+        )
+    data = json.loads(content.decode("utf-8"))
     samples = data.get("samples") if isinstance(data, dict) else None
     if not isinstance(samples, list):
         raise ValueError(f"見本の一覧の形が正しくありません: {path}")
@@ -1633,13 +1481,15 @@ def save_sample(
     elif classes is not None:
         raise ValueError("classes は kind が mask の場合だけ渡せます")
 
-    # 一覧の読み書きは同じプロセスのスレッドの間で 1 つずつ
+    # 一覧の読み書きは同じプロセスのスレッドの間で 1 つずつ.
+    # 一覧を先に読むのは, samples/ がリンクの場合に外へディレクトリを
+    # 作る前に止めるため
     root = run_dir / SAMPLES_DIR
     index_path = root / SAMPLES_INDEX
     with SAMPLES_LOCK:
+        samples, version = read_samples_index(index_path)
         folder = sample_folder(root, name)
         path = folder / f"{stem}{suffix}"
-        samples, version = read_samples_index(index_path)
         if version > SAMPLES_FORMAT_VERSION:
             raise ValueError(
                 f"{index_path} の版 {version} は, この ML-Found が知っている"
@@ -1700,11 +1550,17 @@ def legacy_samples(root: Path) -> list[dict]:
     ----------
     samples: list[dict]
         名前とエポックの順の項目. 名前は番号の前の部分 (空か epoch なら
-        samples), 番号をエポックとし, legacy を True にする
+        samples), 番号をエポックとし, legacy を True にする.
+        samples/ が無いかリンクの場合は空
     """
-    # ML-Found の形より前のプロジェクトの画像 (samples/epoch_010.png など)
+    # ML-Found の形より前のプロジェクトの画像 (samples/epoch_010.png など).
+    # samples/ 自体がリンクなら, 実験の外を並べないので空
     samples: list[dict] = []
-    if not root.is_dir():
+    try:
+        info = os.lstat(root)
+    except (OSError, ValueError):
+        return samples
+    if not is_plain_dir(info):
         return samples
     for path in root.iterdir():
         match = LEGACY_IMAGE.match(path.name)
@@ -1762,7 +1618,9 @@ def load_samples(run_dir: Union[str, os.PathLike]) -> list[dict]:
     samples: list[dict]
         一覧の項目 (書いた順) と, samples/ の直下の番号付きの画像
         (ML-Found の形より前のプロジェクトのもの. legacy が True).
-        samples/ が無い実験は空. 一覧が読めない場合は直下の画像だけ.
+        samples/ が無い実験と, samples/ がリンクの実験は空. 一覧が
+        読めない場合 (リンク, 普通でないファイル, MAX_SAMPLES_INDEX_BYTES を
+        超えるファイルも) は直下の画像だけ.
         convention は今の版の意味 (古い版の shift は符号を反転).
         新しい版の一覧の項目は convention を None にし,
         newer_version を True にする

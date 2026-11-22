@@ -8,12 +8,16 @@ import yaml
 
 from ml_found.config.source import relative_to_project
 from ml_found.experiment.results import new_temp
+from ml_found.utils.files import read_plain_file
 
 if TYPE_CHECKING:
     from ml_found.experiment.setup import Experiment
 
 # 何の実験かを書くファイルの名前
 TASK_FILE = "task.yaml"
+
+# 読む task.yaml の大きさの上限 (何の実験かの説明には十分な大きさ)
+MAX_TASK_BYTES = 1024 * 1024
 
 # task.yaml の形式の版 (項目の意味を変えるか消す場合に上げる. docs/FORMAT.md)
 TASK_FORMAT_VERSION = 1
@@ -634,17 +638,20 @@ def load_task(run_dir: Union[str, os.PathLike]) -> Optional[dict]:
     ----------
     task: Optional[dict]
         task.yaml の中身, 無いか読めない場合は None
-        (task.yaml を書かなかった実験など).
+        (task.yaml を書かなかった実験など. リンク, 普通でないファイル,
+        MAX_TASK_BYTES を超えるファイルも読めないもの).
         新しい版では target.origin を unknown に置き換え, newer_version を
         True にする
     """
-    # 無い場合と壊れた場合は分からないものとして None
+    # 無い場合, 読まないファイルの場合, 壊れた場合は分からないものとして
+    # None (実験の外を読まず, FIFO で止まらないため)
     path = Path(run_dir) / TASK_FILE
-    if not path.is_file():
+    content = read_plain_file(path.parent, TASK_FILE, MAX_TASK_BYTES)
+    if content is None:
         return None
     try:
-        task = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, yaml.YAMLError):
+        task = yaml.safe_load(content.decode("utf-8"))
+    except (ValueError, yaml.YAMLError):
         return None
     if not isinstance(task, dict):
         return None

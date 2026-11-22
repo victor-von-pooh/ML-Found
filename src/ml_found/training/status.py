@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from ml_found.utils.files import read_plain_file
+
 # 実験の状態を書くファイルの形式の版 (項目の意味を変えるか消す場合と,
 # 実験のディレクトリの他のファイルの形を変える場合に上げる. docs/FORMAT.md)
 FORMAT_VERSION = 1
@@ -18,6 +20,12 @@ STOP_FILE = "STOP"
 
 # STOP のファイルにこの文字を書くと, エポックの途中でも止める
 STOP_NOW = "now"
+
+# 中身を確かめる STOP の大きさの上限 (超える場合は now でないものとする)
+MAX_STOP_BYTES = 1024
+
+# 読む run.json の大きさの上限 (実験の状態には十分な大きさ)
+MAX_RUN_BYTES = 1024 * 1024
 
 
 def now_iso() -> str:
@@ -337,9 +345,12 @@ class RunStatus:
         Returns
         ----------
         requested: bool
-            実験のディレクトリに STOP のファイルがあるかどうか
+            実験のディレクトリに STOP があるかどうか (リンク, ディレクトリ,
+            FIFO なども要求があるもの)
         """
-        requested = (self.run_dir / STOP_FILE).exists()
+        # 毎エポック確かめるので, 開かずにリンクを辿らずに調べるだけ
+        # (FIFO でも止まらず, リンクの先も読まない)
+        requested = os.path.lexists(self.run_dir / STOP_FILE)
 
         return requested
 
@@ -356,17 +367,23 @@ class RunStatus:
         Returns
         ----------
         requested: bool
-            STOP のファイルに now と書かれているかどうか
+            STOP の普通のファイルに now と書かれているかどうか
+            (リンク, 普通でないファイル, MAX_STOP_BYTES を超えるファイルは
+            読まずに now でないものとし, エポックの区切りで止める)
         """
         now = time.monotonic()
         if now - self.last_stop_check < self.progress_interval:
             return False
         self.last_stop_check = now
 
-        # 書きかけや読めない場合は, 要求が無いものとして扱い
+        # 書きかけ, 読まないファイル, 読めない場合は, 要求が無いものとして
+        # 扱い
+        content = read_plain_file(self.run_dir, STOP_FILE, MAX_STOP_BYTES)
+        if content is None:
+            return False
         try:
-            text = (self.run_dir / STOP_FILE).read_text(encoding="utf-8-sig")
-        except (OSError, UnicodeDecodeError):
+            text = content.decode("utf-8-sig")
+        except UnicodeDecodeError:
             return False
         requested = text.strip().lower() == STOP_NOW
 
@@ -407,13 +424,17 @@ def read_run_status(run_dir: Path) -> Optional[dict]:
     Returns
     ----------
     data: Optional[dict]
-        run.json の内容, 無いか読めない場合は None
+        run.json の内容, 無いか読めない場合は None (リンク, 普通でない
+        ファイル, MAX_RUN_BYTES を超えるファイルも読めないもの)
     """
-    # run.json は置き換えで書くので, 読めない場合は書かれていないものとして扱い
+    # run.json は置き換えで書くので, 読めない場合は書かれていないものとして
+    # 扱い (実験の外を読まず, FIFO で止まらないため)
+    content = read_plain_file(Path(run_dir), "run.json", MAX_RUN_BYTES)
+    if content is None:
+        return None
     try:
-        text = (Path(run_dir) / "run.json").read_text(encoding="utf-8")
-        data = json.loads(text)
-    except (OSError, ValueError):
+        data = json.loads(content.decode("utf-8"))
+    except ValueError:
         return None
     if not isinstance(data, dict):
         return None

@@ -109,6 +109,124 @@ def test_generalized_advantages() -> None:
     assert torch.allclose(advantages, expected)
 
 
+def stepwise_advantages(
+    rewards: torch.Tensor, values: torch.Tensor, final_values: torch.Tensor,
+    lengths: list[int], gamma: float, gae_lambda: float
+) -> torch.Tensor:
+    """
+    比べる元として, 1 歩ずつのテンソルの添字で利得 (GAE) を求める関数
+
+    Parameters
+    ----------
+    rewards: torch.Tensor
+        1 歩ごとの報酬
+    values: torch.Tensor
+        1 歩ごとの状態の価値
+    final_values: torch.Tensor
+        エピソードごとの最後の歩の後の状態の価値 (終了なら 0)
+    lengths: list[int]
+        エピソードごとの歩数 (バッチの中の順)
+    gamma: float
+        割引率
+    gae_lambda: float
+        利得の見積もりの重み
+
+    Returns
+    ----------
+    advantages: torch.Tensor
+        1 歩ごとの利得
+    """
+    # エピソードの後ろから, 次の状態の価値で 1 歩の TD の誤差を重ねて計算
+    advantages = torch.zeros_like(rewards)
+    start = 0
+    for index, length in enumerate(lengths):
+        next_value = final_values[index]
+        running = rewards.new_zeros(())
+        for t in reversed(range(start, start + length)):
+            delta = rewards[t] + gamma * next_value - values[t]
+            running = delta + gamma * gae_lambda * running
+            advantages[t] = running
+            next_value = values[t]
+        start += length
+
+    return advantages
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_generalized_advantages_matches_stepwise(
+    dtype: torch.dtype, seed: int
+) -> None:
+    """
+    乱数のバッチで, 1 歩ずつの添字の計算と同じ利得になることを確かめる
+    関数
+
+    Parameters
+    ----------
+    dtype: torch.dtype
+        報酬と価値の型
+    seed: int
+        乱数の種
+
+    Returns
+    ----------
+    None
+    """
+    # 長さ 1 を含む複数のエピソードと, 終了と打ち切りの混ざったバッチ
+    generator = np.random.default_rng(seed)
+    lengths = [1] + generator.integers(1, 30, size=20).tolist() + [1]
+    total = sum(lengths)
+    rewards = torch.tensor(generator.normal(size=total), dtype=dtype)
+    values = torch.tensor(generator.normal(size=total), dtype=dtype)
+    terminated = torch.tensor(
+        generator.integers(0, 2, size=len(lengths)), dtype=dtype
+    )
+    final_values = torch.tensor(
+        generator.normal(size=len(lengths)), dtype=dtype
+    ) * (1.0 - terminated)
+
+    # 割引率と重みの組ごとに, 型と値の一致
+    tolerance = 1e-5 if dtype == torch.float32 else 1e-12
+    for gamma, gae_lambda in [(0.99, 0.95), (0.9, 0.0), (0.5, 1.0)]:
+        advantages = generalized_advantages(
+            rewards, values, final_values, lengths, gamma, gae_lambda
+        )
+        expected = stepwise_advantages(
+            rewards, values, final_values, lengths, gamma, gae_lambda
+        )
+        assert advantages.dtype == dtype
+        assert advantages.device == rewards.device
+        assert torch.allclose(
+            advantages, expected, rtol=tolerance, atol=tolerance
+        )
+
+
+def test_generalized_advantages_without_gradient() -> None:
+    """
+    勾配を持つ価値を渡しても, 利得が勾配を持たないことを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 勾配を持つ価値と, 勾配の無い利得
+    rewards = torch.tensor([1.0, 0.0, 2.0])
+    values = torch.tensor([0.5, 0.25, 1.0], requires_grad=True)
+    final_values = torch.tensor([0.0, 3.0], requires_grad=True)
+    advantages = generalized_advantages(
+        rewards, values, final_values, [2, 1], 0.9, 0.95
+    )
+    expected = stepwise_advantages(
+        rewards, values.detach(), final_values.detach(), [2, 1], 0.9, 0.95
+    )
+    assert not advantages.requires_grad
+    assert torch.allclose(advantages, expected)
+
+
 def test_batch_terminated_and_final_observation() -> None:
     """
     終了か打ち切りかと, 最後の歩の後の観測をバッチに入れることを確かめる

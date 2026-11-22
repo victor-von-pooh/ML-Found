@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import nn
 
@@ -68,6 +69,26 @@ def eval_state_values(
     return values
 
 
+def _to_array(tensor: torch.Tensor) -> np.ndarray:
+    """
+    テンソルを, 勾配を切った CPU の 64 ビットの浮動小数点数の配列にする関数
+
+    Parameters
+    ----------
+    tensor: torch.Tensor
+        1 次元のテンソル
+
+    Returns
+    ----------
+    array: np.ndarray
+        同じ値の 64 ビットの浮動小数点数の配列
+    """
+    # 勾配を切り, CPU の 64 ビットに変換
+    array = tensor.detach().to(device="cpu", dtype=torch.float64).numpy()
+
+    return array
+
+
 def generalized_advantages(
     rewards: torch.Tensor, values: torch.Tensor, final_values: torch.Tensor,
     lengths: list[int], gamma: float, gae_lambda: float
@@ -95,18 +116,34 @@ def generalized_advantages(
     advantages: torch.Tensor
         1 歩ごとの利得
     """
-    # エピソードの後ろから, 次の状態の価値で 1 歩の TD の誤差を重ねて計算
-    advantages = torch.zeros_like(rewards)
-    start = 0
-    for index, length in enumerate(lengths):
-        next_value = final_values[index]
-        running = rewards.new_zeros(())
-        for t in reversed(range(start, start + length)):
-            delta = rewards[t] + gamma * next_value - values[t]
-            running = delta + gamma * gae_lambda * running
-            advantages[t] = running
-            next_value = values[t]
-        start += length
+    # 勾配を切り, CPU の 64 ビットの配列に変換
+    reward_array = _to_array(rewards)
+    value_array = _to_array(values)
+    final_array = _to_array(final_values)
+
+    # 次の状態の価値 (エピソードの最後の歩は最後の歩の後の状態の価値) と,
+    # 重ねる重み (エピソードの最後の歩で 0 にして, 前のエピソードと分ける).
+    # 歩数 0 のエピソードは歩が無いので除外
+    length_array = np.asarray(lengths, dtype=np.int64)
+    ends = np.cumsum(length_array)[length_array > 0] - 1
+    next_values = np.empty_like(value_array)
+    next_values[:-1] = value_array[1:]
+    next_values[ends] = final_array[length_array > 0]
+    decays = np.full_like(value_array, gamma * gae_lambda)
+    decays[ends] = 0.0
+
+    # 1 歩の TD の誤差をまとめて求め, バッチの後ろから重ねて計算
+    deltas = reward_array + gamma * next_values - value_array
+    summed = []
+    running = 0.0
+    for delta, decay in zip(deltas[::-1].tolist(), decays[::-1].tolist()):
+        running = delta + decay * running
+        summed.append(running)
+
+    # 前からの順に戻し, 元のデバイスと型のテンソルに変換
+    advantages = torch.tensor(
+        summed[::-1], dtype=rewards.dtype, device=rewards.device
+    )
 
     return advantages
 

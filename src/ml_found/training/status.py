@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from ml_found.utils.files import is_plain_file, read_plain_file
+from ml_found.utils.files import read_plain_file
 
 # 実験の状態を書くファイルの形式の版 (項目の意味を変えるか消す場合と,
 # 実験のディレクトリの他のファイルの形を変える場合に上げる. docs/FORMAT.md)
@@ -345,11 +345,12 @@ class RunStatus:
         Returns
         ----------
         requested: bool
-            実験のディレクトリに STOP の普通のファイルがあるかどうか
-            (リンク, ディレクトリ, FIFO などは要求が無いもの)
+            実験のディレクトリに STOP があるかどうか (リンク, ディレクトリ,
+            FIFO なども要求があるもの)
         """
-        # 毎エポック確かめるので, 開かずに調べるだけ (FIFO でも止まらない)
-        requested = is_plain_file(self.run_dir / STOP_FILE)
+        # 毎エポック確かめるので, 開かずにリンクを辿らずに調べるだけ
+        # (FIFO でも止まらず, リンクの先も読まない)
+        requested = os.path.lexists(self.run_dir / STOP_FILE)
 
         return requested
 
@@ -368,7 +369,7 @@ class RunStatus:
         requested: bool
             STOP の普通のファイルに now と書かれているかどうか
             (リンク, 普通でないファイル, MAX_STOP_BYTES を超えるファイルは
-            now でないもの)
+            読まずに now でないものとし, エポックの区切りで止める)
         """
         now = time.monotonic()
         if now - self.last_stop_check < self.progress_interval:

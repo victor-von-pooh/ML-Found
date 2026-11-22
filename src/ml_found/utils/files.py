@@ -67,31 +67,6 @@ def is_plain_dir(info: os.stat_result) -> bool:
     return plain
 
 
-def is_plain_file(path: Path) -> bool:
-    """
-    場所に, リンクでない普通のファイルがあるかを, 開かずに判定する関数
-
-    Parameters
-    ----------
-    path: Path
-        判定する場所
-
-    Returns
-    ----------
-    plain: bool
-        リンクでない普通のファイルなら True. 無い場合, リンク, ディレクトリ,
-        FIFO などの普通でないファイル, 調べられない場合は False
-    """
-    try:
-        info = os.lstat(path)
-    except (OSError, ValueError):
-        plain = False
-        return plain
-    plain = stat.S_ISREG(info.st_mode)
-
-    return plain
-
-
 def open_plain_dir(folder: Path) -> tuple[bool, Optional[int]]:
     """
     ディレクトリを, リンクを辿らずに確かめて開く関数
@@ -171,12 +146,80 @@ def read_limited(fd: int, limit: int) -> Optional[bytes]:
     return content
 
 
+def read_checked_file(
+    folder: Path, name: str, limit: int, dir_fd: Optional[int]
+) -> tuple[Optional[bytes], bool]:
+    """
+    ファイルを, 調べたものと開いたものが同じ普通のファイルの場合だけ 1 回
+    読む関数
+
+    Parameters
+    ----------
+    folder: Path
+        ファイルを置くディレクトリ
+    name: str
+        ファイルの名前
+    limit: int
+        読む大きさの上限 (バイト)
+    dir_fd: Optional[int]
+        folder を開いた番号, 無ければ場所から開く
+
+    Returns
+    ----------
+    result: tuple[Optional[bytes], bool]
+        ファイルの中身 (読まなかった場合は None) と, 調べた後に別の
+        ファイルへ置き換わったか (読み直せば読めることがある)
+    """
+    # 開く前に, リンク, 普通でないファイル (FIFO は開くと止まる),
+    # 大きすぎるファイルを除外
+    try:
+        if dir_fd is not None:
+            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        else:
+            info = os.lstat(folder / name)
+    except (OSError, ValueError):
+        result = (None, False)
+        return result
+    if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+        result = (None, False)
+        return result
+
+    # 確かめた後に入れ替えられても辿らず止まらないように開き,
+    # 開いたものが確かめたものと同じ普通のファイルかを確認
+    try:
+        if dir_fd is not None:
+            fd = os.open(name, PLAIN_FILE_FLAGS, dir_fd=dir_fd)
+        else:
+            fd = os.open(folder / name, PLAIN_FILE_FLAGS)
+    except (OSError, ValueError):
+        result = (None, False)
+        return result
+    try:
+        opened = os.fstat(fd)
+        if not os.path.samestat(info, opened):
+            result = (None, True)
+            return result
+        if not stat.S_ISREG(opened.st_mode):
+            result = (None, False)
+            return result
+        result = (read_limited(fd, limit), False)
+    except OSError:
+        result = (None, False)
+    finally:
+        os.close(fd)
+
+    return result
+
+
 def read_plain_file(
     folder: Path, name: str, limit: int, dir_fd: Optional[int] = None
 ) -> Optional[bytes]:
     """
     ファイルを, リンクでない普通のファイルで上限の大きさまでの場合だけ読む
     関数
+
+    調べた後に置き換わった場合 (書き手が一時ファイルから置き換えた瞬間)
+    は, 1 回だけ読み直す
 
     Parameters
     ----------
@@ -195,37 +238,8 @@ def read_plain_file(
         ファイルの中身. 無いファイル, リンク, 普通でないファイル (FIFO など),
         上限を超えるファイル, 読めないファイルは None
     """
-    # 開く前に, リンク, 普通でないファイル (FIFO は開くと止まる),
-    # 大きすぎるファイルを除外
-    try:
-        if dir_fd is not None:
-            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-        else:
-            info = os.lstat(folder / name)
-    except (OSError, ValueError):
-        return None
-    if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
-        return None
-
-    # 確かめた後に入れ替えられても辿らず止まらないように開き,
-    # 開いたものが確かめたものと同じ普通のファイルかを確認
-    try:
-        if dir_fd is not None:
-            fd = os.open(name, PLAIN_FILE_FLAGS, dir_fd=dir_fd)
-        else:
-            fd = os.open(folder / name, PLAIN_FILE_FLAGS)
-    except (OSError, ValueError):
-        return None
-    try:
-        opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(
-            info, opened
-        ):
-            return None
-        content = read_limited(fd, limit)
-    except OSError:
-        return None
-    finally:
-        os.close(fd)
+    content, changed = read_checked_file(folder, name, limit, dir_fd)
+    if changed:
+        content, _ = read_checked_file(folder, name, limit, dir_fd)
 
     return content

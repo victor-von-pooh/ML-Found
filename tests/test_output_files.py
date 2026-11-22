@@ -128,8 +128,8 @@ def test_stop_plain_file(tmp_path: Path) -> None:
 @pytest.mark.parametrize("kind", BAD_KINDS)
 def test_stop_not_plain_file(tmp_path: Path, kind: str) -> None:
     """
-    リンク, ディレクトリ, FIFO の STOP を, 止まらずに要求が無いものと
-    することを確かめる関数
+    リンク, ディレクトリ, FIFO の STOP を, 開かずにエポックの区切りで止める
+    要求とし, 中身を now と読まないことを確かめる関数
 
     Parameters
     ----------
@@ -146,8 +146,81 @@ def test_stop_not_plain_file(tmp_path: Path, kind: str) -> None:
     run_dir.mkdir()
     put_bad_file(run_dir / "STOP", kind, b"now\n")
     run = RunStatus(run_dir, progress_interval=0.0)
-    assert not run.stop_requested()
+    assert run.stop_requested()
     assert not run.stop_now_requested()
+
+
+def test_stop_dangling_link(tmp_path: Path) -> None:
+    """
+    先の無いリンクの STOP も, エポックの区切りで止める要求とすることを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    (tmp_path / "STOP").symlink_to(tmp_path / "missing")
+    run = RunStatus(tmp_path, progress_interval=0.0)
+    assert run.stop_requested()
+    assert not run.stop_now_requested()
+
+
+def test_read_plain_file_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    調べた後に置き換わったファイルを, 1 回だけ読み直すことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        置き換わりの見分けを差し替える
+
+    Returns
+    ----------
+    None
+    """
+    (tmp_path / "run.json").write_bytes(b"{}")
+    calls = []
+    limit = [1]
+    samestat = os.path.samestat
+
+    def replaced_first(first: os.stat_result, second: os.stat_result) -> bool:
+        """
+        初めの limit[0] 回だけ置き換わったものとする関数
+
+        Parameters
+        ----------
+        first: os.stat_result
+            調べた結果
+        second: os.stat_result
+            開いたものの結果
+
+        Returns
+        ----------
+        same: bool
+            同じファイルかどうか
+        """
+        calls.append(None)
+        same = len(calls) > limit[0] and samestat(first, second)
+
+        return same
+
+    # 1 回の置き換わりは読み直して読め, 2 回続くと読まない
+    monkeypatch.setattr(os.path, "samestat", replaced_first)
+    assert files.read_plain_file(tmp_path, "run.json", 10) == b"{}"
+    assert len(calls) == 2
+    calls.clear()
+    limit[0] = 2
+    assert files.read_plain_file(tmp_path, "run.json", 10) is None
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("kind", BAD_KINDS)
@@ -327,3 +400,54 @@ def test_samples_linked_folder(tmp_path: Path) -> None:
     assert read_samples_index(tmp_path / "samples" / "index.json") == (
         [], results.SAMPLES_FORMAT_VERSION
     )
+
+
+def test_save_sample_broken_index_creates_nothing(tmp_path: Path) -> None:
+    """
+    壊れた一覧の実験で, save_sample が見本のディレクトリを作らずに止まる
+    ことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    root = experiment.run_dir / "samples"
+    root.mkdir()
+    (root / "index.json").write_text('{"samples": 3}', encoding="utf-8")
+    with pytest.raises(ValueError, match="見本の一覧"):
+        save_sample(experiment, "note", "文", epoch=1)
+    assert not (root / "note").exists()
+    (root / "index.json").write_text("{", encoding="utf-8")
+    with pytest.raises(ValueError):
+        save_sample(experiment, "note", "文", epoch=1)
+    assert not (root / "note").exists()
+
+
+def test_save_sample_first_time(tmp_path: Path) -> None:
+    """
+    一覧が無い実験の初めての保存で, samples/ と一覧を作ることを確かめる
+    関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    experiment = make_experiment(tmp_path)
+    root = experiment.run_dir / "samples"
+    assert not root.exists()
+    path = save_sample(experiment, "note", "文", epoch=1)
+    assert path == root / "note" / "epoch_0001.txt"
+    samples, version = read_samples_index(root / "index.json")
+    assert version == results.SAMPLES_FORMAT_VERSION
+    assert [item["file"] for item in samples] == ["note/epoch_0001.txt"]

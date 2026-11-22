@@ -141,6 +141,10 @@ PROGRESS_KEYS = {
 # (OneCycleLR の pct_start, three_phase, anneal_strategy)
 ARGUMENT_PRIVATE_KEYS = {"_schedule_phases", "_anneal_func_type"}
 
+# Scheduler の状態のうち, 他の引数から決まる値 (ReduceLROnPlateau の mode
+# から決まる値と, min_lr から決まる値)
+DERIVED_KEYS = {"mode_worse", "default_min_lr"}
+
 # Scheduler が Optimizer のパラメータグループに書き込む引数の値
 SCHEDULER_GROUP_KEYS = ("max_lr", "min_lr", "base_momentum", "max_momentum")
 
@@ -197,6 +201,132 @@ def scheduler_label(
         label += f"({', '.join(names[1:])})"
 
     return label
+
+
+def json_value(value: Any) -> Any:
+    """
+    run.json に書ける値に直す関数
+
+    Parameters
+    ----------
+    value: Any
+        Scheduler の状態の値
+
+    Returns
+    ----------
+    converted: Any
+        数, 文字, 真偽値, null と, それらのリストと辞書. 無限大と非数は
+        文字, それ以外の書けない値は文字の表し
+    """
+    # 配列と NumPy の数は Python の値に直してから変換
+    if hasattr(value, "tolist") and not isinstance(value, (list, tuple)):
+        value = value.tolist()
+    if value is None or isinstance(value, (bool, int, str)):
+        converted = value
+    elif isinstance(value, float):
+        converted = value if math.isfinite(value) else str(value)
+    elif isinstance(value, dict):
+        converted = {str(key): json_value(item) for key, item in value.items()}
+    elif isinstance(value, (list, tuple)):
+        converted = [json_value(item) for item in value]
+    else:
+        converted = str(value)
+
+    return converted
+
+
+def callable_name(function: Callable) -> str:
+    """
+    Scheduler に渡した関数の名前を返す関数
+
+    Parameters
+    ----------
+    function: Callable
+        lr_lambda や scale_fn に渡した関数か, 呼び出せるオブジェクト
+
+    Returns
+    ----------
+    name: str
+        関数の名前 (無名の関数は <lambda>), オブジェクトはクラスの名前
+    """
+    name = getattr(function, "__name__", None)
+    if not isinstance(name, str):
+        name = type(function).__name__
+
+    return name
+
+
+def scheduler_params(
+    scheduler: Optional[optim.lr_scheduler.LRScheduler]
+) -> Optional[dict]:
+    """
+    run.json に書く Scheduler の主な引数を返す関数
+
+    Scheduler の状態から, 学習の進み具合で変わる値と内部の値を除き,
+    状態の名前のまま並べる. 引数は名前を変えて持つものがある (OneCycleLR の
+    epochs は total_steps など) ので, クラスの引数ではなく状態から取る
+
+    Parameters
+    ----------
+    scheduler: Optional[optim.lr_scheduler.LRScheduler]
+        Scheduler, 使わない場合と学習を始めるまで作らない場合は None
+
+    Returns
+    ----------
+    params: Optional[dict]
+        引数の名前と値. 中に Scheduler を持つもの (SequentialLR,
+        ChainedScheduler) は, 中の Scheduler ごとのクラスの名前と引数を
+        schedulers に並べた辞書. 使わない場合は None
+    """
+    if scheduler is None:
+        return None
+
+    # 中に Scheduler を持つものは, 区切りと中の Scheduler ごとの引数
+    lr_scheduler = optim.lr_scheduler
+    if isinstance(
+        scheduler, (lr_scheduler.SequentialLR, lr_scheduler.ChainedScheduler)
+    ):
+        params = {}
+        if isinstance(scheduler, lr_scheduler.SequentialLR):
+            params["milestones"] = json_value(scheduler._milestones)
+        params["schedulers"] = [
+            {
+                "scheduler": type(inner).__name__,
+                "params": scheduler_params(inner)
+            }
+            for inner in scheduler._schedulers
+        ]
+        return params
+
+    # 学習の進み具合で変わる値と内部の値以外の状態
+    # CyclicLR の base_lrs は Optimizer の学習率ではなく引数の base_lr
+    state = scheduler.state_dict()
+    params = {
+        key: json_value(value) for key, value in state.items()
+        if (
+            not key.startswith("_") and key not in PROGRESS_KEYS
+            and key not in DERIVED_KEYS
+        ) or key in ARGUMENT_PRIVATE_KEYS
+    }
+    if isinstance(scheduler, lr_scheduler.CyclicLR):
+        params["base_lrs"] = json_value(state.get("base_lrs"))
+
+    # 渡した関数 (状態には残らない) の名前
+    if hasattr(scheduler, "lr_lambdas"):
+        params["lr_lambdas"] = [
+            callable_name(function) for function in scheduler.lr_lambdas
+        ]
+    custom = getattr(scheduler, "_scale_fn_custom", None)
+    if custom is not None:
+        params["scale_fn"] = callable_name(custom)
+
+    # OneCycleLR が Optimizer に書き込む引数の値 (max_lr など)
+    if isinstance(scheduler, lr_scheduler.OneCycleLR):
+        params["groups"] = json_value(
+            scheduler_group_values(scheduler.optimizer)
+        )
+
+    return params
 
 
 def saved_scheduler_classes(state: dict) -> Optional[list[str]]:
@@ -2424,7 +2554,7 @@ class Trainer:
     def optimizer_info(self) -> list[dict]:
         """
         run.json に書く, Optimizer ごとの名前, クラス, 受け持つ部分, Scheduler
-        をまとめる関数
+        と引数をまとめる関数
 
         Parameters
         ----------
@@ -2433,9 +2563,10 @@ class Trainer:
         Returns
         ----------
         info: list[dict]
-            Optimizer ごとの name, optimizer, modules, scheduler の辞書.
-            1 つの Optimizer の場合は name と modules が None の 1 つ.
-            学習を始めるまで作らない Scheduler は, 作るまで None
+            Optimizer ごとの name, optimizer, modules, scheduler,
+            scheduler_params の辞書. 1 つの Optimizer の場合は name と
+            modules が None の 1 つ. 学習を始めるまで作らない Scheduler は,
+            作るまで None
         """
         # 名前付きの場合は config の順に, 受け持つ部分と Scheduler を付加
         if self.named:
@@ -2451,7 +2582,8 @@ class Trainer:
                     "modules": [
                         str(module) for module in cfg.optimizers[name].modules
                     ],
-                    "scheduler": scheduler_label(schedulers.get(name))
+                    "scheduler": scheduler_label(schedulers.get(name)),
+                    "scheduler_params": scheduler_params(schedulers.get(name))
                 }
                 for name in self.optimizer
             ]
@@ -2461,7 +2593,8 @@ class Trainer:
         info = [{
             "name": None, "optimizer": type(self.optimizer).__name__,
             "modules": None,
-            "scheduler": scheduler_label(self.scheduler)
+            "scheduler": scheduler_label(self.scheduler),
+            "scheduler_params": scheduler_params(self.scheduler)
         }]
 
         return info

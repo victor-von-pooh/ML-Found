@@ -276,7 +276,7 @@ class EMATrainer(Trainer):
 指標を返さない場合 (画像を保存するだけ, など) は空の辞書を返す. `step` の指標と同じ名前は使えない (エラー).
 Optimizer や Scheduler を自分で作る場合は `Trainer(model, experiment, step, optimizer, scheduler)` のように渡す.
 渡した Scheduler にも, config で作った場合と同じく `scheduler.interval` と ReduceLROnPlateau の確認が行われる.
-自分で作った Scheduler は `config.yaml` に残らない (`train.log` にはクラス名と状態が残る).
+自分で作った Scheduler は `config.yaml` に残らない. クラス名と主な引数は `run.json` の `optimizers` (`scheduler` と `scheduler_params`) に, クラス名と状態は `train.log` に残る. `scheduler_params` の形は [FORMAT.md](FORMAT.md) の「run.json」の節にあり, config から作った Scheduler も同じ形で書く.
 
 ## 10. Scheduler の総ステップ数と warmup
 
@@ -895,7 +895,7 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | `best.pt` | ベストモデルのチェックポイント (`best_weights_only: true` の場合は重みだけ. `select_best: false` の場合は作らない) |
 | `last.pt` | 最後のエポックのチェックポイント, ベストモデルの重みも含む (`last_with_best: false` の場合は含まない). `trainer.ema.decay` を使う場合は EMA の状態も含む. 再開に使う |
 | `final_model.pt` | ベストモデルの重みだけ (`restore_best: false` か `select_best: false` の場合は最後のエポックの重み. `trainer.ema.decay` を使った場合は EMA の重み, `eval_model` を上書きした場合はそのモデルの重み), cpu のテンソル |
-| `run.json` | 実験の状態 (`running`, `completed`, `stopped`, `failed`), 開始, 更新, 終了の時刻 (タイムゾーン付き) と所要時間 (`duration_sec`), 予定と終えたエポック数 (`fit` を呼び直した場合は前の `fit` までを含めた数), 再開した最初のエポック (`fit` を呼び直した場合は続きの最初のエポック), 監視する指標とその向き (`mode`), ベストモデルを選ぶか (`select_best`. `false` の場合はベストのエポックと値が `null`), ベストのエポックと値, Early Stopping で止めたエポック, `final_model.pt` の重み (`best`, `last`, エポックの途中で止めて戻せなかった場合 (`eval_model` を上書きし, そのモデルの状態を `extra_state_dict` で保存していない場合を含む) は `partial`), 乱数シード, デバイス, Optimizer ごとの名前 (名前付きの場合), クラスの名前, 受け持つ部分 (名前付きの場合), Scheduler のクラスの名前 (warmup を付けた場合は `SequentialLR(LinearLR, CosineAnnealingLR)` のように中のクラスも. `fit` を呼ぶまで作らない Scheduler は学習を始めるときに書く) (`optimizers`. `Trainer` の作成で失敗した場合は `null`), プロセスの ID とホスト名, エラーの内容, 形式の版. 学習を始めたときに作り, エポックごと (1 秒以上の間隔. 間隔の中の更新は次の進み具合の書き込みと一緒に書く), 再開したときと終了時に更新. `Trainer` の作成で失敗した場合と, `start_experiment` の後に `fit` の外 (データの読み込みやモデルの作成など) で処理されなかったエラーでスクリプトが止まった場合も `failed` (キーボードの割り込みは `stopped`) で書く |
+| `run.json` | 実験の状態 (`running`, `completed`, `stopped`, `failed`), 開始, 更新, 終了の時刻 (タイムゾーン付き) と所要時間 (`duration_sec`), 予定と終えたエポック数 (`fit` を呼び直した場合は前の `fit` までを含めた数), 再開した最初のエポック (`fit` を呼び直した場合は続きの最初のエポック), 監視する指標とその向き (`mode`), ベストモデルを選ぶか (`select_best`. `false` の場合はベストのエポックと値が `null`), ベストのエポックと値, Early Stopping で止めたエポック, `final_model.pt` の重み (`best`, `last`, エポックの途中で止めて戻せなかった場合 (`eval_model` を上書きし, そのモデルの状態を `extra_state_dict` で保存していない場合を含む) は `partial`), 乱数シード, デバイス, Optimizer ごとの名前 (名前付きの場合), クラスの名前, 受け持つ部分 (名前付きの場合), Scheduler のクラスの名前 (warmup を付けた場合は `SequentialLR(LinearLR, CosineAnnealingLR)` のように中のクラスも. `fit` を呼ぶまで作らない Scheduler は学習を始めるときに書く) と主な引数 (`scheduler_params`) (`optimizers`. `Trainer` の作成で失敗した場合は `null`), プロセスの ID とホスト名, エラーの内容, 形式の版. 学習を始めたときに作り, エポックごと (1 秒以上の間隔. 間隔の中の更新は次の進み具合の書き込みと一緒に書く), 再開したときと終了時に更新. `Trainer` の作成で失敗した場合と, `start_experiment` の後に `fit` の外 (データの読み込みやモデルの作成など) で処理されなかったエラーでスクリプトが止まった場合も `failed` (キーボードの割り込みは `stopped`) で書く |
 | `task.yaml` | 任意. 何の実験か (受け持ち, 出力の意味, 正解の種類と出どころ, 作り方, 元にしたもの, データセット). config の `task` か `write_task` で書く (「何の実験か, データ全体の評価, 見本」) |
 | `evaluations/` | 任意. `save_evaluation` で書いたデータ全体の評価 (`<名前>.json`) |
 | `samples/` | 任意. `save_sample` で書いた見本と一覧 (`index.json`) |

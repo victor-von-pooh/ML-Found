@@ -37,12 +37,6 @@
 - 終わりの条件: 測った結果で, 設定を足すか今の設定で足りるかを決め, 文書に書く
 - つながり: 無し
 
-### 自分で渡した Scheduler の引数を出力先に残す
-- 何を: `Trainer` に自分で作って渡した Scheduler の主な引数を, 出力先 (`run.json` か `config.yaml` の横) に残す
-- なぜ: 今は `config.yaml` の `scheduler` が `name: null` のままで, クラスの名前と状態は `run.json` と `train.log` にしか残らない. 同じ条件で学習し直すときに引数を探す手間がかかる
-- 終わりの条件: 渡した Scheduler の引数が, 画面 (ML-Dashboard) で読める形で出力先に残る
-- つながり: ML-Dashboard (実験の設定の表示)
-
 ### 出力先を作る前に config 全体の参照を確かめる
 - 何を: `start_experiment` が出力先を作る前に, config 全体の参照 (`${...}`) を解決できるかを確かめる
 - なぜ: 読み込み関数を通らない config では, 解決できない参照が config を保存するときに誤りになり, `config.yaml` だけの出力先が残る

@@ -16,7 +16,7 @@ from ml_found.experiment.setup import Experiment, start_experiment
 from ml_found.training.callbacks import load_checkpoint
 from ml_found.training.history import History
 from ml_found.training.registry import describe_schedulers
-from ml_found.training.trainer import Trainer
+from ml_found.training.trainer import Trainer, scheduler_params
 
 
 def make_experiment(tmp_path: Path, text: str = "") -> Experiment:
@@ -960,6 +960,17 @@ def test_custom_scheduler(tmp_path: Path) -> None:
     assert trainer.scheduler is scheduler
     assert trainer.global_step == 8
 
+    # 渡した Scheduler の主な引数は config.yaml に無く, run.json に記録
+    saved = OmegaConf.load(experiment.run_dir / "config.yaml")
+    assert saved.scheduler.name is None
+    status = json.loads(
+        (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+    )
+    params = status["optimizers"][0]["scheduler_params"]
+    assert params["total_steps"] == 8
+    assert params["groups"][0]["max_lr"] == pytest.approx(0.1)
+    assert "last_epoch" not in params
+
     # 別の Optimizer で作った Scheduler はエラー
     other = torch.optim.SGD(nn.Linear(1, 1).parameters(), lr=0.1)
     with pytest.raises(ValueError, match="optimizer"):
@@ -984,6 +995,111 @@ def test_custom_scheduler(tmp_path: Path) -> None:
             model, plateau, regression_step, optimizer,
             torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min")
         )
+
+
+def warmup_factor(epoch: int) -> float:
+    """
+    LambdaLR に渡す, 学習率の倍率を返す関数
+
+    Parameters
+    ----------
+    epoch: int
+        Scheduler を進めた回数
+
+    Returns
+    ----------
+    factor: float
+        学習率の倍率
+    """
+    factor = min(1.0, (epoch + 1) / 4)
+
+    return factor
+
+
+def test_scheduler_params_of_classes() -> None:
+    """
+    run.json に書く Scheduler の主な引数が, Scheduler の種類ごとに JSON で
+    書ける形になることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 進み具合で変わる値と内部の値を除いた状態 (StepLR)
+    lr_scheduler = torch.optim.lr_scheduler
+    optimizer = torch.optim.SGD(nn.Linear(1, 1).parameters(), lr=0.1)
+    step = lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.5)
+    step.step()
+    assert scheduler_params(step) == {"step_size": 3, "gamma": 0.5}
+    assert scheduler_params(None) is None
+
+    # LambdaLR の関数は名前 (無名の関数は <lambda>)
+    optimizer = torch.optim.SGD(nn.Linear(1, 1).parameters(), lr=0.1)
+    named = lr_scheduler.LambdaLR(optimizer, [warmup_factor])
+    assert scheduler_params(named) == {"lr_lambdas": ["warmup_factor"]}
+    optimizer = torch.optim.SGD(nn.Linear(1, 1).parameters(), lr=0.1)
+    anonymous = lr_scheduler.LambdaLR(optimizer, lambda epoch: 1.0)
+    assert scheduler_params(anonymous) == {"lr_lambdas": ["<lambda>"]}
+
+    # ReduceLROnPlateau は無限大の値 (best, mode_worse) を書かない
+    optimizer = torch.optim.SGD(nn.Linear(1, 1).parameters(), lr=0.1)
+    plateau = lr_scheduler.ReduceLROnPlateau(
+        optimizer, patience=3, factor=0.2
+    )
+    params = scheduler_params(plateau)
+    assert params["patience"] == 3
+    assert params["factor"] == pytest.approx(0.2)
+    assert params["mode"] == "min"
+    assert not {"best", "mode_worse", "num_bad_epochs"} & set(params)
+    json.dumps(params, allow_nan=False)
+
+    # warmup の入れ子 (SequentialLR の中の SequentialLR と OneCycleLR)
+    optimizer = torch.optim.SGD(
+        nn.Linear(1, 1).parameters(), lr=0.1, momentum=0.9
+    )
+    inner = lr_scheduler.SequentialLR(
+        optimizer, [
+            lr_scheduler.ConstantLR(optimizer, factor=0.5, total_iters=2),
+            lr_scheduler.OneCycleLR(optimizer, max_lr=1.0, total_steps=10)
+        ],
+        milestones=[2]
+    )
+    outer = lr_scheduler.SequentialLR(
+        optimizer, [
+            lr_scheduler.LinearLR(optimizer, 0.1, total_iters=5), inner
+        ],
+        milestones=[5]
+    )
+    params = scheduler_params(outer)
+    assert params["milestones"] == [5]
+    assert [item["scheduler"] for item in params["schedulers"]] == [
+        "LinearLR", "SequentialLR"
+    ]
+    assert params["schedulers"][0]["params"]["total_iters"] == 5
+    nested = params["schedulers"][1]["params"]
+    assert nested["milestones"] == [2]
+    one_cycle = nested["schedulers"][1]["params"]
+    assert one_cycle["total_steps"] == 10
+    assert one_cycle["groups"][0]["max_lr"] == pytest.approx(1.0)
+    json.dumps(params, allow_nan=False)
+
+    # ChainedScheduler は区切りを持たず, 中の Scheduler ごとの引数
+    optimizer = torch.optim.SGD(nn.Linear(1, 1).parameters(), lr=0.1)
+    chained = lr_scheduler.ChainedScheduler([
+        lr_scheduler.StepLR(optimizer, step_size=2),
+        lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+    ])
+    assert scheduler_params(chained) == {
+        "schedulers": [
+            {"scheduler": "StepLR",
+             "params": {"step_size": 2, "gamma": 0.1}},
+            {"scheduler": "ExponentialLR", "params": {"gamma": 0.9}}
+        ]
+    }
 
 
 @pytest.mark.parametrize(
@@ -3235,6 +3351,12 @@ def test_warmup(tmp_path: Path) -> None:
     assert status["optimizers"][0]["scheduler"] == (
         "SequentialLR(LinearLR, CosineAnnealingLR)"
     )
+    params = status["optimizers"][0]["scheduler_params"]
+    assert params["milestones"] == [3]
+    assert params["schedulers"][1] == {
+        "scheduler": "CosineAnnealingLR",
+        "params": {"T_max": 9, "eta_min": 0.0}
+    }
 
     # Scheduler の名前が無い場合は warmup だけ (その後は一定)
     experiment = make_experiment(

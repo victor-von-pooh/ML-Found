@@ -59,7 +59,7 @@ def test_completed_status(tmp_path: Path) -> None:
     assert status["device"] == "cpu"
     assert status["optimizers"] == [
         {"name": None, "optimizer": "Adam", "modules": None,
-         "scheduler": None}
+         "scheduler": None, "scheduler_params": None}
     ]
     assert status["duration_sec"] >= 0
     assert status["error"] is None

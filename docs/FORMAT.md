@@ -126,9 +126,10 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `final_weights` | 文字か null | `final_model.pt` の重み (`best`, `last`, `partial`) |
 | `seed` | 整数か null | 乱数のシード |
 | `device` | 文字 | 学習したデバイス |
-| `optimizers` | リストか null | Optimizer ごとの辞書. `name` (名前付きの Optimizer の名前, 1 つの場合は null), `optimizer` (クラスの名前), `modules` (受け持つ部分の名前のリスト, 1 つの場合は null), `scheduler` (クラスの名前, 使わない場合は null). `Trainer` を作れなかった場合は null |
+| `optimizers` | リストか null | Optimizer ごとの辞書. `name` (名前付きの Optimizer の名前, 1 つの場合は null), `optimizer` (クラスの名前), `modules` (受け持つ部分の名前のリスト, 1 つの場合は null), `scheduler` (クラスの名前, 使わない場合は null), `scheduler_params` (Scheduler の主な引数の辞書, 使わない場合は null. 下の「Scheduler の引数」). `Trainer` を作れなかった場合は null |
 | `error` | 文字か null | 止まった原因のエラー |
 
+- **Scheduler の引数** (`scheduler_params`): config から作った Scheduler も, 自分で作って `Trainer` に渡した Scheduler も, Scheduler の状態 (`state_dict()`) から学習の進み具合で変わる値 (`last_epoch`, `CyclicLR` 以外の `base_lrs`, ReduceLROnPlateau の `best` など), 内部の値, 他の引数から決まる値 (ReduceLROnPlateau の `mode_worse`, `default_min_lr`) を除いたものを, 状態の名前のまま書く. そのため名前を変えて持つ引数は状態の名前になる (`OneCycleLR` の `epochs` と `steps_per_epoch` は `total_steps`, `pct_start` は `_schedule_phases` の区切りのステップ, `anneal_strategy` は `_anneal_func_type`, `CyclicLR` の `max_lr` は `max_lrs`, `base_lr` は `base_lrs`). 加えて, `OneCycleLR` が Optimizer に書き込む値 (`max_lr`, `min_lr`, `base_momentum`, `max_momentum`) をパラメータグループごとのリスト `groups` に, `LambdaLR` と `MultiplicativeLR` の関数は名前のリスト `lr_lambdas` (無名の関数は `<lambda>`) に, `CyclicLR` の自分の `scale_fn` は名前 `scale_fn` に書く. 中に Scheduler を持つもの (`SequentialLR`, `ChainedScheduler`) は, `schedulers` に中の Scheduler ごとの `{"scheduler": クラスの名前, "params": 同じ形の辞書}` を並べ, `SequentialLR` は区切り `milestones` も書く. JSON に書けない値は文字 (無限大と非数は `"inf"`, `"-inf"`, `"nan"`, 数でも文字でもない値はその文字の表し) にする. 値は学習を始めるときのもの
 - `running` のまま残った実験は, 主にプロセスが強制終了されたもの (`fit` を使わずに学習した場合も残る). 同じホストなら `pid` で, 別のホストからは `progress.json` の `updated_at` で見分ける
 
 ### progress.json

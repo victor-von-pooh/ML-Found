@@ -162,8 +162,9 @@ class RunStatus:
         optimizers: Optional[list] = None
             Optimizer ごとの name (名前付きの場合の名前, 1 つの場合は None),
             optimizer (クラスの名前), modules (受け持つ部分, 1 つの場合は
-            None), scheduler (クラスの名前, 使わない場合は None) の辞書の
-            リスト. Trainer を作れなかった場合は None
+            None), scheduler (クラスの名前, 使わない場合は None),
+            scheduler_params (Scheduler の主な引数, 使わない場合は None) の
+            辞書のリスト. Trainer を作れなかった場合は None
 
         Returns
         ----------

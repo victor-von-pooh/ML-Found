@@ -147,6 +147,22 @@ REQUIREMENTS: dict[str, dict[str, Any]] = {
             "入れ直す. Mac の GPU は CUDA ではなく mps (experiment.device) を使う"
         )
     },
+    "fid": {
+        "description": "生成の画像の FID (pytorch-fid の Inception の特徴)",
+        "checks": [{"kind": "module", "name": "pytorch_fid"}],
+        "match": "all",
+        "install": {
+            "kind": "pip",
+            "extra": "fid",
+            "packages": ["pytorch-fid"],
+            "url": "https://github.com/mseitzer/pytorch-fid"
+        },
+        "note": (
+            "torchvision と scipy も一緒に入る. 初めて使うときに学習済みの"
+            "重み (約 91 MB) を GitHub から取り, PyTorch のキャッシュ "
+            "(TORCH_HOME) に置く. ネットワークの無い計算機では先に取っておく"
+        )
+    },
     "eda": {
         "description": "データの分析 (ML-EDA. データセットの読み込みと前処理)",
         # 書き出したデータセットは parquet なので, 読む pyarrow の確かめも

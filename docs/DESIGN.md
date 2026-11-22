@@ -50,7 +50,7 @@ ML-Found/
 ├── src/ml_found/
 │   ├── config/             # config の型定義, 読み込み, 差分, 起動のしかた
 │   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録, 何の実験か, 評価と見本
-│   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, 重みの指数移動平均 (EMA), チェックポイント, 記録, 実験の状態
+│   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, 重みの指数移動平均 (EMA), チェックポイント, 記録, 実験の状態, 生成の画像の FID
 │   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, Actor-Critic, 方策の一式と守り, 守り付きの評価
 │   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿, 出力先のファイルをリンクを辿らずに読む関数
 ├── examples/
@@ -73,6 +73,7 @@ ML-Found/
 | `mujoco` | `gymnasium` 1.0 以上と `mujoco` (モジュールが見つかるか. `gymnasium` は版も) | `pip install -e "./ML-Found[mujoco]"`. 描画には OpenGL が要る ([公式の手順](https://mujoco.readthedocs.io/en/stable/python.html)) |
 | `ros2` | `rclpy` か `ros2` のコマンドのどちらか | pip では入らない. [公式の手順](https://docs.ros.org/) で入れ, setup のスクリプトを source してから Python を起動する |
 | `cuda` | `torch.cuda.is_available()` | NVIDIA のドライバと, [PyTorch の手順](https://pytorch.org/get-started/locally/) で CUDA 付きの PyTorch |
+| `fid` | `pytorch_fid` (モジュールが見つかるか. 生成の画像の FID の特徴を取り出す Inception. 下の「生成の画像の FID」) | `pip install -e "./ML-Found[fid]"` (追加の依存 `fid`. torchvision と scipy も入る). 学習済みの重みは初めて使うときに取る |
 | `eda` | `ml_eda` と `pyarrow` (ML-EDA. データセットの読み込みと前処理. 書き出したデータセットは parquet) | `pip install "ml-eda[parquet] @ git+https://github.com/victor-von-pooh/ML-EDA.git"` (追加の依存 `parquet` で pyarrow も入る) |
 | `modelcontrol` | `ml_modelcontrol` (ML-ModelControl. モデルの定義から作る) | `pip install "ml-modelcontrol @ git+https://github.com/victor-von-pooh/ML-ModelControl.git"` |
 | `inference` | `ml_inference` (ML-Inference. 学習したモデルで予測し, 判断に使う) と `pyarrow` (データセットの parquet を読む) | `pip install "ml-inference @ git+https://github.com/victor-von-pooh/ML-Inference.git"` (ML-EDA (pyarrow を含む) と ML-ModelControl も一緒に入る) |
@@ -403,6 +404,48 @@ trainer:
 - 判定しないエポックで `STOP` や `add_callback` の関数で止めた場合は, 検証せずに止める. ベストモデルは最後に判定したエポックのまま (1 回も判定しないうちに止めた場合はベストモデルが無く, `final_model.pt` は最後のエポックの重み). 止めたエポックの `last.pt` は保存する
 - 監視する指標が無いか nan や inf のエラーは, 最初に判定するエポック (間隔が 5 ならエポック 5) まで出ない. 名前の誤りに早く気付くには, 初めは `trainer.epochs` を小さくして試す
 - エポックの番号は通しなので, 再開と `fit` の呼び直しでも同じエポックを判定する. 再開で間隔を変えると警告が出る (待つ回数は判定の回数のまま続く). ただし予定の最後のエポックは必ず判定するので, 途中のエポック数で止めた学習 (例えば `trainer.epochs: 4` で学習して 7 まで再開) では, その最後のエポック (4) も判定し, 通しで学習した場合より判定が 1 回多くなる (間隔で割り切れるエポック数で区切ると同じになる)
+
+### 生成の画像の FID
+
+生成した画像と本物の画像の近さは, `FrechetInceptionDistance` で FID (Fréchet Inception Distance) として数え, `on_epoch_end` の指標として記録する. 学習済みの Inception (pytorch-fid) で画像ごとの特徴 (既定は 2048 次元) を取り出し, 本物と生成の特徴の平均と共分散から 2 つの正規分布のフレシェ距離を求める. 小さいほど本物に近い. 重い評価なので `trainer.valid_every_n_epochs` で間隔を空けて, 検証のときだけ数える. 監視する指標にすると, ベストモデルを FID で選べる (`trainer.monitor: valid/fid`, `trainer.mode: min`).
+
+```python
+import torch
+
+from ml_found import FrechetInceptionDistance, Trainer
+
+
+class GenerativeTrainer(Trainer):
+    def __init__(self, model, experiment, step_fn, real_loader):
+        super(GenerativeTrainer, self).__init__(model, experiment, step_fn)
+        # 追加の依存 fid が無ければ入れ方を示す MissingRequirementError
+        self.fid = FrechetInceptionDistance(device=self.device)
+        self.real_loader = real_loader
+
+    def on_epoch_end(self, phase: str) -> dict:
+        if phase != "valid":
+            return {}
+        with torch.no_grad():
+            # 本物の特徴は 1 回だけ足して使い回す
+            if not self.fid.has_real:
+                for images, _ in self.real_loader:
+                    self.fid.update_real(images)
+            # 生成はエポックごとに作り直す
+            self.fid.reset_fake()
+            for _ in range(10):
+                self.fid.update_fake(self.eval_model().sample(500))
+        return {"fid": self.fid.compute()}
+```
+
+- 画像は `(N, 3, H, W)` か `(N, 1, H, W)` (白黒は 3 つのチャンネルに写す) のテンソルで, 値は `[0, 1]`. 範囲の外か nan を含む画像はエラーになる (`[-1, 1]` で生成するモデルは `(x + 1) / 2` にして渡す). 大きさは Inception が 299 x 299 に直すので問わない. 特徴は推論モードで勾配を計算せずに取り出す
+- 特徴は 1 枚ずつ持たずに, 数と和と外積の和を float64 で足し合わせる (mps でも CPU で足す). バッチに分けて足しても, まとめて足した場合と同じ値になる. 共分散を求めるので, 本物と生成は 2 枚以上ずつ要る (足りなければエラー). FID は枚数で偏り, 特徴の次元 (2048) より少ないと共分散が退化するので, 比べる FID は同じ枚数で数え, 枚数は特徴の次元より多くする (よく使われるのは 1 万から 5 万枚)
+- `reset_fake` は生成の特徴だけを捨て, 本物の特徴は残す. `reset` は両方を捨てる. 本物の特徴はチェックポイントに入れないので, 再開した学習では最初の検証で数え直す
+- 生成に乱数を使う場合は `trainer.valid_seed` を決めると, 毎回同じ乱数で生成し, FID が乱数で揺れにくい
+- `dims` (64, 192, 768, 2048) で Inception の特徴を取るブロックを選べる. 論文などの FID と比べるのは既定の 2048 だけ
+- `feature_model` に自分の特徴のモデル (`(N, 3, H, W)` の `[0, 1]` の画像から `(N, D)` の特徴を返す `nn.Module`) を渡すと, pytorch-fid も重みも使わない (テストや, 画像でない領域の特徴の距離)
+- `frechet_distance(mean1, cov1, mean2, cov2)` は, 平均と共分散からフレシェ距離だけを求める. 行列の平方根は対称な `cov1^(1/2) cov2 cov1^(1/2)` の固有値から求めるので, scipy に依存しない
+- 学習済みの重み (`pt_inception-2015-12-05-6726825d.pth`, 約 91 MB) は, 特徴のモデルを渡さずに `FrechetInceptionDistance` を作るとき (pytorch-fid の Inception を作るとき) に pytorch-fid の GitHub のリリースから取り, PyTorch のキャッシュ (`TORCH_HOME`, 既定は `~/.cache/torch/hub/checkpoints`) に置く. 2 回目からはキャッシュを使う. ネットワークの無い計算機では, 一度ネットワークのある所で作ってキャッシュを写しておく
+- 使用の条件: pytorch-fid は Apache License 2.0. 重みは TensorFlow の FID の公式の実装 (TTUR, Apache License 2.0) が使う Inception (TensorFlow が配った `inception-2015-12-05`) を PyTorch に移したもので, 重みに別の条件は書かれていない. ImageNet で学習した重みなので, 公開や商用に使う場合は ImageNet の利用条件も確かめる. 重みは ML-Found に含めず, 使う人の計算機に取る
 
 ## 15. 外部ライブラリの乱数
 

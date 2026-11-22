@@ -15,7 +15,7 @@
 - **Lightning などに依存しない**: 素の PyTorch だけで書いている
 - **強化学習と方策の書き出し (任意)**: Gymnasium の形の環境とのやり取りを loader にして, 同じ `Trainer` で方策を学習し, 守り (行動の範囲, 止める条件, 外れたときの動き) と一緒に書き出せる. 再開では環境の乱数と状態も戻り, 通しの学習と一致する
 - **何の実験かと評価, 見本**: 実験の `task.yaml` (`write_task`, `task_from_dataset`), 学習の後のデータ全体の評価 (`save_evaluation`, `load_evaluations`), 入力と予測と正解の見本 (`save_sample`, `load_samples`) を, 実験の記録に残して読める
-- **追加の依存の案内**: 任意の機能 (強化学習, MuJoCo, ROS 2, CUDA, 他の段階のライブラリ ML-EDA, ML-ModelControl, ML-Inference) ごとに, 要るもの, 入っているかの確かめ方 (版の下限があれば版も), 入れ方の一覧を持ち, 足りなければ次の一手を案内して止まる
+- **追加の依存の案内**: 任意の機能 (強化学習, MuJoCo, ROS 2, CUDA, 生成の画像の FID, 他の段階のライブラリ ML-EDA, ML-ModelControl, ML-Inference) ごとに, 要るもの, 入っているかの確かめ方 (版の下限があれば版も), 入れ方の一覧を持ち, 足りなければ次の一手を案内して止まる
 
 ## どのアプリから使われるか
 
@@ -61,7 +61,7 @@ python examples/minibatch/train.py   # fullbatch, cartpole, pendulum も同じ
 python examples/minibatch/train.py --experiment configs/experiment/examples/ema.yaml   # EMA の重みで検証する例
 ```
 
-任意の機能 (強化学習, MuJoCo, ROS 2, CUDA, 他の段階のライブラリ) に要るもの (追加の依存) と入れ方は [docs/DESIGN.md](docs/DESIGN.md) の「追加の依存」.
+任意の機能 (強化学習, MuJoCo, ROS 2, CUDA, 生成の画像の FID, 他の段階のライブラリ) に要るもの (追加の依存) と入れ方は [docs/DESIGN.md](docs/DESIGN.md) の「追加の依存」.
 
 ## 使い方
 

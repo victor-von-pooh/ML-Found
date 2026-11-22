@@ -6,7 +6,9 @@ from ml_found.experiment import (
     original_coordinates, register_rng, save_evaluation, save_sample,
     start_experiment, task_from_dataset, unregister_rng, write_task
 )
-from ml_found.training import History, Trainer
+from ml_found.training import (
+    FrechetInceptionDistance, History, Trainer, frechet_distance
+)
 from ml_found.utils.requirements import (
     MissingRequirementError, describe_requirements, environment_packages,
     require
@@ -19,8 +21,9 @@ except metadata.PackageNotFoundError:
     __version__ = "不明"
 
 __all__ = [
-    "Experiment", "History", "MissingRequirementError", "Trainer",
-    "describe_origin", "describe_requirements", "environment_packages",
+    "Experiment", "FrechetInceptionDistance", "History",
+    "MissingRequirementError", "Trainer", "describe_origin",
+    "describe_requirements", "environment_packages", "frechet_distance",
     "load_config", "load_evaluations", "load_project_config", "load_samples",
     "load_task", "original_coordinates", "register_rng", "require",
     "save_evaluation", "save_sample", "start_experiment", "task_from_dataset",

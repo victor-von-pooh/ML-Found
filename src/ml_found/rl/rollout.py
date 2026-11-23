@@ -1116,7 +1116,8 @@ class EvaluationLoader:
         check_max_rows(max_trajectory_rows, "max_trajectory_rows")
         if record_trajectory:
             Trajectory(
-                max_trajectory_rows, env.observation_space, env.action_space
+                max_trajectory_rows, getattr(env, "observation_space", None),
+                env.action_space
             ).check_spaces()
 
         # 評価用の環境, モデル, エピソードの数, 乱数の種を保存
@@ -1210,7 +1211,8 @@ class EvaluationLoader:
         trajectory = None
         if self.record_trajectory:
             trajectory = Trajectory(
-                self.max_trajectory_rows, self.env.observation_space,
+                self.max_trajectory_rows,
+                getattr(self.env, "observation_space", None),
                 self.env.action_space
             )
             trajectory.source = "evaluation_loader"

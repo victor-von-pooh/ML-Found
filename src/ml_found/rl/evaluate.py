@@ -236,13 +236,19 @@ def evaluate_policy(
     # 終えたら閉じる処理 (渡された環境はそのまま)
     owned = isinstance(env_or_id, str)
     env = make_env(env_or_id) if owned else env_or_id
-    if trajectory is not None:
-        trajectory.set_spaces(env.observation_space, env.action_space)
-        trajectory.check_spaces()
-        trajectory.source = "evaluate_policy"
-        trajectory.env_id = env_id(env)
     rows = []
     try:
+        # 軌跡の空間と出どころ (要素の数が上限を超えれば止まる)
+        if trajectory is not None:
+            trajectory.set_spaces(
+                getattr(env, "observation_space", None),
+                getattr(env, "action_space", None)
+            )
+            trajectory.check_spaces()
+            trajectory.source = "evaluate_policy"
+            trajectory.env_id = env_id(env)
+
+        # エピソードごとに seed + 番号で, 守り付きで動かす
         for index in range(int(episodes)):
             episode_seed = None if seed is None else int(seed) + index
             row = run_guarded_episode(

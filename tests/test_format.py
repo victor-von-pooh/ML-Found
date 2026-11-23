@@ -17,6 +17,7 @@ from ml_found.experiment.results import (
 )
 from ml_found.experiment.setup import start_experiment
 from ml_found.experiment.task import TASK_FORMAT_VERSION, load_task
+from ml_found.rl import TRAJECTORY_FORMAT_VERSION, Trajectory, save_trajectory
 from ml_found.training.status import FORMAT_VERSION
 from ml_found.training.trainer import Trainer
 from test_trainer import make_loader, regression_step
@@ -361,3 +362,43 @@ def test_optional_files_match_format(
     assert index["format_version"] == SAMPLES_FORMAT_VERSION == 2
     assert set(index["samples"][0]) == documented_keys("### samples")
     assert (run_dir / "samples" / "note" / "epoch_0005.txt").is_file()
+
+
+def test_trajectory_files_match_format(tmp_path: Path) -> None:
+    """
+    軌跡の表と説明 (trajectories/) が docs/FORMAT.md の形と合うことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # 守りの結果のある 1 エピソードの軌跡
+    trajectory = Trajectory()
+    trajectory.start_episode(0, 3)
+    trajectory.add([0.0, 1.0], 1, 1.0, False, False, "ok", [])
+    trajectory.add([0.5, 1.5], None, None, False, False, "stop", ["範囲"])
+    trajectory.end_episode()
+    path = save_trajectory(tmp_path, "guarded", trajectory, epoch=2)
+    assert path == tmp_path / "trajectories" / "guarded.csv"
+
+    # 説明の項目と版, 表の列は FORMAT.md の表の列の決まり
+    info = json.loads(
+        (tmp_path / "trajectories" / "guarded.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert set(info) == documented_keys("#### trajectories/<名前>.json")
+    assert info["format_version"] == TRAJECTORY_FORMAT_VERSION == 1
+    with open(path, encoding="utf-8", newline="") as file:
+        header = next(csv.reader(file))
+    assert header == info["columns"]
+    documented = documented_keys("### trajectories")
+    for column in header:
+        name = re.sub(r"_\d+$", "_<番号>", column)
+        assert name in documented

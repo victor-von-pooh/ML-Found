@@ -961,8 +961,8 @@ save_trajectory(experiment, "guarded", trajectory, epoch=best_epoch)
 
 - **記録**: `EvaluationLoader(record_trajectory=True)` は評価のたびに新しい軌跡を作り, 終えた評価の軌跡を `trajectory` に置く (前の評価のものは置き換える. 記録する前は `None`). `trainer.valid_every_n_epochs` が 2 以上では, 検証しないエポックの `trajectory` は前の検証のまま. `evaluate_policy` には何も記録していない `Trajectory` を渡す (1 回の評価に 1 つ. エピソードの番号が重ならないため). 学習の `RolloutLoader` は記録しない
 - **行の中身**: 観測は行動を選ぶ前の観測, 行動は環境に渡した行動 (連続の行動は空間の範囲で clip した値. `evaluate_policy` では守りを当てた行動). `evaluate_policy` で守りが `stop` か `handover` にした判断は, 行動と報酬の空の行にする (その観測で止めたことが分かるように). `max_episode_steps` と `max_steps` で切った歩は打ち切り (`truncated`) にする (`RolloutLoader` の扱いと同じ)
-- **上限**: `Trajectory(max_rows=100000)` (`EvaluationLoader` では `max_trajectory_rows`) が貯める歩の数の上限. 上限に達したエピソードと後のエピソードは途中までを残さずに捨てる (メモリを使い切らないため). `save_trajectory` は表を 64 MiB (`MAX_TRAJECTORY_BYTES`) までのエピソードで書く. どちらで切ったかに関わらず, 入らなかったエピソードの数を説明の `dropped_episodes` に, 全てが入ったかを `complete` に書く. 観測と行動の要素の数はそれぞれ 256 まで (画像のような観測は表にしない. 超える空間は `EvaluationLoader` を作るときと `evaluate_policy` の始めに, 空間で分からない値は記録の最初の歩でエラー)
-- **書き出し**: `save_trajectory(実験, 名前, 軌跡, epoch=None, description=None)`. 名前は評価の名前と同じ決まりで, 同じ名前で書き直すと置き換える. 書くのは評価の後だけで, 学習中の軌跡の記録は `last.pt` に入らない (再開で戻さない)
+- **上限**: `Trajectory(max_rows=100000)` (`EvaluationLoader` では `max_trajectory_rows`) が貯める歩の数の上限. 記録の間も書く文字数 (見出しを含む) を足し上げ, 書き出しと同じ 64 MiB (`MAX_TRAJECTORY_BYTES`) を超えたら貯めるのを止める. どちらかの上限に達したエピソードと後のエピソードは途中までを残さずに捨てる (メモリを使い切らないため). `save_trajectory` も表を 64 MiB までのエピソードで書く. どちらで切ったかに関わらず, 入らなかったエピソードの数を説明の `dropped_episodes` に, 全てが入ったかを `complete` に書く. 観測と行動の要素の数はそれぞれ 256 まで (画像のような観測は表にしない. 超える空間と, Discrete と Box の他の空間 (Dict, Tuple など) は `EvaluationLoader` を作るときと `evaluate_policy` の始めに, 空間で分からない値は記録の最初の歩でエラー)
+- **書き出し**: `save_trajectory(実験, 名前, 軌跡, epoch=None, description=None)`. 名前は評価の名前と同じ決まりで, 同じ名前で書き直すと置き換える. 説明, 表の順に置き換え, 失敗すると元の表と説明を残す. 書くのは評価の後だけで, 学習中の軌跡の記録は `last.pt` に入らない (再開で戻さない)
 - CSV にしたのは, 追加の依存 (pyarrow など) なしに書け, ML-Dashboard と人がそのまま読めるため. 利用者の Parquet の表も同じ列の決まりで読む (FORMAT.md の「利用者の表」)
 
 ## 23. config の項目

@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import math
 import os
 from pathlib import Path
@@ -8,8 +9,7 @@ from typing import Any, Optional
 import numpy as np
 
 from ml_found.experiment.results import (
-    check_name, check_optional_text, new_temp, run_directory,
-    write_json_file
+    check_name, check_optional_text, new_temp, run_directory
 )
 from ml_found.rl.bundle import space_to_dict
 from ml_found.training.status import now_iso
@@ -183,8 +183,8 @@ def format_number(value: Any) -> str:
     Returns
     ----------
     text: str
-        整数はそのまま, 小数は型の最短の書き方, nan は空, 無限大は
-        inf か -inf, 真偽値は 0 か 1
+        整数はそのまま, 小数は型の最短の書き方, nan は nan, 無限大は
+        inf か -inf, 真偽値は 0 か 1 (空は欠けた値だけに使う)
     """
     # 真偽値と整数はそのまま, 小数は NumPy の型の最短の書き方
     if isinstance(value, (bool, np.bool_)):
@@ -195,7 +195,7 @@ def format_number(value: Any) -> str:
         return text
     number = float(value)
     if math.isnan(number):
-        text = ""
+        text = "nan"
     elif math.isinf(number):
         text = "inf" if number > 0 else "-inf"
     elif isinstance(value, np.floating):
@@ -303,11 +303,14 @@ class Trajectory:
         self.observation_size: Optional[int] = None
         self.action_size: Optional[int] = None
 
-        # 終えたエピソードの歩とその数, 途中のエピソード, 上限に達したか,
-        # 入れなかったエピソードの数, 守りの結果があるか
+        # 終えたエピソードの歩とその数と CSV の文字数, 途中のエピソードと
+        # その文字数, 上限に達したか, 入れなかったエピソードの数,
+        # 守りの結果があるか
         self.episodes: list[list[dict]] = []
         self.n_rows = 0
+        self.n_bytes = 0
         self.current: Optional[list[dict]] = None
+        self.current_bytes = 0
         self.current_episode = 0
         self.current_seed: Optional[int] = None
         self.full = False
@@ -346,11 +349,17 @@ class Trajectory:
         ----------
         None
         """
-        # 空間から決められない場合は, 最初の値で確かめる
+        # Discrete と Box の他 (Dict, Tuple など) は表の列にできないので
+        # 止まり, 空間の分からない場合は最初の値で確かめる
         for prefix, space in (
             (OBSERVATION_PREFIX, self.observation_space),
             (ACTION_PREFIX, self.action_space)
         ):
+            if space is not None and not is_table_space(space):
+                raise ValueError(
+                    f"{prefix} の空間は Discrete か Box にしてください "
+                    f"(軌跡の表の列にできません): {space!r}"
+                )
             size = space_size(space)
             if size >= 0:
                 column_names(prefix, size)
@@ -372,6 +381,7 @@ class Trajectory:
         """
         # 前のエピソードを終えずに始めた場合は, 前のものを捨てる
         self.current = []
+        self.current_bytes = 0
         self.current_episode = int(episode)
         self.current_seed = None if seed is None else int(seed)
 
@@ -443,16 +453,16 @@ class Trajectory:
         if self.full:
             return
         if self.n_rows + len(self.current) >= self.max_rows:
-            self.full = True
-            self.current = []
+            self.mark_full()
             return
 
         # 値はその場で CSV の文字にし, 観測を後で書き換えられても変わらない形.
         # 行動があれば resolve_sizes が要素の数を決めている
-        if guard is not None:
-            self.guarded = True
         text_reasons = REASON_SEPARATOR.join(str(r) for r in reasons or [])
-        self.current.append({
+        row = {
+            "episode": self.current_episode,
+            "step": len(self.current),
+            "seed": self.current_seed,
             "observation": flat_values(observation, self.observation_size),
             "action": None if action is None else flat_values(
                 action, self.action_size
@@ -462,7 +472,35 @@ class Trajectory:
             "truncated": bool(truncated),
             "guard": guard,
             "guard_reasons": text_reasons
-        })
+        }
+
+        # 書き出しと同じ文字数の上限 (見出しを含む) で, メモリも抑える
+        guarded = self.guarded or guard is not None
+        size = len(self.episode_lines([row], guarded).encode("utf-8"))
+        header = len(self.header(guarded).encode("utf-8"))
+        total = header + self.n_bytes + self.current_bytes + size
+        if total > MAX_TRAJECTORY_BYTES:
+            self.mark_full()
+            return
+        self.guarded = guarded
+        self.current.append(row)
+        self.current_bytes += size
+
+    def mark_full(self) -> None:
+        """
+        上限に達した印を付け, 途中のエピソードを捨てる関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        self.full = True
+        self.current = []
+        self.current_bytes = 0
 
     def end_episode(self) -> None:
         """
@@ -482,21 +520,20 @@ class Trajectory:
         if self.full:
             self.dropped_episodes += 1
         else:
-            for index, row in enumerate(self.current):
-                row["episode"] = self.current_episode
-                row["step"] = index
-                row["seed"] = self.current_seed
             self.episodes.append(self.current)
             self.n_rows += len(self.current)
+            self.n_bytes += self.current_bytes
         self.current = None
+        self.current_bytes = 0
 
-    def columns(self) -> list[str]:
+    def columns(self, guarded: Optional[bool] = None) -> list[str]:
         """
         表の列の名前を返す関数
 
         Parameters
         ----------
-        None
+        guarded: Optional[bool] = None
+            守りの結果の列を足すか, None の場合は記録した軌跡から決める
 
         Returns
         ----------
@@ -513,10 +550,28 @@ class Trajectory:
             "episode", "step", *observation, *action, "reward",
             "terminated", "truncated", "seed"
         ]
-        if self.guarded:
+        if self.guarded if guarded is None else guarded:
             columns.extend(GUARD_COLUMNS)
 
         return columns
+
+    def header(self, guarded: Optional[bool] = None) -> str:
+        """
+        表の見出しの行を返す関数
+
+        Parameters
+        ----------
+        guarded: Optional[bool] = None
+            守りの結果の列を足すか, None の場合は記録した軌跡から決める
+
+        Returns
+        ----------
+        text: str
+            列の名前を , でつないだ行
+        """
+        text = ",".join(self.columns(guarded)) + "\n"
+
+        return text
 
     def column_types(self) -> dict[str, str]:
         """
@@ -555,7 +610,9 @@ class Trajectory:
 
         return types
 
-    def episode_lines(self, steps: list[dict]) -> str:
+    def episode_lines(
+        self, steps: list[dict], guarded: Optional[bool] = None
+    ) -> str:
         """
         1 つのエピソードの歩を CSV の行にする関数
 
@@ -563,13 +620,17 @@ class Trajectory:
         ----------
         steps: list[dict]
             エピソードの歩
+        guarded: Optional[bool] = None
+            守りの結果の列を書くか, None の場合は記録した軌跡から決める
 
         Returns
         ----------
         text: str
             CSV の行 (見出しを除く)
         """
-        # 形の合わない観測と, 行動の無い歩は空の値
+        # 形の合わない観測と, 行動の無い歩は空の値 (欠け)
+        if guarded is None:
+            guarded = self.guarded
         empty_observation = [""] * max(self.observation_size or 0, 1)
         action_size = self.action_size or 0
         empty_action = [""] * max(action_size, 1)
@@ -586,7 +647,7 @@ class Trajectory:
                 format_bool(row["truncated"]),
                 "" if row["seed"] is None else str(row["seed"])
             ]
-            if self.guarded:
+            if guarded:
                 line.extend([row["guard"] or "", row["guard_reasons"]])
             writer.writerow(line)
         text = buffer.getvalue()
@@ -616,6 +677,33 @@ def is_discrete(space: Any) -> bool:
     return discrete
 
 
+def is_table_space(space: Any) -> bool:
+    """
+    空間が表の列にできる形 (Discrete か Box) かを判定する関数
+
+    Parameters
+    ----------
+    space: Any
+        空間
+
+    Returns
+    ----------
+    table: bool
+        Discrete (形が () で n を持つ) か, low, high, shape を持つ Box
+        (形が () も含む) の場合は True. Dict, Tuple, MultiDiscrete などは
+        False
+    """
+    # Box は low, high と形 (並び) を持つ. Dict と Tuple は形が None
+    shape = getattr(space, "shape", None)
+    box = (
+        hasattr(space, "low") and hasattr(space, "high")
+        and isinstance(shape, tuple)
+    )
+    table = is_discrete(space) or box
+
+    return table
+
+
 def space_info(space: Any) -> Optional[dict]:
     """
     空間を説明に書く辞書にする関数
@@ -642,14 +730,21 @@ def space_info(space: Any) -> Optional[dict]:
     return info
 
 
-def write_csv(path: Path, header: str, chunks: list[str]) -> None:
+def write_pair(
+    info_path: Path, info: dict, csv_path: Path, header: str,
+    chunks: list[str]
+) -> None:
     """
-    読み手が書きかけを読まないように CSV を書く関数
+    読み手が書きかけを読まないように, 説明の JSON と表の CSV を書く関数
 
     Parameters
     ----------
-    path: Path
-        書くファイル
+    info_path: Path
+        説明のファイル
+    info: dict
+        説明の中身
+    csv_path: Path
+        表のファイル
     header: str
         見出しの行
     chunks: list[str]
@@ -659,16 +754,62 @@ def write_csv(path: Path, header: str, chunks: list[str]) -> None:
     ----------
     None
     """
-    # 一時ファイルに書いてから置き換え, 失敗した場合は一時ファイルの削除
-    temp = new_temp(path)
+    # 両方を一時ファイルに書き終えてから, 説明, 表の順に置き換え.
+    # 表を置き換えられなければ説明を元に戻し, 一時ファイルは必ず削除
+    old_info = None
+    if info_path.is_file() and not info_path.is_symlink():
+        old_info = info_path.read_bytes()
+    temps = []
     try:
-        with open(temp, "w", encoding="utf-8", newline="") as file:
+        info_temp = new_temp(info_path)
+        temps.append(info_temp)
+        csv_temp = new_temp(csv_path)
+        temps.append(csv_temp)
+        text = json.dumps(info, ensure_ascii=False, indent=2, allow_nan=False)
+        info_temp.write_text(text, encoding="utf-8")
+        with open(csv_temp, "w", encoding="utf-8", newline="") as file:
             file.write(header)
             for chunk in chunks:
                 file.write(chunk)
-        os.replace(temp, path)
+        os.replace(info_temp, info_path)
+        try:
+            os.replace(csv_temp, csv_path)
+        except BaseException:
+            restore_info(info_path, old_info)
+            raise
     finally:
-        temp.unlink(missing_ok=True)
+        for temp in temps:
+            temp.unlink(missing_ok=True)
+
+
+def restore_info(path: Path, old: Optional[bytes]) -> None:
+    """
+    表を置き換えられなかったときに, 説明を元に戻す関数
+
+    Parameters
+    ----------
+    path: Path
+        説明のファイル
+    old: Optional[bytes]
+        元の説明の中身, 無かった場合は None (新しい説明を消す)
+
+    Returns
+    ----------
+    None
+    """
+    # 戻すのにも失敗した場合は, 元のエラーを優先して黙る
+    try:
+        if old is None:
+            path.unlink(missing_ok=True)
+            return
+        temp = new_temp(path)
+        try:
+            temp.write_bytes(old)
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def save_trajectory(
@@ -713,7 +854,7 @@ def save_trajectory(
 
     # 大きさの上限に収まるエピソードまでを, エピソードの単位で
     columns = trajectory.columns()
-    header = ",".join(columns) + "\n"
+    header = trajectory.header()
     size = len(header.encode("utf-8"))
     chunks = []
     rows = 0
@@ -734,7 +875,6 @@ def save_trajectory(
         raise ValueError(f"軌跡の置き場がリンクです: {folder}")
     folder.mkdir(exist_ok=True)
     path = folder / f"{name}.csv"
-    write_csv(path, header, chunks)
     info = {
         "format_version": TRAJECTORY_FORMAT_VERSION,
         "name": name,
@@ -762,6 +902,6 @@ def save_trajectory(
         "dropped_episodes": dropped,
         "created_at": now_iso()
     }
-    write_json_file(folder / f"{name}.json", info)
+    write_pair(folder / f"{name}.json", info, path, header, chunks)
 
     return path

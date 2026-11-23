@@ -25,7 +25,7 @@
 | ML-Dashboard (学習・評価) | 実験のディレクトリ (config, 履歴, 進み具合, 評価, 見本) の読み取りと, config の確認と学習の起動. 追加の依存の案内 (`describe_requirements`), Optimizer と Scheduler の登録簿 (`describe_optimizers`, `describe_schedulers`) |
 | ML-Quest (問題の設定) | プロジェクトの形. 問題の設定から書き出す骨組みはこの形で動く. 追加の依存の案内と, Optimizer と Scheduler の登録簿 |
 | ML-Inference (推論) | 実験のディレクトリの学習した重みと config. 強化学習の方策の一式 `policy/` (`policy.json` と `policy.pt`, 守り) |
-| ML-ModelControl, ML-EDA | モデルの定義は実験の出力先に写し (`Experiment.model_spec_path`), データセットは `task_from_dataset` で説明を読む. ML-EDA は強化学習の評価の軌跡の表 (`trajectories/<名前>.csv` と説明の `<名前>.json`. 形は docs/FORMAT.md の「trajectories」) を読む |
+| ML-ModelControl, ML-EDA | モデルの定義は実験の出力先に写し (`Experiment.model_spec_path`), データセットは `task_from_dataset` で説明を読む. 強化学習の評価の軌跡の表 (`trajectories/<名前>.csv` と説明の `<名前>.json`. 形は docs/FORMAT.md の「trajectories」) は, ML-EDA が読む約束を作る (TODO) |
 
 ## 導入
 

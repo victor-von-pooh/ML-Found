@@ -431,7 +431,7 @@ def test_bytes_limit_keeps_whole_episodes(
 
 def test_values_and_shapes() -> None:
     """
-    値の書き方 (nan は空, 無限大, 1 つの値の列) と形の誤りを確かめる関数
+    値の書き方 (nan と無限大, 1 つの値の列) と形の誤りを確かめる関数
 
     Parameters
     ----------
@@ -454,7 +454,7 @@ def test_values_and_shapes() -> None:
     ]
     lines = trajectory.episode_lines(trajectory.episodes[0]).splitlines()
     assert lines == [
-        "0,0,,inf,2,0.5,false,false,",
+        "0,0,nan,inf,2,0.5,false,false,",
         "0,1,1e-05,-inf,1,-1.0,true,false,"
     ]
 
@@ -593,3 +593,149 @@ def test_best_trajectory_with_callback(tmp_path: Path) -> None:
     info = read_info(Path(experiment.run_dir), "valid_best")
     assert info["epoch"] == saved[-1]
     assert info["episodes"] == 2 and info["rows"] == 10
+
+
+def test_bytes_limit_in_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    記録の間も, 書き出しと同じ文字数の上限で貯めるのを止めることを
+    確かめる関数
+
+    Parameters
+    ----------
+    monkeypatch: pytest.MonkeyPatch
+        上限を小さくする
+
+    Returns
+    ----------
+    None
+    """
+    # 上限を見出しと 7 行の文字数にすると, 5 歩のエピソードは 1 つだけ入る
+    loader = EvaluationLoader(
+        ToyEnv(), RightModel(), episodes=3, record_trajectory=True
+    )
+    next(iter(loader))
+    full = loader.trajectory
+    text = full.header() + "".join(
+        full.episode_lines(steps) for steps in full.episodes
+    )
+    lines = text.splitlines(keepends=True)
+    limit = len("".join(lines[:8]).encode("utf-8"))
+    monkeypatch.setattr(trajectory_module, "MAX_TRAJECTORY_BYTES", limit)
+    next(iter(loader))
+    small = loader.trajectory
+    assert small.full is True
+    assert small.n_rows == 5 and small.dropped_episodes == 2
+    assert small.n_bytes + len(small.header().encode("utf-8")) <= limit
+
+
+class DictSpace:
+    def __init__(self):
+        # 形を持たない空間 (Gymnasium の Dict と同じ)
+        self.shape = None
+        self.spaces = {"position": Space(low=[0.0], high=[1.0])}
+
+
+class TupleEnv(ToyEnv):
+    def __init__(self):
+        # 親クラスのコンストラクタを呼び出す
+        super(TupleEnv, self).__init__()
+
+        # 表の列にできない観測の空間を保存
+        self.observation_space = DictSpace()
+
+
+def test_non_table_space_is_rejected(tmp_path: Path) -> None:
+    """
+    Discrete と Box の他の空間を, 記録を始める前に断ることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    with pytest.raises(ValueError, match="Discrete か Box"):
+        EvaluationLoader(
+            TupleEnv(), RightModel(), episodes=1, record_trajectory=True
+        )
+    policy = guarded_policy(tmp_path, 100.0, "stop")
+    env = TupleEnv()
+    with pytest.raises(ValueError, match="Discrete か Box"):
+        evaluate_policy(policy, env, episodes=1, trajectory=Trajectory())
+    assert env.seeds == []
+
+    # 記録しない評価と, 形が () の Box は使える
+    EvaluationLoader(TupleEnv(), RightModel(), episodes=1)
+    scalar = Trajectory(
+        observation_space=Space(low=1.0, high=2.0), action_space=Space(n=2)
+    )
+    scalar.check_spaces()
+
+
+def test_failed_write_keeps_old_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    表の置き換えに失敗した場合に, 元の表と説明を残し一時ファイルを消すことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        表の置き換えを失敗させる
+
+    Returns
+    ----------
+    None
+    """
+    loader = EvaluationLoader(
+        ToyEnv(), RightModel(), episodes=1, record_trajectory=True
+    )
+    next(iter(loader))
+    save_trajectory(tmp_path, "valid", loader.trajectory, epoch=1)
+    folder = tmp_path / "trajectories"
+    old_csv = (folder / "valid.csv").read_bytes()
+    old_info = (folder / "valid.json").read_bytes()
+
+    # 説明の後に表を置き換えるところで失敗させる
+    replace = trajectory_module.os.replace
+
+    def failing_replace(source: Path, target: Path) -> None:
+        """
+        表の置き換えだけを失敗させる関数
+
+        Parameters
+        ----------
+        source: Path
+            一時ファイル
+        target: Path
+            置き換える先
+
+        Returns
+        ----------
+        None
+        """
+        if Path(target).suffix == ".csv":
+            raise OSError("置き換えの失敗")
+        replace(source, target)
+
+    monkeypatch.setattr(trajectory_module.os, "replace", failing_replace)
+    with pytest.raises(OSError, match="置き換えの失敗"):
+        save_trajectory(tmp_path, "valid", loader.trajectory, epoch=2)
+    assert (folder / "valid.csv").read_bytes() == old_csv
+    assert (folder / "valid.json").read_bytes() == old_info
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "valid.csv", "valid.json"
+    ]
+
+    # 元の無い名前では, 説明も残さない
+    with pytest.raises(OSError, match="置き換えの失敗"):
+        save_trajectory(tmp_path, "fresh", loader.trajectory)
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "valid.csv", "valid.json"
+    ]

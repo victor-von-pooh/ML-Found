@@ -168,12 +168,13 @@ def run_guarded_episode(
         elif limited:
             end = "max_steps"
 
-        # 軌跡には行動の前の観測を記録. 歩数の上限で切った歩も打ち切り
+        # 軌跡には行動の前の観測を記録. 歩数の上限で切った歩も打ち切り.
+        # 方策が行動を選んだ確率 (action_prob) を返した場合はそれも記録
         if trajectory is not None:
             trajectory.add(
                 observation, result["action"], value, bool(terminated),
                 bool(truncated) or (limited and not terminated), status,
-                reasons
+                reasons, result.get("action_prob")
             )
         observation = next_observation
     if trajectory is not None:
@@ -199,7 +200,8 @@ def evaluate_policy(
     Parameters
     ----------
     policy: Any
-        load_policy の方策 (act(観測) が action, status, reasons を返す)
+        load_policy の方策 (act(観測) が action, status, reasons と,
+        確率で選ぶ方策では任意で action_prob を返す)
     env_or_id: Any
         Gymnasium の形の環境か, Gymnasium に登録された環境の名前.
         名前の場合は make_env で作り (追加の依存 rl が要る), 終えたら閉じる

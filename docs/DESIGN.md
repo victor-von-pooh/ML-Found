@@ -37,7 +37,7 @@ PyTorch のモデルを config から自動で学習させる基盤のライブ�
 - `ml_found.experiment`: `start_experiment` が出力先を作る前にする確かめのうち, 実験の名前 (`check_experiment_name`), 学習の設定 (`check_trainer_config`), 計算の精度をデバイスで使えるか (`check_precision(cfg, device)`), 再開元 (`check_resume_path(cfg, project_dir)`), 始める前に読む重み (`check_init_weights(cfg, project_dir)`). 見本の一覧と形式の版の読み込み (`read_samples_index`). 評価のファイルの大きさの上限 (`MAX_EVALUATION_BYTES`. 画面がファイルごとの理由を出すために評価を自分で読む場合も, `load_evaluations` と同じ上限を使う)
 - `ml_found.training`: Optimizer と Scheduler の確かめ (`check_optim_config`, `check_optim_params`, 引数の値の範囲の `check_param_values(cls, params)`, 仮のパラメータで作れるかの `try_build_optim(cfg, device)`, 学習を始めるときに補う Scheduler の引数の `missing_data_size_params`). クラスの解決 (`resolve_optimizer_class`, `resolve_scheduler_class`). 名前付きの Optimizer の扱い (`uses_named_optimizers`, 名前ごとの config を返す `named_views`)
 - `ml_found.config`: 「項目=値」の上書きの読み方 (`parse_overrides`) と, torch のクラスに渡す引数を持つ項目の名前 (`params_sections`. 名前付きの Optimizer の項目も含む)
-- `ml_found.rl`: 方策の重みのハッシュ (`file_sha256`)
+- `ml_found.rl`: 方策の重みのハッシュ (`file_sha256`). 評価の軌跡の説明の版と大きさの上限 (`TRAJECTORY_FORMAT_VERSION`, `MAX_TRAJECTORY_INFO_BYTES`. 画面が軌跡の一覧のために説明を自分で読む場合も, 同じ上限を使う). 記録した軌跡からの方策の見積もり (`estimate_policy_value`)
 
 始める前の確かめは 1 つの関数にまとめず, 1 つずつ出す. 画面は必須の引数の不足 (学習のスクリプトが `start_experiment` の前に補う場合がある) を止めずに注意にし, デバイスの誤りも残りを確かめてから返し, 仮の Optimizer は cpu で作るので, 確かめの順と扱いが `start_experiment` (最初の誤りで止まる) と違うため.
 
@@ -988,7 +988,7 @@ print(result["value"], result["effective_sample_size"], result["notes"])
 - **入力**: `save_trajectory` が書いた表 (CSV) の場所か, メモリの `Trajectory` (記録を終えたエピソードだけ). 表は隣の説明 (`<名前>.json`) があれば型と観測の形に使い, 無ければ列の名前と値から決める. 表は ML-Found の中で小さく読み (ML-EDA には頼らない. ML-Found は ML-EDA に依存しないため), 普通のファイルだけを, リンクを辿らずに 64 MiB まで読む. `target_prob(観測, 行動)` には, 1 つの値の列 (`obs`, `action`) は数 (番号の空間は整数), 番号の列は配列 (観測は説明の空間の形) を渡す
 - **見積もり**: エピソードの重み `w` (歩ごとの `target_prob` / `action_prob` の積) と割り引いた報酬の和 `G` から, 主の値 `value` は重み付きの重点サンプリング (`w * G` の和 / `w` の和). 普通の重点サンプリングより偏りはあるが, 値が報酬の和の範囲に収まり, ばらつきが小さく, 記録の方策と同じ方策では記録した報酬の平均にそのまま一致するため. 比べるために, 普通の重点サンプリング (`ordinary`. `w * G` の平均. 偏りが無い) と歩ごとの重点サンプリング (`per_decision`. 各歩の報酬にその歩までの比の積を掛ける) も返す. `behavior_value` は記録した方策の報酬の和の平均
 - **重みの計算**: 比の積は対数の和で求め, 最も大きい重みの対数を引いてから戻す (長いエピソードで溢れないため). 見積もる方策の確率が 0 の歩の後の重みは 0 のまま (無限大と 0 を掛けた nan にならない). 普通と歩ごとの重点サンプリングは, 元に戻した値が有限にならなければ `None` にして `notes` で知らせる (重み付きの見積もりは最大の値を引いたままで決まる). 重みの和が有限にならない場合は止まる
-- **重みのばらつきの印**: 有効なサンプルの数 `effective_sample_size` (`w` の和の 2 乗 / `w` の 2 乗の和), 最も大きい重みの割合 `max_weight_share`, 見積もる方策の確率が 0 の行動で重みが 0 のエピソードの数 `zero_weight_episodes`, 最も大きい重みより非常に小さく 0 として計算したエピソードの数 `underflow_episodes`. 有効なサンプルの数がエピソードの数の 1 割より少なければ `notes` で知らせる
+- **重みのばらつきの印**: 有効なサンプルの数 `effective_sample_size` (`w` の和の 2 乗 / `w` の 2 乗の和), 最も大きい重みの割合 `max_weight_share`, 見積もる方策の確率が 0 の行動で重みが 0 のエピソードの数 `zero_weight_episodes`, 最も大きい重みより非常に小さく 0 として計算したエピソードの数 `underflow_episodes`. 有効なサンプルの数がエピソードの数の 1 割より少なければ, `low_ess` を `true` にして `notes` で知らせる (画面が文を読まずに見分けるため. 全ての重みが 0 で `value` が決まらない場合は `false`)
 - **止まる場合**: 確率の列の無い表 (最もスコアの高い行動で選んだ評価など), 値の数が見出しと違う行, 行動があるのに確率か報酬の無い行, nan か無限大の報酬, 範囲の外の確率 (表は 0 より大きく 1 以下, `target_prob` は 0 以上 1 以下), 計算できないほど大きな重み
 - **知らせる場合** (`notes`): 見積もる方策の確率が 0 の行動を記録の方策がとった歩 (そのエピソードの重みは 0. 全ての重みが 0 なら `value` は `None`), 0 として計算した小さな重み, 守りで止めた判断の行 (行動と報酬が無いので飛ばし, そこでエピソードを終えたとする), 終わりの印の無いエピソード, 説明の `complete` が `false` の表
 - 記録の方策が選ばない (確率 0 の) 行動を見積もる方策が選ぶ場合は, 表から見分けられず, 見積もりは偏る. 記録の方策は見積もる方策の選ぶ行動を全て正の確率で選ぶもの (ε-greedy など) にする
@@ -1165,7 +1165,7 @@ echo now > outputs/wine/2026-11-12/10-00-00/STOP   # エポックの途中でも
 - config は OmegaConf で, ML-EDA の `dataset.yaml` と `task.yaml` は `yaml.safe_load` で読む
 - Optimizer と Scheduler の名前に `.` を含めると, そのモジュールを import して自作のクラスを読む. config は学習のスクリプトと同じく, 信頼できるものだけを使う
 - 評価, 見本, 軌跡の名前は英数字と `_ . @ -` だけ (先頭は `.` 以外). 名前から実験のディレクトリの外にファイルを書かない. `trajectories/` がリンクなら軌跡を書かない
-- 評価の軌跡の表を読む側 (ML-EDA, 画面, ML-Found の `estimate_policy_value`) は, 普通のファイルだけを, リンクを辿らずに, 表は 64 MiB, 説明は 1 MiB までだけ読む (FORMAT.md の「trajectories」)
+- 評価の軌跡の表を読む側 (ML-EDA, 画面, ML-Found の `estimate_policy_value`) は, 普通のファイルだけを, リンクを辿らずに, 表は 64 MiB (`MAX_TRAJECTORY_BYTES`), 説明は 1 MiB (`MAX_TRAJECTORY_INFO_BYTES`) までだけ読む (FORMAT.md の「trajectories」)
 - `source.yaml` には, コマンドラインの他の引数を残さない (秘密の値を含み得るため)
 - config の参照の誤りの文には, 解決した値と OmegaConf の文を入れない (環境変数の値などの秘密を出さないため). ただし `config.yaml` は解決した値で保存するので, 環境変数の参照 (`${oc.env:...}`) で config に秘密の値 (トークンなど) を入れない. 秘密の値は学習のスクリプトで環境変数から読む
 - モデルの定義の写し (`model_spec.yaml`) は, プロジェクトの中の普通のファイル (16 MiB まで) だけを, リンク (途中のディレクトリ, リンクの後の `..`, Windows のジャンクションを含む) を辿らずに読む. プロジェクトの外とリンクは写さない. `train.log` には場所を `repr` で書く (改行で偽の行を作らないため)

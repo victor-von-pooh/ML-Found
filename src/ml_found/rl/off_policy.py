@@ -684,8 +684,8 @@ def summarize_weights(
     ----------
     summary: dict[str, Any]
         value, ordinary, per_decision, behavior_value,
-        effective_sample_size, max_weight_share, zero_weight_episodes,
-        underflow_episodes
+        effective_sample_size, max_weight_share, low_ess,
+        zero_weight_episodes, underflow_episodes
     """
     # 最大の重みを 1 にした重み. 重み付きの見積もりでは戻す値が消える
     log_weights = np.array(
@@ -732,7 +732,9 @@ def summarize_weights(
             "全てのエピソードの重みが 0 なので, 重み付きの見積もり (value)"
             " は決まりません. 見積もる方策に近い方策で記録してください"
         )
-    elif ess < LOW_ESS_RATIO * count:
+    # 有効なサンプルの数が少ないかの印 (重み付きの見積もりが決まる場合だけ)
+    low_ess = value is not None and ess < LOW_ESS_RATIO * count
+    if low_ess:
         notes.append(
             f"有効なサンプルの数 {ess:.1f} がエピソードの数 {count} の "
             f"{LOW_ESS_RATIO:.0%} より少なく, 重みのばらつきが大きいので"
@@ -747,6 +749,7 @@ def summarize_weights(
         "behavior_value": float(returns.mean()),
         "effective_sample_size": ess,
         "max_weight_share": share,
+        "low_ess": low_ess,
         "zero_weight_episodes": zero_episodes,
         "underflow_episodes": underflow
     }
@@ -783,7 +786,9 @@ def estimate_policy_value(
         サンプリング. どちらも重みが大きすぎて有限にならなければ None),
         behavior_value (記録した方策の報酬の和の平均), episodes, steps,
         effective_sample_size (有効なサンプルの数),
-        max_weight_share (最も大きい重みの割合), zero_weight_episodes
+        max_weight_share (最も大きい重みの割合), low_ess (有効なサンプルの
+        数がエピソードの数の 1 割より少なく, 見積もりが当てにならないか.
+        value が決まらなければ False), zero_weight_episodes
         (見積もる方策の確率 0 の行動で重みが 0 のエピソードの数),
         underflow_episodes (最も大きい重みより非常に小さく 0 として計算
         したエピソードの数), notes (知らせること)

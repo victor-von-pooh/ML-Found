@@ -7,6 +7,9 @@ from torch import nn
 
 from ml_found.experiment.seed import decode_state, encode_state
 from ml_found.rl.buffer import ExperienceBuffer
+from ml_found.rl.trajectory import (
+    DEFAULT_MAX_ROWS, Trajectory, check_max_rows, env_id
+)
 
 # 環境の乱数を作り直すときに使える NumPy の乱数生成器の種類
 BIT_GENERATORS = {
@@ -341,7 +344,8 @@ def run_episode(
     env: Any, model: nn.Module, buffer: ExperienceBuffer,
     exploration: Exploration, greedy: bool, seed: Optional[int],
     max_steps: Optional[int], safety_key: Optional[str],
-    success_key: Optional[str], kind: str = "discrete"
+    success_key: Optional[str], kind: str = "discrete",
+    trajectory: Optional[Trajectory] = None, episode: int = 0
 ) -> dict[str, Any]:
     """
     Gymnasium の形の環境で 1 エピソードを動かし, 経験を貯める関数
@@ -369,6 +373,11 @@ def run_episode(
         成功を表す info のキー (最後の歩の値を読む)
     kind: str = "discrete"
         行動の空間の種類 (discrete か box)
+    trajectory: Optional[Trajectory] = None
+        1 歩ごとの観測, 環境に渡した行動, 報酬, 終わったかを記録する軌跡,
+        None の場合は記録しない
+    episode: int = 0
+        軌跡に書くエピソードの番号
 
     Returns
     ----------
@@ -377,6 +386,8 @@ def run_episode(
     """
     # 環境の初期化と, 終了か打ち切りまでの行動の選択
     observation, info = env.reset(seed=seed)
+    if trajectory is not None:
+        trajectory.start_episode(episode, seed)
     steps = 0
     done = False
     ended = False
@@ -391,8 +402,9 @@ def run_episode(
                 model, observation, exploration, greedy
             )
             log_prob = None
+        env_action = to_env_action(action, env.action_space)
         next_observation, reward, terminated, truncated, info = env.step(
-            to_env_action(action, env.action_space)
+            env_action
         )
         if kind == "box":
             buffer.add(
@@ -405,12 +417,19 @@ def run_episode(
                 observation, action, float(reward), prob,
                 is_violation(info, safety_key)
             )
-        observation = next_observation
         steps += 1
         ended = bool(terminated)
-        done = ended or bool(truncated) or (
-            max_steps is not None and steps >= max_steps
-        )
+        limited = max_steps is not None and steps >= max_steps
+        done = ended or bool(truncated) or limited
+
+        # 軌跡には行動の前の観測と, 環境に渡した (clip した) 行動を記録.
+        # 歩数の上限で切った歩も打ち切り
+        if trajectory is not None:
+            trajectory.add(
+                observation, env_action, float(reward), ended,
+                bool(truncated) or (limited and not ended)
+            )
+        observation = next_observation
 
     # 成功を知らせるキーがある場合だけ, 最後の歩の値を成功として記録
     success = None
@@ -419,6 +438,8 @@ def run_episode(
             success = bool(info[success_key])
     # 打ち切りの後の価値を見積もれるように, 終了かと最後の観測も記録
     stats = buffer.end_episode(success, ended, observation)
+    if trajectory is not None:
+        trajectory.end_episode()
 
     return stats
 
@@ -1076,7 +1097,8 @@ class EvaluationLoader:
         self, env: Any, model: nn.Module, episodes: int = 10,
         seed: int = 0, max_episode_steps: Optional[int] = None,
         safety_key: Optional[str] = "cost",
-        success_key: Optional[str] = None
+        success_key: Optional[str] = None, record_trajectory: bool = False,
+        max_trajectory_rows: int = DEFAULT_MAX_ROWS
     ):
         # エピソードの数, 乱数の種, 歩数の上限と, 行動の形の確認
         check_count("episodes", episodes)
@@ -1084,6 +1106,19 @@ class EvaluationLoader:
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ValueError(f"seed は整数にしてください: {seed!r}")
         self.kind = action_kind(env)
+
+        # 軌跡を記録するかと歩の数の上限の確認
+        if not isinstance(record_trajectory, bool):
+            raise ValueError(
+                "record_trajectory は真偽値にしてください: "
+                f"{record_trajectory!r}"
+            )
+        check_max_rows(max_trajectory_rows, "max_trajectory_rows")
+        if record_trajectory:
+            Trajectory(
+                max_trajectory_rows, getattr(env, "observation_space", None),
+                env.action_space
+            ).check_spaces()
 
         # 評価用の環境, モデル, エピソードの数, 乱数の種を保存
         self.env = env
@@ -1095,6 +1130,11 @@ class EvaluationLoader:
         self.max_episode_steps = max_episode_steps
         self.safety_key = safety_key
         self.success_key = success_key
+
+        # 軌跡を記録するかと歩の数の上限を保存. 軌跡は最後の評価のもの
+        self.record_trajectory = record_trajectory
+        self.max_trajectory_rows = max_trajectory_rows
+        self.trajectory: Optional[Trajectory] = None
 
     def __len__(self) -> int:
         """
@@ -1167,14 +1207,27 @@ class EvaluationLoader:
         batches: Iterator[dict[str, torch.Tensor]]
             全ての評価のエピソードをまとめた 1 つのバッチ
         """
+        # 軌跡を記録する設定では, 評価ごとに新しい軌跡
+        trajectory = None
+        if self.record_trajectory:
+            trajectory = Trajectory(
+                self.max_trajectory_rows,
+                getattr(self.env, "observation_space", None),
+                self.env.action_space
+            )
+            trajectory.source = "evaluation_loader"
+            trajectory.env_id = env_id(self.env)
+
         # エポックの間で比べられるように, エピソードごとに seed + 番号で初期化
         buffer = ExperienceBuffer()
         for index in range(self.episodes):
             run_episode(
                 self.env, self.model, buffer, Exploration(), True,
                 self.seed + index, self.max_episode_steps, self.safety_key,
-                self.success_key, self.kind
+                self.success_key, self.kind, trajectory, index
             )
         batch = buffer.to_batch()
+        if trajectory is not None:
+            self.trajectory = trajectory
 
         yield batch

@@ -3,6 +3,7 @@ from typing import Any, Optional
 import numpy as np
 
 from ml_found.rl.env import make_env
+from ml_found.rl.trajectory import Trajectory, env_id
 
 # 守りの結果の種類 (apply_guards の status. 表の列の順)
 STATUSES = ("ok", "clipped", "fallback", "stop", "handover")
@@ -60,8 +61,38 @@ def check_optional_int(seed: Any, where: str) -> None:
         )
 
 
+def check_trajectory(trajectory: Any) -> None:
+    """
+    軌跡が Trajectory で, まだ何も記録していないことを確かめる関数
+
+    Parameters
+    ----------
+    trajectory: Any
+        記録する軌跡か None
+
+    Returns
+    ----------
+    None
+    """
+    # エピソードの番号が重ならないように, 1 回の評価に 1 つの軌跡
+    if trajectory is None:
+        return
+    if not isinstance(trajectory, Trajectory):
+        raise ValueError(
+            f"trajectory は Trajectory か None にしてください: {trajectory!r}"
+        )
+    if trajectory.episodes or trajectory.current or (
+        trajectory.dropped_episodes
+    ):
+        raise ValueError(
+            "trajectory には何も記録していない Trajectory を渡してください "
+            "(1 回の評価に 1 つ)"
+        )
+
+
 def run_guarded_episode(
-    policy: Any, env: Any, seed: Optional[int], max_steps: Optional[int]
+    policy: Any, env: Any, seed: Optional[int], max_steps: Optional[int],
+    trajectory: Optional[Trajectory] = None, episode: int = 0
 ) -> dict[str, Any]:
     """
     守りを当てた方策で 1 エピソードを動かし, 守りの結果を数える関数
@@ -76,6 +107,11 @@ def run_guarded_episode(
         reset に渡す乱数の種, None の場合は環境の乱数の続き
     max_steps: Optional[int]
         1 エピソードの歩数の上限, None の場合は環境に任せる
+    trajectory: Optional[Trajectory] = None
+        1 歩ごとの観測, 行動, 報酬, 終わったか, 守りの結果を記録する軌跡,
+        None の場合は記録しない
+    episode: int = 0
+        軌跡に書くエピソードの番号
 
     Returns
     ----------
@@ -85,6 +121,8 @@ def run_guarded_episode(
     """
     # 環境の初期化と, 守りの結果の数の用意
     observation, _ = env.reset(seed=None if seed is None else int(seed))
+    if trajectory is not None:
+        trajectory.start_episode(episode, seed)
     counts = {status: 0 for status in STATUSES}
     total = 0.0
     length = 0
@@ -102,25 +140,44 @@ def run_guarded_episode(
                 f"{result!r}"
             )
         counts[status] += 1
+        reasons = result.get("reasons")
         if status in STOP_STATUSES:
+            # 止めた判断も, 行動と報酬の無い行として軌跡に記録
             end = status
+            if trajectory is not None:
+                trajectory.add(
+                    observation, None, None, False, False, status, reasons
+                )
             continue
         if result.get("action") is None:
             raise ValueError(
                 f"方策の act が status {status} で行動を返しませんでした: "
                 f"{result!r}"
             )
-        observation, reward, terminated, truncated, _ = env.step(
+        next_observation, reward, terminated, truncated, _ = env.step(
             result["action"]
         )
-        total += float(np.asarray(reward, dtype=np.float64).item())
+        value = float(np.asarray(reward, dtype=np.float64).item())
+        total += value
         length += 1
+        limited = max_steps is not None and length >= max_steps
         if terminated:
             end = "terminated"
         elif truncated:
             end = "truncated"
-        elif max_steps is not None and length >= max_steps:
+        elif limited:
             end = "max_steps"
+
+        # 軌跡には行動の前の観測を記録. 歩数の上限で切った歩も打ち切り
+        if trajectory is not None:
+            trajectory.add(
+                observation, result["action"], value, bool(terminated),
+                bool(truncated) or (limited and not terminated), status,
+                reasons
+            )
+        observation = next_observation
+    if trajectory is not None:
+        trajectory.end_episode()
     row = {
         "seed": None if seed is None else int(seed),
         "reward": total,
@@ -134,7 +191,7 @@ def run_guarded_episode(
 
 def evaluate_policy(
     policy: Any, env_or_id: Any, episodes: int, seed: Optional[int] = None,
-    max_steps: Optional[int] = None
+    max_steps: Optional[int] = None, trajectory: Optional[Trajectory] = None
 ) -> list[dict[str, Any]]:
     """
     書き出した方策を守り付きで環境で動かし, エピソードごとの結果を返す関数
@@ -153,6 +210,9 @@ def evaluate_policy(
         None の場合は環境の乱数の続き
     max_steps: Optional[int] = None
         1 エピソードの歩数の上限, None の場合は環境に任せる
+    trajectory: Optional[Trajectory] = None
+        1 歩ごとの観測, 行動, 報酬, 終わったか, 守りの結果を記録する
+        空の軌跡 (save_trajectory で書き出す), None の場合は記録しない
 
     Returns
     ----------
@@ -170,16 +230,24 @@ def evaluate_policy(
         raise ValueError(
             f"max_steps は 1 以上の整数か None にしてください: {max_steps!r}"
         )
+    check_trajectory(trajectory)
 
     # 名前なら環境を作り (Gymnasium が無ければ入れ方を示して停止),
     # 終えたら閉じる処理 (渡された環境はそのまま)
     owned = isinstance(env_or_id, str)
     env = make_env(env_or_id) if owned else env_or_id
+    if trajectory is not None:
+        trajectory.set_spaces(env.observation_space, env.action_space)
+        trajectory.check_spaces()
+        trajectory.source = "evaluate_policy"
+        trajectory.env_id = env_id(env)
     rows = []
     try:
         for index in range(int(episodes)):
             episode_seed = None if seed is None else int(seed) + index
-            row = run_guarded_episode(policy, env, episode_seed, max_steps)
+            row = run_guarded_episode(
+                policy, env, episode_seed, max_steps, trajectory, index
+            )
             rows.append({"episode": index, **row})
     finally:
         if owned:

@@ -25,7 +25,7 @@ PyTorch のモデルを config から自動で学習させる基盤のライブ�
 | 実験のディレクトリ (`config.yaml`, `source.yaml`, `run.json`, `progress.json`, `history.csv`, `final_model.pt` など) | 持つ (ML-Dashboard と ML-Inference が読む) | 版 1. ファイルごとの版は FORMAT.md |
 | 何の実験か (`task.yaml`), データ全体の評価 (`evaluations/`), 見本 (`samples/`) | 持つ (ML-Dashboard が読む) | FORMAT.md の「task.yaml」「evaluations」「samples」. 見本の一覧は版 2 (点群の `shift` は ML-EDA の書き出しと同じ向き). 版 1 も読む |
 | 方策の一式 (`policy/`) | 持つ (`policy.json` と `apply_guards` で, 他の段階も同じ守りを当てられる) | 版 1 |
-| 評価の軌跡の表 (`trajectories/<名前>.csv` と説明の `<名前>.json`) | 持つ (ML-EDA が読み, ML-Fathom が分析する. 利用者の手元の表も同じ列の決まりで読めるように, 一般の表の形にする) | 版 1 |
+| 評価の軌跡の表 (`trajectories/<名前>.csv` と説明の `<名前>.json`) | 持つ (ML-EDA が読み, ML-Fathom が分析する. 利用者の手元の表も同じ列の決まりで読めるように, 一般の表の形にする. ML-Found も方策の見積もり (`estimate_policy_value`) で自分の書いた表を読む) | 版 1 |
 | ML-EDA が書き出したデータセット (`dataset.yaml`) | 読む (`task.dataset` から受け持ちと正解を埋める. ml_eda には頼らない) | 版 2 と 3 (版 3 は版 2 に項目の中身の手順を足したもので, 受け持ちと正解は同じ形). 版 1 と知らない版では止まる |
 | 受け持ち, 出力の形, 正解の種類と出どころの値の名前 | ML-Quest と ML-EDA の名前を写す | 無し |
 | モデルの定義 (ML-ModelControl の定義の YAML. config の `model.spec`) | 中身を読まずに実験に写す (`model_spec.yaml`. ml_modelcontrol には頼らない) | 無し (ファイルのまま写す) |
@@ -62,7 +62,7 @@ ML-Found/
 │   ├── config/             # config の型定義, 読み込み, 差分, 起動のしかた
 │   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録, 何の実験か, 評価と見本
 │   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, 重みの指数移動平均 (EMA), 微調整の補助 (混合精度, 始める前に読む重み, 学習するパラメータだけのチェックポイント), チェックポイント, 記録, 実験の状態, 生成の画像の FID
-│   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, Actor-Critic, 方策の一式と守り, 守り付きの評価
+│   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, Actor-Critic, 方策の一式と守り, 守り付きの評価, 評価の軌跡の表, 記録した軌跡からの方策の見積もり
 │   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿, 出力先のファイルをリンクを辿らずに読む関数
 ├── examples/
 │   ├── minibatch/          # wine データセットの分類, DataLoader で学習する例
@@ -927,7 +927,7 @@ save_evaluation(experiment, "guarded_episodes", rows, "simulator",
 
 ### 評価の軌跡の表
 
-評価で走らせた軌跡を, 1 歩が 1 行の表 (`trajectories/<名前>.csv`) と説明 (`trajectories/<名前>.json`) に書き出せる. 列はエピソードの番号, 歩の番号, 観測, 行動, 報酬, 終了と打ち切りの別, 乱数の種と, 守りを当てた評価では守りの結果と理由 (形は [docs/FORMAT.md](FORMAT.md) の「trajectories」). ML-EDA がこの表を読み, ML-Fathom が分析する. 既定では記録も書き出しもしない.
+評価で走らせた軌跡を, 1 歩が 1 行の表 (`trajectories/<名前>.csv`) と説明 (`trajectories/<名前>.json`) に書き出せる. 列はエピソードの番号, 歩の番号, 観測, 行動, 報酬, 終了と打ち切りの別, 乱数の種と, 守りを当てた評価では守りの結果と理由, 記録した方策が確率を返した場合は行動を選んだ確率 (形は [docs/FORMAT.md](FORMAT.md) の「trajectories」). ML-EDA がこの表を読み, ML-Fathom が分析する. 既定では記録も書き出しもしない.
 
 ```python
 from ml_found.rl import (
@@ -961,9 +961,37 @@ save_trajectory(experiment, "guarded", trajectory, epoch=best_epoch)
 
 - **記録**: `EvaluationLoader(record_trajectory=True)` は評価のたびに新しい軌跡を作り, 終えた評価の軌跡を `trajectory` に置く (前の評価のものは置き換える. 記録する前は `None`). `trainer.valid_every_n_epochs` が 2 以上では, 検証しないエポックの `trajectory` は前の検証のまま. `evaluate_policy` には何も記録していない `Trajectory` を渡す (1 回の評価に 1 つ. エピソードの番号が重ならないため). 学習の `RolloutLoader` は記録しない
 - **行の中身**: 観測は行動を選ぶ前の観測, 行動は環境に渡した行動 (連続の行動は空間の範囲で clip した値. `evaluate_policy` では守りを当てた行動). `evaluate_policy` で守りが `stop` か `handover` にした判断は, 行動と報酬の空の行にする (その観測で止めたことが分かるように). `max_episode_steps` と `max_steps` で切った歩は打ち切り (`truncated`) にする (`RolloutLoader` の扱いと同じ)
+- **行動を選んだ確率**: `evaluate_policy` は, 方策の `act` が `action_prob` (とった行動を選んだ確率. 0 より大きく 1 以下) を返した歩だけ, 表の `action_prob` の列に書く (確率で選ぶ方策や ε-greedy の方策を自分で書いた場合). 守りで変えた行動 (`clipped`, `fallback`) の確率も `act` が返した値のまま書くので, 環境に渡した行動の確率を返す. `load_policy` の方策と `EvaluationLoader` は最もスコアの高い行動を選ぶ (確率は常に 1 で, 他の方策の見積もりに使えない) ので書かない. 自分で記録する場合は `Trajectory.add(..., action_prob=確率)` で渡す. 範囲の外の値と, 行動の無い歩 (止めた判断) の確率はエラー
 - **上限**: `Trajectory(max_rows=100000)` (`EvaluationLoader` では `max_trajectory_rows`) が貯める歩の数の上限. 記録の間も書く文字数 (見出しを含む) を足し上げ, 書き出しと同じ 64 MiB (`MAX_TRAJECTORY_BYTES`) を超えたら貯めるのを止める. どちらかの上限に達したエピソードと後のエピソードは途中までを残さずに捨てる (メモリを使い切らないため). `save_trajectory` も表を 64 MiB までのエピソードで書く. どちらで切ったかに関わらず, 入らなかったエピソードの数を説明の `dropped_episodes` に, 全てが入ったかを `complete` に書く. 観測と行動の要素の数はそれぞれ 256 まで (画像のような観測は表にしない. 超える空間と, Discrete と Box の他の空間 (Dict, Tuple など) は `EvaluationLoader` を作るときと `evaluate_policy` の始めに, 空間で分からない値は記録の最初の歩でエラー)
 - **書き出し**: `save_trajectory(実験, 名前, 軌跡, epoch=None, description=None)`. 名前は評価の名前と同じ決まりで, 同じ名前で書き直すと置き換える. 説明, 表の順に置き換え, 失敗すると元の表と説明を残す. 書くのは評価の後だけで, 学習中の軌跡の記録は `last.pt` に入らない (再開で戻さない)
 - CSV にしたのは, 追加の依存 (pyarrow など) なしに書け, ML-Dashboard と人がそのまま読めるため. 利用者の Parquet の表も同じ列の決まりで読む (FORMAT.md の「利用者の表」)
+
+### 記録した軌跡からの方策の見積もり
+
+記録した軌跡 (確率の列 `action_prob` の付いた表) から, 別の方策 (見積もる方策) のエピソードの割り引いた報酬の和の期待値を, 環境で動かさずに重点サンプリングで見積もる.
+
+```python
+from ml_found.rl import estimate_policy_value
+
+
+def target_prob(observation, action) -> float:
+    # 見積もる方策がその観測でその行動を選ぶ確率
+    return float(new_policy_probs(observation)[action])
+
+
+result = estimate_policy_value(
+    experiment.run_dir / "trajectories" / "explore.csv", target_prob, gamma=1.0
+)
+print(result["value"], result["effective_sample_size"], result["notes"])
+```
+
+- **入力**: `save_trajectory` が書いた表 (CSV) の場所か, メモリの `Trajectory` (記録を終えたエピソードだけ). 表は隣の説明 (`<名前>.json`) があれば型と観測の形に使い, 無ければ列の名前と値から決める. 表は ML-Found の中で小さく読み (ML-EDA には頼らない. ML-Found は ML-EDA に依存しないため), 普通のファイルだけを, リンクを辿らずに 64 MiB まで読む. `target_prob(観測, 行動)` には, 1 つの値の列 (`obs`, `action`) は数 (番号の空間は整数), 番号の列は配列 (観測は説明の空間の形) を渡す
+- **見積もり**: エピソードの重み `w` (歩ごとの `target_prob` / `action_prob` の積) と割り引いた報酬の和 `G` から, 主の値 `value` は重み付きの重点サンプリング (`w * G` の和 / `w` の和). 普通の重点サンプリングより偏りはあるが, 値が報酬の和の範囲に収まり, ばらつきが小さく, 記録の方策と同じ方策では記録した報酬の平均にそのまま一致するため. 比べるために, 普通の重点サンプリング (`ordinary`. `w * G` の平均. 偏りが無い) と歩ごとの重点サンプリング (`per_decision`. 各歩の報酬にその歩までの比の積を掛ける) も返す. `behavior_value` は記録した方策の報酬の和の平均
+- **重みのばらつきの印**: 有効なサンプルの数 `effective_sample_size` (`w` の和の 2 乗 / `w` の 2 乗の和), 最も大きい重みの割合 `max_weight_share`, 重みが 0 のエピソードの数 `zero_weight_episodes`. 有効なサンプルの数がエピソードの数の 1 割より少なければ `notes` で知らせる
+- **止まる場合**: 確率の列の無い表 (最もスコアの高い行動で選んだ評価など), 行動があるのに確率か報酬の無い行, 範囲の外の確率 (表は 0 より大きく 1 以下, `target_prob` は 0 以上 1 以下), 計算できないほど大きな重み
+- **知らせる場合** (`notes`): 見積もる方策の確率が 0 の行動を記録の方策がとった歩 (そのエピソードの重みは 0. 全ての重みが 0 なら `value` は `None`), 守りで止めた判断の行 (行動と報酬が無いので飛ばし, そこでエピソードを終えたとする), 終わりの印の無いエピソード, 説明の `complete` が `false` の表
+- 記録の方策が選ばない (確率 0 の) 行動を見積もる方策が選ぶ場合は, 表から見分けられず, 見積もりは偏る. 記録の方策は見積もる方策の選ぶ行動を全て正の確率で選ぶもの (ε-greedy など) にする
+- 番号で選ぶ行動 (Discrete) の確率を使う. 連続の行動の確率密度は扱わない
 
 ## 23. config の項目
 
@@ -1136,7 +1164,7 @@ echo now > outputs/wine/2026-11-12/10-00-00/STOP   # エポックの途中でも
 - config は OmegaConf で, ML-EDA の `dataset.yaml` と `task.yaml` は `yaml.safe_load` で読む
 - Optimizer と Scheduler の名前に `.` を含めると, そのモジュールを import して自作のクラスを読む. config は学習のスクリプトと同じく, 信頼できるものだけを使う
 - 評価, 見本, 軌跡の名前は英数字と `_ . @ -` だけ (先頭は `.` 以外). 名前から実験のディレクトリの外にファイルを書かない. `trajectories/` がリンクなら軌跡を書かない
-- 評価の軌跡の表は ML-Found では読まない. 読む側 (ML-EDA, 画面) は, 普通のファイルだけを, リンクを辿らずに, 表は 64 MiB, 説明は 1 MiB までだけ読む (FORMAT.md の「trajectories」)
+- 評価の軌跡の表を読む側 (ML-EDA, 画面, ML-Found の `estimate_policy_value`) は, 普通のファイルだけを, リンクを辿らずに, 表は 64 MiB, 説明は 1 MiB までだけ読む (FORMAT.md の「trajectories」)
 - `source.yaml` には, コマンドラインの他の引数を残さない (秘密の値を含み得るため)
 - config の参照の誤りの文には, 解決した値と OmegaConf の文を入れない (環境変数の値などの秘密を出さないため). ただし `config.yaml` は解決した値で保存するので, 環境変数の参照 (`${oc.env:...}`) で config に秘密の値 (トークンなど) を入れない. 秘密の値は学習のスクリプトで環境変数から読む
 - モデルの定義の写し (`model_spec.yaml`) は, プロジェクトの中の普通のファイル (16 MiB まで) だけを, リンク (途中のディレクトリ, リンクの後の `..`, Windows のジャンクションを含む) を辿らずに読む. プロジェクトの外とリンクは写さない. `train.log` には場所を `repr` で書く (改行で偽の行を作らないため)

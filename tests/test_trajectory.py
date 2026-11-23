@@ -194,7 +194,7 @@ def test_csv_columns_match_format() -> None:
     assert keys == {
         "episode", "step", "obs", "obs_<番号>", "action", "action_<番号>",
         "reward", "terminated", "truncated", "seed", "guard",
-        "guard_reasons"
+        "guard_reasons", "action_prob"
     }
 
 

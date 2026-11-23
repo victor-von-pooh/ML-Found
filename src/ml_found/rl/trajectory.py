@@ -40,6 +40,9 @@ ACTION_PREFIX = "action"
 # 守りの結果の列 (守りを当てた評価だけ)
 GUARD_COLUMNS = ("guard", "guard_reasons")
 
+# 記録した方策が行動を選んだ確率の列 (方策が確率を返した軌跡だけ)
+PROB_COLUMN = "action_prob"
+
 # 守りの理由をつなぐ文字
 REASON_SEPARATOR = "; "
 
@@ -239,6 +242,39 @@ def flat_values(value: Any, size: int) -> Optional[list[str]]:
     return values
 
 
+def check_action_prob(action_prob: Any, action: Any) -> None:
+    """
+    記録した方策が行動を選んだ確率が, 0 より大きく 1 以下の数か None で
+    あることを確かめる関数
+
+    Parameters
+    ----------
+    action_prob: Any
+        行動を選んだ確率
+    action: Any
+        環境に渡した行動 (守りで止めた判断では None)
+
+    Returns
+    ----------
+    None
+    """
+    # 確率の無い歩と, 行動の無い歩 (止めた判断) には書かない
+    if action_prob is None:
+        return
+    if action is None:
+        raise ValueError(
+            "行動の無い歩 (守りで止めた判断) には action_prob を書けません"
+        )
+    number = isinstance(
+        action_prob, (int, float, np.integer, np.floating)
+    ) and not isinstance(action_prob, (bool, np.bool_))
+    if not number or not 0.0 < float(action_prob) <= 1.0:
+        raise ValueError(
+            "action_prob は 0 より大きく 1 以下の数にしてください "
+            f"(とった行動を選んだ確率): {action_prob!r}"
+        )
+
+
 def is_prefixed(column: str, prefix: str) -> bool:
     """
     列が観測か行動の列 (prefix か prefix_<番号>) かを判定する関数
@@ -305,7 +341,7 @@ class Trajectory:
 
         # 終えたエピソードの歩とその数と CSV の文字数, 途中のエピソードと
         # その文字数, 上限に達したか, 入れなかったエピソードの数,
-        # 守りの結果があるか
+        # 守りの結果があるか, 行動を選んだ確率があるか
         self.episodes: list[list[dict]] = []
         self.n_rows = 0
         self.n_bytes = 0
@@ -316,6 +352,7 @@ class Trajectory:
         self.full = False
         self.dropped_episodes = 0
         self.guarded = False
+        self.probed = False
 
     def set_spaces(self, observation_space: Any, action_space: Any) -> None:
         """
@@ -419,7 +456,7 @@ class Trajectory:
     def add(
         self, observation: Any, action: Any, reward: Optional[float],
         terminated: bool, truncated: bool, guard: Optional[str] = None,
-        reasons: Optional[list] = None
+        reasons: Optional[list] = None, action_prob: Optional[float] = None
     ) -> None:
         """
         1 歩 (か守りで止めた判断) を記録する関数
@@ -440,13 +477,17 @@ class Trajectory:
             守りの結果 (ok, clipped, fallback, stop, handover)
         reasons: Optional[list] = None
             守りが働いた理由
+        action_prob: Optional[float] = None
+            記録した方策がその行動を選んだ確率 (0 より大きく 1 以下),
+            方策が確率を返さない場合は None
 
         Returns
         ----------
         None
         """
-        # 始めていない場合は次の番号から. 上限に達した後のエピソードは
-        # 先頭から続く表にするため全て捨てる
+        # 確率の確認. 始めていない場合は次の番号から. 上限に達した後の
+        # エピソードは先頭から続く表にするため全て捨てる
+        check_action_prob(action_prob, action)
         if self.current is None:
             self.start_episode(len(self.episodes), None)
         self.resolve_sizes(observation, action)
@@ -471,18 +512,25 @@ class Trajectory:
             "terminated": bool(terminated),
             "truncated": bool(truncated),
             "guard": guard,
-            "guard_reasons": text_reasons
+            "guard_reasons": text_reasons,
+            "action_prob": None if action_prob is None else float(
+                action_prob
+            )
         }
 
         # 書き出しと同じ文字数の上限 (見出しを含む) で, メモリも抑える
         guarded = self.guarded or guard is not None
-        size = len(self.episode_lines([row], guarded).encode("utf-8"))
-        header = len(self.header(guarded).encode("utf-8"))
+        probed = self.probed or action_prob is not None
+        size = len(
+            self.episode_lines([row], guarded, probed).encode("utf-8")
+        )
+        header = len(self.header(guarded, probed).encode("utf-8"))
         total = header + self.n_bytes + self.current_bytes + size
         if total > MAX_TRAJECTORY_BYTES:
             self.mark_full()
             return
         self.guarded = guarded
+        self.probed = probed
         self.current.append(row)
         self.current_bytes += size
 
@@ -526,7 +574,9 @@ class Trajectory:
         self.current = None
         self.current_bytes = 0
 
-    def columns(self, guarded: Optional[bool] = None) -> list[str]:
+    def columns(
+        self, guarded: Optional[bool] = None, probed: Optional[bool] = None
+    ) -> list[str]:
         """
         表の列の名前を返す関数
 
@@ -534,12 +584,16 @@ class Trajectory:
         ----------
         guarded: Optional[bool] = None
             守りの結果の列を足すか, None の場合は記録した軌跡から決める
+        probed: Optional[bool] = None
+            行動を選んだ確率の列を足すか, None の場合は記録した軌跡から
+            決める
 
         Returns
         ----------
         columns: list[str]
             episode, step, 観測, 行動, reward, terminated, truncated, seed,
-            守りを当てた場合は guard と guard_reasons
+            守りを当てた場合は guard と guard_reasons, 確率を記録した場合は
+            action_prob
         """
         # 行動の無い軌跡 (全て止めた判断) は 1 つの列
         observation = column_names(
@@ -552,10 +606,14 @@ class Trajectory:
         ]
         if self.guarded if guarded is None else guarded:
             columns.extend(GUARD_COLUMNS)
+        if self.probed if probed is None else probed:
+            columns.append(PROB_COLUMN)
 
         return columns
 
-    def header(self, guarded: Optional[bool] = None) -> str:
+    def header(
+        self, guarded: Optional[bool] = None, probed: Optional[bool] = None
+    ) -> str:
         """
         表の見出しの行を返す関数
 
@@ -563,13 +621,16 @@ class Trajectory:
         ----------
         guarded: Optional[bool] = None
             守りの結果の列を足すか, None の場合は記録した軌跡から決める
+        probed: Optional[bool] = None
+            行動を選んだ確率の列を足すか, None の場合は記録した軌跡から
+            決める
 
         Returns
         ----------
         text: str
             列の名前を , でつないだ行
         """
-        text = ",".join(self.columns(guarded)) + "\n"
+        text = ",".join(self.columns(guarded, probed)) + "\n"
 
         return text
 
@@ -601,7 +662,7 @@ class Trajectory:
                 types[column] = observation_type
             elif is_prefixed(column, ACTION_PREFIX):
                 types[column] = action_type
-            elif column == "reward":
+            elif column in ("reward", PROB_COLUMN):
                 types[column] = "number"
             elif column in ("terminated", "truncated"):
                 types[column] = "boolean"
@@ -611,7 +672,8 @@ class Trajectory:
         return types
 
     def episode_lines(
-        self, steps: list[dict], guarded: Optional[bool] = None
+        self, steps: list[dict], guarded: Optional[bool] = None,
+        probed: Optional[bool] = None
     ) -> str:
         """
         1 つのエピソードの歩を CSV の行にする関数
@@ -622,15 +684,20 @@ class Trajectory:
             エピソードの歩
         guarded: Optional[bool] = None
             守りの結果の列を書くか, None の場合は記録した軌跡から決める
+        probed: Optional[bool] = None
+            行動を選んだ確率の列を書くか, None の場合は記録した軌跡から
+            決める
 
         Returns
         ----------
         text: str
             CSV の行 (見出しを除く)
         """
-        # 形の合わない観測と, 行動の無い歩は空の値 (欠け)
+        # 形の合わない観測と, 行動と確率の無い歩は空の値 (欠け)
         if guarded is None:
             guarded = self.guarded
+        if probed is None:
+            probed = self.probed
         empty_observation = [""] * max(self.observation_size or 0, 1)
         action_size = self.action_size or 0
         empty_action = [""] * max(action_size, 1)
@@ -649,6 +716,9 @@ class Trajectory:
             ]
             if guarded:
                 line.extend([row["guard"] or "", row["guard_reasons"]])
+            if probed:
+                prob = row.get("action_prob")
+                line.append("" if prob is None else format_number(prob))
             writer.writerow(line)
         text = buffer.getvalue()
 
@@ -896,6 +966,7 @@ def save_trajectory(
         "observation_space": space_info(trajectory.observation_space),
         "action_space": space_info(trajectory.action_space),
         "guarded": trajectory.guarded,
+        "with_action_prob": trajectory.probed,
         "episodes": len(chunks),
         "rows": rows,
         "complete": dropped == 0,

@@ -196,6 +196,7 @@ def test_same_policy_matches_actual_mean() -> None:
         assert result[key] == pytest.approx(result["behavior_value"])
         assert result[key] == pytest.approx(3.5, abs=0.15)
     assert result["effective_sample_size"] == pytest.approx(400)
+    assert result["low_ess"] is False
     assert result["max_weight_share"] == pytest.approx(1 / 400)
     assert result["zero_weight_episodes"] == 0
     assert result["notes"] == []
@@ -292,6 +293,7 @@ def test_zero_target_prob_and_low_ess() -> None:
     assert result["value"] == pytest.approx(5.0)
     assert result["zero_weight_episodes"] > 500
     assert result["effective_sample_size"] < 64
+    assert result["low_ess"] is True
     notes = " ".join(result["notes"])
     assert "確率 0" in notes
     assert "有効なサンプルの数" in notes
@@ -305,6 +307,7 @@ def test_zero_target_prob_and_low_ess() -> None:
     assert result["value"] is None
     assert result["ordinary"] == 0.0
     assert result["effective_sample_size"] == 0.0
+    assert result["low_ess"] is False
     assert "決まりません" in " ".join(result["notes"])
 
 

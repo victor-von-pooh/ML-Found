@@ -10,12 +10,13 @@ from ml_found.rl.off_policy import estimate_policy_value
 from ml_found.rl.reinforce import ReinforceStep
 from ml_found.rl.rollout import EvaluationLoader, Exploration, RolloutLoader
 from ml_found.rl.trajectory import (
-    MAX_TRAJECTORY_BYTES, TRAJECTORY_FORMAT_VERSION, Trajectory,
-    save_trajectory
+    MAX_TRAJECTORY_BYTES, MAX_TRAJECTORY_INFO_BYTES,
+    TRAJECTORY_FORMAT_VERSION, Trajectory, save_trajectory
 )
 
 __all__ = [
-    "MAX_TRAJECTORY_BYTES", "POLICY_FORMAT_VERSION",
+    "MAX_TRAJECTORY_BYTES", "MAX_TRAJECTORY_INFO_BYTES",
+    "POLICY_FORMAT_VERSION",
     "TRAJECTORY_FORMAT_VERSION", "ActorCriticStep", "EvaluationLoader",
     "ExperienceBuffer", "Exploration", "GuardedPolicy", "ReinforceStep",
     "RolloutLoader", "Trajectory", "apply_guards", "estimate_policy_value",

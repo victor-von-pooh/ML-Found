@@ -75,7 +75,10 @@ SCREEN_NAMES = {
         "missing_data_size_params", "named_views", "resolve_optimizer_class",
         "resolve_scheduler_class", "try_build_optim", "uses_named_optimizers"
     ],
-    "ml_found.rl": ["file_sha256", "read_policy_spec"],
+    "ml_found.rl": [
+        "MAX_TRAJECTORY_INFO_BYTES", "TRAJECTORY_FORMAT_VERSION",
+        "estimate_policy_value", "file_sha256", "read_policy_spec"
+    ],
     "ml_found.utils": ["describe_requirements", "environment_packages",
                        "get_device"]
 }

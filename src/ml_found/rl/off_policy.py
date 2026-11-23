@@ -20,6 +20,9 @@ REQUIRED_COLUMNS = ("episode", "step", "reward", "terminated", "truncated")
 # 有効なサンプルの数がエピソードの数のこの割合より少なければ知らせる
 LOW_ESS_RATIO = 0.1
 
+# 元に戻せる重みの対数の上限 (exp が float64 で溢れない値)
+MAX_LOG_WEIGHT = 700.0
+
 # 守りで止めた判断の結果 (行動と報酬の無い行)
 STOP_GUARDS = ("stop", "handover")
 
@@ -299,6 +302,8 @@ def group_episodes(
     # 列の確かめと, 観測と行動の列と型 (説明が無ければ値から)
     if not rows:
         raise ValueError("軌跡の表に行がありません")
+    for number, row in enumerate(rows, start=2):
+        check_row(row, number)
     columns = list(rows[0].keys())
     check_columns(columns)
     observation_columns = element_columns(columns, OBSERVATION_PREFIX)
@@ -367,6 +372,28 @@ def group_episodes(
     return result
 
 
+def check_row(row: dict, number: int) -> None:
+    """
+    表の行の値の数が見出しの列の数と同じことを確かめる関数
+
+    Parameters
+    ----------
+    row: dict
+        DictReader の 1 行 (足りない列は None, 余る値は None のキー)
+    number: int
+        誤りのメッセージに出す行の番号 (見出しが 1 行目)
+
+    Returns
+    ----------
+    None
+    """
+    # 列のずれた行を読み違えないように止まる
+    if None in row or any(value is None for value in row.values()):
+        raise ValueError(
+            f"軌跡の表の {number} 行目の値の数が見出しの列の数と違います"
+        )
+
+
 def make_step(row: dict, action: Any, observation: Any) -> dict:
     """
     表の 1 行を, 見積もりに使う 1 歩にする関数
@@ -404,9 +431,16 @@ def make_step(row: dict, action: Any, observation: Any) -> dict:
             f"軌跡の表の {PROB_COLUMN} は 0 より大きく 1 以下にしてください "
             f"(episode {row['episode']}, step {row['step']}): {text!r}"
         )
+    reward = parse_number(row["reward"], "reward", False)
+    if not math.isfinite(reward):
+        raise ValueError(
+            "軌跡の表の reward が有限の数ではありません (nan と無限大の報酬"
+            f"では見積もれません. episode {row['episode']}, step "
+            f"{row['step']}): {row['reward']!r}"
+        )
     step = {
-        "observation": observation, "action": action,
-        "reward": parse_number(row["reward"], "reward", False), "prob": prob
+        "observation": observation, "action": action, "reward": reward,
+        "prob": prob
     }
 
     return step
@@ -480,8 +514,8 @@ def episode_weights(
     steps: list[dict], target_prob: Callable, gamma: float
 ) -> dict[str, Any]:
     """
-    1 つのエピソードの重み (確率の比の積) と割り引いた報酬の和を計算する
-    関数
+    1 つのエピソードの重み (確率の比の積) の対数と割り引いた報酬を計算
+    する関数
 
     Parameters
     ----------
@@ -495,30 +529,141 @@ def episode_weights(
     Returns
     ----------
     result: dict[str, Any]
-        weight (エピソード全体の重み), return (割り引いた報酬の和),
-        per_decision (歩ごとの重みを掛けた割り引いた報酬の和),
-        zero_steps (見積もる方策の確率が 0 の歩の数)
+        log_weight (エピソード全体の重みの対数. 確率 0 の歩があれば
+        -inf), return (割り引いた報酬の和), terms (歩ごとの, そこまでの
+        重みの対数と割り引いた報酬の組), zero_steps (見積もる方策の確率が
+        0 の歩の数)
     """
-    # 歩ごとに, そこまでの比の積を報酬に掛けて足す
-    weight = 1.0
+    # 比の積は対数の和にし, 大きな重みと小さな重みで溢れない形.
+    # 記録の確率は正なので, 確率 0 の歩の後は -inf のまま (nan にならない)
+    log_weight = 0.0
     total = 0.0
-    per_decision = 0.0
+    terms = []
     zero_steps = 0
     discount = 1.0
     for step in steps:
         prob = target_prob_of(target_prob, step["observation"], step["action"])
         if prob == 0.0:
             zero_steps += 1
-        weight *= prob / step["prob"]
-        total += discount * step["reward"]
-        per_decision += discount * weight * step["reward"]
+            log_weight = -math.inf
+        elif log_weight != -math.inf:
+            log_weight += math.log(prob) - math.log(step["prob"])
+        reward = discount * step["reward"]
+        total += reward
+        terms.append((log_weight, reward))
         discount *= gamma
     result = {
-        "weight": weight, "return": total, "per_decision": per_decision,
+        "log_weight": log_weight, "return": total, "terms": terms,
         "zero_steps": zero_steps
     }
 
     return result
+
+
+def scaled_weights(log_weights: np.ndarray) -> tuple[np.ndarray, float]:
+    """
+    重みの対数から最大の値を引いて, 0 以上 1 以下の重みに戻す関数
+
+    Parameters
+    ----------
+    log_weights: np.ndarray
+        重みの対数 (確率 0 の重みは -inf)
+
+    Returns
+    ----------
+    result: tuple[np.ndarray, float]
+        最大の重みを 1 にした重みと, 引いた最大の値 (全て -inf なら -inf)
+    """
+    # 全ての重みが 0 なら, 戻した重みも全て 0
+    finite = log_weights[np.isfinite(log_weights)]
+    if finite.size == 0:
+        result = (np.zeros_like(log_weights), -math.inf)
+        return result
+    shift = float(finite.max())
+    result = (np.exp(log_weights - shift), shift)
+
+    return result
+
+
+def unscaled_mean(
+    values: np.ndarray, shift: float, what: str, notes: list[str]
+) -> Optional[float]:
+    """
+    最大の重みを 1 にして計算した平均に, 引いた最大の値を戻す関数
+
+    Parameters
+    ----------
+    values: np.ndarray
+        エピソードごとの, 戻した重みを掛けた報酬
+    shift: float
+        引いた重みの対数の最大の値
+    what: str
+        知らせる文に出す見積もりの名前
+    notes: list[str]
+        利用者に知らせることを足す並び
+
+    Returns
+    ----------
+    mean: Optional[float]
+        元の重みでの平均 (全ての重みが 0 なら 0). 戻すと有限にならない
+        場合は None
+    """
+    # 重みを戻すと有限でなくなる場合は決めず, 理由を知らせる
+    if shift == -math.inf:
+        mean = 0.0
+        return mean
+    mean = math.inf
+    if shift <= MAX_LOG_WEIGHT:
+        mean = float(np.mean(values)) * math.exp(shift)
+    if not math.isfinite(mean):
+        notes.append(
+            f"{what}の見積もりは, 重みが大きすぎて有限の数にならないので"
+            "決まりません (記録した方策の確率が非常に小さい歩が続いて"
+            "います)"
+        )
+        mean = None
+
+    return mean
+
+
+def per_decision_value(
+    results: list[dict], notes: list[str]
+) -> Optional[float]:
+    """
+    歩ごとの重点サンプリングの見積もりを, 対数の重みから計算する関数
+
+    Parameters
+    ----------
+    results: list[dict]
+        episode_weights の結果の並び
+    notes: list[str]
+        利用者に知らせることを足す並び
+
+    Returns
+    ----------
+    value: Optional[float]
+        歩ごとの重みを掛けた割り引いた報酬の和の, エピソードの平均.
+        有限にならない場合は None
+    """
+    # 全ての歩の重みの最大の値を引いて足し, 最後に戻す
+    logs = np.array(
+        [log for row in results for log, _ in row["terms"]],
+        dtype=np.float64
+    )
+    _, shift = scaled_weights(logs)
+    if shift == -math.inf:
+        value = 0.0
+        return value
+    sums = np.array([
+        sum(
+            math.exp(log - shift) * reward for log, reward in row["terms"]
+            if log != -math.inf
+        )
+        for row in results
+    ], dtype=np.float64)
+    value = unscaled_mean(sums, shift, "歩ごとの重点サンプリング", notes)
+
+    return value
 
 
 def summarize_weights(
@@ -539,35 +684,48 @@ def summarize_weights(
     ----------
     summary: dict[str, Any]
         value, ordinary, per_decision, behavior_value,
-        effective_sample_size, max_weight_share, zero_weight_episodes
+        effective_sample_size, max_weight_share, zero_weight_episodes,
+        underflow_episodes
     """
-    # 重み付きの見積もりは重みの和で割る (全ての重みが 0 なら決まらない)
-    weights = np.array([row["weight"] for row in results], dtype=np.float64)
+    # 最大の重みを 1 にした重み. 重み付きの見積もりでは戻す値が消える
+    log_weights = np.array(
+        [row["log_weight"] for row in results], dtype=np.float64
+    )
     returns = np.array([row["return"] for row in results], dtype=np.float64)
     count = len(results)
-    if not np.all(np.isfinite(weights)):
-        raise ValueError(
-            "重みが大きすぎて計算できません (記録した方策の確率が非常に"
-            "小さい歩が続いています)"
-        )
+    weights, shift = scaled_weights(log_weights)
     total = float(weights.sum())
+    if not math.isfinite(total):
+        raise ValueError(
+            f"重みの和が有限になりません ({total}). 記録した確率と "
+            "target_prob の値を確かめてください"
+        )
     value = float((weights * returns).sum() / total) if total > 0 else None
 
     # 有効なサンプルの数 (Kish) と, 最も大きい重みの割合
     if total > 0:
-        scaled = weights / weights.max()
-        ess = float(scaled.sum() ** 2 / (scaled ** 2).sum())
+        ess = float(total ** 2 / (weights ** 2).sum())
         share = float(weights.max() / total)
     else:
         ess = 0.0
         share = None
-    zero_episodes = int(np.sum(weights == 0.0))
+
+    # 確率 0 で重みが 0 のエピソードと, 他より非常に小さく 0 に潰れた
+    # エピソードは分けて数える
+    zero_episodes = int(np.sum(log_weights == -math.inf))
+    underflow = int(np.sum(np.isfinite(log_weights) & (weights == 0.0)))
     zero_steps = sum(row["zero_steps"] for row in results)
     if zero_steps:
         notes.append(
             f"見積もる方策が選ばない行動 (確率 0) を記録した方策が "
             f"{zero_steps} 歩でとりました. その {zero_episodes} エピソード"
             "の重みは 0 です"
+        )
+    if underflow:
+        notes.append(
+            f"{underflow} エピソードの重みは, 最も大きい重みより非常に小さい"
+            "ので 0 として計算しました (見積もる方策の確率は 0 ではありま"
+            "せん)"
         )
     if value is None:
         notes.append(
@@ -582,14 +740,15 @@ def summarize_weights(
         )
     summary = {
         "value": value,
-        "ordinary": float((weights * returns).mean()),
-        "per_decision": float(
-            np.mean([row["per_decision"] for row in results])
+        "ordinary": unscaled_mean(
+            weights * returns, shift, "普通の重点サンプリング", notes
         ),
+        "per_decision": per_decision_value(results, notes),
         "behavior_value": float(returns.mean()),
         "effective_sample_size": ess,
         "max_weight_share": share,
-        "zero_weight_episodes": zero_episodes
+        "zero_weight_episodes": zero_episodes,
+        "underflow_episodes": underflow
     }
 
     return summary
@@ -621,10 +780,13 @@ def estimate_policy_value(
     result: dict[str, Any]
         value (重み付きの重点サンプリングの見積もり. 決まらなければ None),
         ordinary (普通の重点サンプリング), per_decision (歩ごとの重点
-        サンプリング), behavior_value (記録した方策の報酬の和の平均),
-        episodes, steps, effective_sample_size (有効なサンプルの数),
+        サンプリング. どちらも重みが大きすぎて有限にならなければ None),
+        behavior_value (記録した方策の報酬の和の平均), episodes, steps,
+        effective_sample_size (有効なサンプルの数),
         max_weight_share (最も大きい重みの割合), zero_weight_episodes
-        (重みが 0 のエピソードの数), notes (知らせること)
+        (見積もる方策の確率 0 の行動で重みが 0 のエピソードの数),
+        underflow_episodes (最も大きい重みより非常に小さく 0 として計算
+        したエピソードの数), notes (知らせること)
     """
     # 割引率と関数の確認
     if isinstance(gamma, bool) or not isinstance(

@@ -372,3 +372,110 @@ def test_rejects_bad_inputs() -> None:
         estimate_policy_value(good, lambda observation, action: None)
     with pytest.raises(ValueError, match="trajectory"):
         estimate_policy_value(123, coin_prob(0.5))
+
+
+def long_episode(
+    trajectory: Trajectory, episode: int, steps: int, prob: float,
+    last_action: int = 1
+) -> None:
+    """
+    同じ確率で行動 1 を選んだ歩の続くエピソードを記録する関数
+
+    Parameters
+    ----------
+    trajectory: Trajectory
+        記録する軌跡
+    episode: int
+        エピソードの番号
+    steps: int
+        歩の数
+    prob: float
+        記録した方策が行動を選んだ確率
+    last_action: int = 1
+        最後の歩の行動
+
+    Returns
+    ----------
+    None
+    """
+    trajectory.start_episode(episode, None)
+    for step in range(steps):
+        last = step == steps - 1
+        trajectory.add(
+            [float(step)], last_action if last else 1, 1.0, last, False,
+            action_prob=prob
+        )
+    trajectory.end_episode()
+
+
+def test_large_weights_in_log_space() -> None:
+    """
+    溢れるほど大きな重みと, 0 に潰れる重みと, 確率 0 の重みを, nan に
+    せずに分けて扱うことを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 重みの対数が約 921 (100 ** 200) のエピソードと, 重み 1 のエピソード
+    trajectory = Trajectory()
+    long_episode(trajectory, 0, 200, 0.01)
+    long_episode(trajectory, 1, 3, 1.0)
+
+    # 最後に確率 0 の行動 0 をとった, 大きな重みのエピソード (inf * 0 の
+    # nan にならず, 重みは 0)
+    long_episode(trajectory, 2, 200, 0.01, last_action=0)
+    result = estimate_policy_value(trajectory, coin_prob(1.0))
+    assert result["value"] == pytest.approx(200.0)
+    assert result["ordinary"] is None
+    assert result["per_decision"] is None
+    assert result["zero_weight_episodes"] == 1
+    assert result["underflow_episodes"] == 1
+    assert result["effective_sample_size"] == pytest.approx(1.0)
+    notes = " ".join(result["notes"])
+    assert "確率 0" in notes
+    assert "0 として計算" in notes
+    assert "有限の数にならない" in notes
+
+    # 溢れない大きさなら, 普通と歩ごとの見積もりも元の重みに戻す
+    trajectory = Trajectory()
+    long_episode(trajectory, 0, 100, 0.01)
+    result = estimate_policy_value(trajectory, coin_prob(1.0))
+    assert result["ordinary"] == pytest.approx(100.0 * 100.0 ** 100)
+    assert result["underflow_episodes"] == 0
+
+
+def test_rejects_bad_rewards_and_rows(tmp_path: Path) -> None:
+    """
+    nan と無限大の報酬と, 値の数が見出しと違う行で止まることを確かめる
+    関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    # nan と無限大の報酬
+    for reward in (float("nan"), float("inf"), float("-inf")):
+        trajectory = Trajectory()
+        trajectory.start_episode(0, None)
+        trajectory.add([0.0], 1, reward, True, False, action_prob=0.5)
+        trajectory.end_episode()
+        with pytest.raises(ValueError, match="reward"):
+            estimate_policy_value(trajectory, coin_prob(0.5))
+
+    # 値の足りない行と余る行
+    header = "episode,step,obs,action,reward,terminated,truncated,action_prob"
+    for line in ("0,0,0.0,1,1.0,true,false", "0,0,0.0,1,1.0,true,false,0.5,9"):
+        path = tmp_path / "broken.csv"
+        path.write_text(f"{header}\n{line}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="2 行目"):
+            estimate_policy_value(path, coin_prob(0.5))

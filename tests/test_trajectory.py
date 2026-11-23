@@ -161,6 +161,7 @@ def test_loader_records_and_saves(tmp_path: Path) -> None:
 
     # 説明の項目は FORMAT.md の表と同じ
     info = read_info(tmp_path, "valid")
+    assert info["with_action_prob"] is False
     assert set(info) == documented_keys("#### trajectories/<名前>.json")
     assert info["format_version"] == TRAJECTORY_FORMAT_VERSION
     assert info["source"] == "evaluation_loader"

@@ -7,7 +7,8 @@ from ml_found.experiment import (
     start_experiment, task_from_dataset, unregister_rng, write_task
 )
 from ml_found.training import (
-    FrechetInceptionDistance, History, Trainer, frechet_distance
+    FrechetInceptionDistance, History, Trainer, average_precision,
+    frechet_distance, precision_at_k
 )
 from ml_found.utils.requirements import (
     MissingRequirementError, describe_requirements, environment_packages,
@@ -22,10 +23,11 @@ except metadata.PackageNotFoundError:
 
 __all__ = [
     "Experiment", "FrechetInceptionDistance", "History",
-    "MissingRequirementError", "Trainer", "describe_origin",
-    "describe_requirements", "environment_packages", "frechet_distance",
-    "load_config", "load_evaluations", "load_project_config", "load_samples",
-    "load_task", "original_coordinates", "register_rng", "require",
+    "MissingRequirementError", "Trainer", "average_precision",
+    "describe_origin", "describe_requirements", "environment_packages",
+    "frechet_distance", "load_config", "load_evaluations",
+    "load_project_config", "load_samples", "load_task",
+    "original_coordinates", "precision_at_k", "register_rng", "require",
     "save_evaluation", "save_sample", "start_experiment", "task_from_dataset",
     "unregister_rng", "write_task"
 ]

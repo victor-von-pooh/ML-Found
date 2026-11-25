@@ -624,14 +624,22 @@ class Trainer:
         # 1 ステップの計算を行う関数を保存
         self.step_fn = step_fn
 
+        # パラメータを持たないモデル (バッファだけのモデル) かどうかを保存
+        # (勾配で学習しないので, Optimizer と Scheduler を作らない)
+        self.no_params = next(iter(self.model.parameters()), None) is None
+
         # Optimizer と Scheduler の作成 (名前付きの複数の Optimizer は別に作成)
-        self.named = uses_named_optimizers(experiment.cfg)
+        self.named = (
+            uses_named_optimizers(experiment.cfg) and not self.no_params
+        )
         self.auto_values: dict[str, int] = {}
         self.warmup_from_ratio = False
         self.warmup_ratio_labels: set[str] = set()
         # 予定の総ステップ数 (OneCycleLR の総ステップ数との食い違いの確認に使用)
         self.planned_total_steps: Optional[int] = None
-        if self.named:
+        if self.no_params:
+            self.build_no_param_parts(optimizer, scheduler)
+        elif self.named:
             self.build_named_parts(optimizer, scheduler)
         else:
             self.build_single_parts(optimizer, scheduler)
@@ -690,9 +698,14 @@ class Trainer:
         # LBFGS のように損失を計算し直す closure が必要な Optimizer かどうかと,
         # 勾配を使わない Optimizer かどうかを保存
         # (名前付きの Optimizer は, どちらでもないことを config の確認で保証)
-        self.use_closure = not self.named and requires_closure(self.optimizer)
-        self.use_gradients = self.named or class_uses_gradients(
-            type(self.optimizer)
+        # (パラメータを持たないモデルは更新しないので, どちらも見ない)
+        self.use_closure = (
+            not self.named and not self.no_params
+            and requires_closure(self.optimizer)
+        )
+        self.use_gradients = (
+            self.named or self.no_params
+            or class_uses_gradients(type(self.optimizer))
         )
         if not self.use_gradients and (
             self.trainer_cfg.grad_clip_norm is not None
@@ -752,6 +765,55 @@ class Trainer:
 
         # チェックポイントに状態を保存する, 今の fit の loader の入れ物を用意
         self.loaders: dict[str, Any] = {}
+
+    def build_no_param_parts(
+        self, optimizer: Optional[optim.Optimizer],
+        scheduler: Optional[optim.lr_scheduler.LRScheduler]
+    ) -> None:
+        """
+        パラメータを持たないモデルのために, Optimizer と Scheduler を作らずに
+        学習率の記録などの入れ物を用意する関数
+
+        Parameters
+        ----------
+        optimizer: Optional[optim.Optimizer]
+            使えないので None (自分で作った Optimizer は渡せない)
+        scheduler: Optional[optim.lr_scheduler.LRScheduler]
+            使えないので None (自分で作った Scheduler は渡せない)
+
+        Returns
+        ----------
+        None
+        """
+        # 自分で作った Optimizer と Scheduler は, 更新するものが無いので不可
+        if optimizer is not None or scheduler is not None:
+            raise ValueError(
+                "パラメータを持たないモデルは学習しないので, Trainer に "
+                "optimizer と scheduler を渡さないでください"
+            )
+
+        # Optimizer と Scheduler は作らず, 学習率の列も無し
+        self.optimizer = None
+        self.scheduler = None
+        self.scheduler_from_config = True
+        self.pending_scheduler = False
+        self.scheduler_interval = "epoch"
+        self.lr_columns = []
+        self.logger.info(
+            "パラメータを持たないモデルなので, Optimizer と Scheduler を作り"
+            "ません (config の optimizer, scheduler, optimizers は使いません)"
+        )
+
+        # 毎エポック同じ検証になるので, エポック数が 1 でない場合は警告
+        epochs = self.trainer_cfg.epochs
+        if epochs != 1:
+            message = (
+                f"パラメータを持たないモデルは学習しないので, trainer.epochs "
+                f"({epochs}) の毎エポックで同じ検証をします. "
+                "trainer.epochs: 1 にしてください"
+            )
+            self.logger.warning(message)
+            warnings.warn(message, stacklevel=4)
 
     def build_single_parts(
         self, optimizer: Optional[optim.Optimizer],
@@ -890,9 +952,12 @@ class Trainer:
         ----------
         entries: list[tuple[str, Optional[LRScheduler], Any]]
             1 つの Optimizer の場合は名前が空の 1 組, 名前付きの場合は
-            Optimizer ごとの組
+            Optimizer ごとの組, パラメータを持たないモデルの場合は空
         """
         cfg = self.experiment.cfg
+        if self.no_params:
+            entries = []
+            return entries
         if not self.named:
             entries = [("", self.scheduler, cfg.scheduler)]
             return entries
@@ -1354,9 +1419,11 @@ class Trainer:
         ----------
         lrs: dict[str, float]
             1 つの Optimizer は lr, 名前付きの Optimizer は lr_<名前> ごとの
-            最初のパラメータグループの学習率
+            最初のパラメータグループの学習率. Optimizer が無い場合は空
         """
-        if isinstance(self.optimizer, NamedOptimizers):
+        if self.optimizer is None:
+            lrs = {}
+        elif isinstance(self.optimizer, NamedOptimizers):
             lrs = {
                 f"lr_{name}": float(optimizer.param_groups[0]["lr"])
                 for name, optimizer in self.optimizer.items()
@@ -1981,7 +2048,10 @@ class Trainer:
             "select_best": self.trainer_cfg.select_best,
             "valid_every_n_epochs": self.trainer_cfg.valid_every_n_epochs,
             "model": self.model.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
+            "optimizer": (
+                None if self.optimizer is None
+                else self.optimizer.state_dict()
+            ),
             "scheduler": (
                 None if self.scheduler is None
                 else self.scheduler.state_dict()
@@ -2360,13 +2430,24 @@ class Trainer:
             warnings.warn(message, stacklevel=2)
             self.logger.warning(message)
 
+        # パラメータを持たないモデルの学習 (Optimizer の状態が無いもの) かは,
+        # 再開元と同じものに制限
+        saved_no_params = state.get("optimizer") is None
+        if saved_no_params != self.no_params:
+            raise ValueError(
+                "再開元と今回で, パラメータを持たないモデルかどうかが違います"
+                f" (再開元: {'持たない' if saved_no_params else '持つ'}, "
+                f"今回: {'持たない' if self.no_params else '持つ'})"
+            )
+
         # モデル, Optimizer, Scheduler, 記録の復元
         # Scheduler が Optimizer に書き込む値 (OneCycleLR の max_lr など) も
         # config と比べるため, 読み込む前の値を保持
+        # (パラメータを持たないモデルは Optimizer と Scheduler が無し)
         self.model.load_state_dict(state["model"])
         if self.named:
             self.resume_named(state)
-        else:
+        elif not self.no_params:
             self.resume_single(state)
         self.history.load_state_dict(state["history"])
         self.lr_steps = LrSteps(self.lr_columns)
@@ -2809,10 +2890,12 @@ class Trainer:
         )
 
         # Optimizer, Scheduler, 監視する指標を記録
-        self.logger.info(f"Optimizer:\n\n{self.optimizer}\n")
+        # (パラメータを持たないモデルは, 作らないことを作成時に記録済み)
+        if not self.no_params:
+            self.logger.info(f"Optimizer:\n\n{self.optimizer}\n")
         if self.named:
             self.log_named_settings()
-        else:
+        elif not self.no_params:
             self.log_scheduler(self.scheduler)
         self.log_monitor(monitor)
 
@@ -2839,8 +2922,13 @@ class Trainer:
             Optimizer ごとの name, optimizer, modules, scheduler,
             scheduler_params の辞書. 1 つの Optimizer の場合は name と
             modules が None の 1 つ. 学習を始めるまで作らない Scheduler は,
-            作るまで None
+            作るまで None. パラメータを持たないモデルの場合は空
         """
+        # パラメータを持たないモデルは Optimizer が無いので空
+        if self.no_params:
+            info = []
+            return info
+
         # 名前付きの場合は config の順に, 受け持つ部分と Scheduler を付加
         if self.named:
             schedulers = (
@@ -3525,7 +3613,10 @@ class Trainer:
         # チェックポイントと同じ名前で, 戻すのに必要なものだけを写す
         state = clone_to_cpu({
             "model": self.model.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
+            "optimizer": (
+                None if self.optimizer is None
+                else self.optimizer.state_dict()
+            ),
             "scheduler": (
                 None if self.scheduler is None
                 else self.scheduler.state_dict()
@@ -3555,7 +3646,8 @@ class Trainer:
         """
         # モデル, Optimizer, Scheduler, 更新回数の復元
         self.model.load_state_dict(state["model"])
-        self.optimizer.load_state_dict(state["optimizer"])
+        if self.optimizer is not None:
+            self.optimizer.load_state_dict(state["optimizer"])
         if self.scheduler is not None and state.get("scheduler") is not None:
             self.scheduler.load_state_dict(state["scheduler"])
         self.global_step = int(state.get("global_step", self.global_step))
@@ -3959,6 +4051,13 @@ class Trainer:
             continue_run=continuing, optimizers=self.optimizer_info()
         )
 
+        # パラメータを持たないモデルは学習しないので, 検証用のデータが必要
+        if self.no_params and valid_loader is None:
+            raise ValueError(
+                "パラメータを持たないモデルは学習のフェーズを回さないので, "
+                "fit に検証用のデータ (valid_loader) を渡してください"
+            )
+
         # 学習用データの評価し直しは, ワーカーを使い回す DataLoader では
         # ワーカーの中の乱数を進めるので, 学習が変わることを通知
         persistent = getattr(train_loader, "persistent_workers", False)
@@ -4045,14 +4144,18 @@ class Trainer:
                 lrs = self.current_lrs()
 
                 # 学習し, 判定するエポックでは評価し直しと検証
-                # (判定しないエポックは学習だけ)
+                # (判定しないエポックは学習だけ. パラメータを持たないモデルは
+                # 学習なし)
                 # エポックの途中で止める要求があれば, このエポックを捨てて終了
                 judged = self.is_judged_epoch(epoch)
                 record = {"epoch": epoch}
                 self.epoch_extra = {}
                 self.epoch_start_step = self.global_step
                 try:
-                    record.update(self.run_epoch(train_loader, train=True))
+                    if not self.no_params:
+                        record.update(
+                            self.run_epoch(train_loader, train=True)
+                        )
                     if judged and self.trainer_cfg.eval_train:
                         record.update(
                             self.run_valid_epoch(train_loader, "train_eval")

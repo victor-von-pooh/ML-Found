@@ -13,6 +13,7 @@
 - **ベストモデルと再開**: 監視する指標が最も良いモデルを保存して最後に戻す. Early Stopping, 勾配クリッピング, チェックポイントからの再開にも対応する
 - **重みの指数移動平均 (EMA)**: `trainer.ema.decay` に減衰率を書くだけで, EMA の重みで検証し, ベストモデルと `final_model.pt` も EMA の重みにする. EMA の状態はチェックポイントに入り, 再開しても通しの学習と一致する
 - **大きな学習済みのモデルの微調整**: 勾配の蓄積 (`trainer.accumulate_grad_batches`), bf16 の混合精度 (`trainer.precision: bf16`), 始める前に重みの一部を前置きを付け替えて読む (`trainer.init_weights`), 凍結した重みを省いたチェックポイント (`trainer.checkpoint.trainable_only`) を config に書くだけで使える. 同じ設定で再開すれば通しの学習と一致する
+- **パラメータを持たないモデルも同じ実験に**: 中心と精度行列をバッファに持つ距離に基づく異常の度合いのように, パラメータを 1 つも持たないモデルは, Optimizer と Scheduler を作らずに検証だけを数え, `run.json`, `history.csv`, `final_model.pt` を他の実験と同じ形で残す (docs/DESIGN.md の「更新の手順」)
 - **Lightning などに依存しない**: 素の PyTorch だけで書いている
 - **強化学習と方策の書き出し (任意)**: Gymnasium の形の環境とのやり取りを loader にして, 同じ `Trainer` で方策を学習し, 守り (行動の範囲, 止める条件, 外れたときの動き) と一緒に書き出せる. 評価で走らせた軌跡は, 1 歩が 1 行の表 (エピソードの番号, 歩数, 観測, 行動, 報酬, 終了と打ち切りの別, 守りの結果) として `trajectories/` に書き出せる (`save_trajectory`. 既定では書かない. 表の形は docs/FORMAT.md の「trajectories」). 確率で行動を選ぶ方策で記録した軌跡 (行動を選んだ確率の列 `action_prob` の付いた表) からは, 別の方策の良さを環境で動かさずに重点サンプリングで見積もれる (`estimate_policy_value`). 再開では環境の乱数と状態も戻り, 通しの学習と一致する
 - **何の実験かと評価, 見本**: 実験の `task.yaml` (`write_task`, `task_from_dataset`), 学習の後のデータ全体の評価 (`save_evaluation`, `load_evaluations`), 入力と予測と正解の見本 (`save_sample`, `load_samples`) を, 実験の記録に残して読める. 異常の検知の上位 K 件の適合率と PR-AUC (`precision_at_k`, `average_precision`) は, docs/DESIGN.md の決まりで数え, 推論の段階 (ML-Inference) は同じ見本で同じ値になることを確かめる

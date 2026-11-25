@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import re
 import sys
-from typing import Callable
+from typing import Callable, Optional
 
 import pytest
 from omegaconf import OmegaConf
@@ -20,6 +20,7 @@ from ml_found.experiment.task import TASK_FORMAT_VERSION, load_task
 from ml_found.rl import TRAJECTORY_FORMAT_VERSION, Trajectory, save_trajectory
 from ml_found.training.status import FORMAT_VERSION
 from ml_found.training.trainer import Trainer
+from test_no_params import DistanceTrainer, make_model
 from test_trainer import make_loader, regression_step
 
 # 形の約束を書いた文書
@@ -55,8 +56,9 @@ def documented_keys(section: str) -> set[str]:
 
 def run_project(
     project: Path, monkeypatch: pytest.MonkeyPatch,
-    step: Callable = regression_step,
-    extra: str = ""
+    step: Optional[Callable] = regression_step,
+    extra: str = "", model: Optional[nn.Module] = None,
+    trainer_class: type = Trainer
 ) -> Path:
     """
     文書のとおりのプロジェクトを作り, 2 エポックの学習を流す関数
@@ -67,10 +69,14 @@ def run_project(
         プロジェクトのディレクトリ
     monkeypatch: pytest.MonkeyPatch
         sys.argv の差し替えに使う
-    step: Callable = regression_step
-        1 バッチの計算
+    step: Optional[Callable] = regression_step
+        1 バッチの計算, step を上書きした Trainer の場合は None
     extra: str = ""
         default に加える YAML の内容
+    model: Optional[nn.Module] = None
+        学習するモデル, None の場合は nn.Linear(1, 1)
+    trainer_class: type = Trainer
+        使う Trainer のクラス
 
     Returns
     ----------
@@ -99,7 +105,8 @@ def run_project(
     monkeypatch.delitem(sys.modules, "ipykernel", raising=False)
     cfg, diff = load_project_config(str(project))
     experiment = start_experiment(cfg, diff, str(project))
-    trainer = Trainer(nn.Linear(1, 1), experiment, step)
+    model = nn.Linear(1, 1) if model is None else model
+    trainer = trainer_class(model, experiment, step)
     try:
         trainer.fit(make_loader(), make_loader())
     except RuntimeError:
@@ -226,6 +233,53 @@ def test_history_with_valid_interval(
         assert column in ("epoch", "lr") or re.match(
             r"(train|valid|train_eval)/", column
         ), column
+
+
+def test_run_without_parameters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    パラメータを持たないモデルの実験のディレクトリが, docs/FORMAT.md の
+    形 (optimizers は空のリスト, history.csv に train/ と lr が無い) と
+    合うことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        sys.argv の差し替えに使う
+
+    Returns
+    ----------
+    None
+    """
+    # 距離のモデルで 2 エポック (エポック数の警告は除外)
+    with pytest.warns(UserWarning, match="trainer.epochs"):
+        run_dir = run_project(
+            tmp_path / "project", monkeypatch, step=None,
+            model=make_model(), trainer_class=DistanceTrainer
+        )
+
+    # 学習を終えた実験に必ずあるファイル
+    for name in (
+        "config.yaml", "diff.yaml", "source.yaml", "train.log",
+        "run.json", "history.csv", "model_summary.csv", "final_model.pt"
+    ):
+        assert (run_dir / name).is_file(), name
+
+    # run.json の項目は同じで, optimizers は空のリスト
+    status = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert set(status) == documented_keys("### run.json")
+    assert status["status"] == "completed"
+    assert status["optimizers"] == []
+
+    # history.csv は epoch と valid/ の列だけ
+    with open(run_dir / "history.csv", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    assert [row["epoch"] for row in rows] == ["1", "2"]
+    for column in rows[0]:
+        assert column == "epoch" or column.startswith("valid/"), column
 
 
 def test_failed_run_directory(

@@ -128,7 +128,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 | `final_weights` | 文字か null | `final_model.pt` の重み (`best`, `last`, `partial`) |
 | `seed` | 整数か null | 乱数のシード |
 | `device` | 文字 | 学習したデバイス |
-| `optimizers` | リストか null | Optimizer ごとの辞書. `name` (名前付きの Optimizer の名前, 1 つの場合は null), `optimizer` (クラスの名前), `modules` (受け持つ部分の名前のリスト, 1 つの場合は null), `scheduler` (クラスの名前, 使わない場合は null), `scheduler_params` (Scheduler の主な引数の辞書, 使わない場合は null. 下の「Scheduler の引数」). `Trainer` を作れなかった場合は null |
+| `optimizers` | リストか null | Optimizer ごとの辞書. `name` (名前付きの Optimizer の名前, 1 つの場合は null), `optimizer` (クラスの名前), `modules` (受け持つ部分の名前のリスト, 1 つの場合は null), `scheduler` (クラスの名前, 使わない場合は null), `scheduler_params` (Scheduler の主な引数の辞書, 使わない場合は null. 下の「Scheduler の引数」). `Trainer` を作れなかった場合は null. パラメータを持たないモデル ([DESIGN.md](DESIGN.md) の「更新の手順」) では空のリスト |
 | `error` | 文字か null | 止まった原因のエラー |
 
 - **Scheduler の引数** (`scheduler_params`): config から作った Scheduler も, 自分で作って `Trainer` に渡した Scheduler も, 同じ形で書く. 値は学習を始めるときのもの
@@ -169,7 +169,7 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 1 行が 1 エポック. 列は `epoch` (1 から) と, 次のもの.
 
 - `train/<指標>`, `valid/<指標>`, `train_eval/<指標>` (学習用データを推論モードで評価し直した値). `train/grad_norm` と `train/grad_norm_<名前>` は勾配のノルムに使う名前
-- `lr` (エポックを始めた時点の学習率. 名前付きの Optimizer では `lr_<名前>`)
+- `lr` (エポックを始めた時点の学習率. 名前付きの Optimizer では `lr_<名前>`). パラメータを持たないモデルでは, `train/` と `lr` の列は無い
 - `step` が `extra` で返した値 (名前に `/` を含まない)
 
 指標の名前と数はプロジェクトによって違う. 値の無いところは空. 検証の間隔 (`trainer.valid_every_n_epochs`) が 2 以上の場合, 検証しないエポックの `valid/` と `train_eval/` の値は空 (列は最初に現れた順なので, それらの列が `lr` などの後に来ることもある. 読む側は列の名前で読む).

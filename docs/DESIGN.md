@@ -61,7 +61,7 @@ ML-Found/
 ├── src/ml_found/
 │   ├── config/             # config の型定義, 読み込み, 差分, 起動のしかた
 │   ├── experiment/         # 出力先の作成, ロガー, シード, 環境の情報, 処理されなかったエラーの記録, 何の実験か, 評価と見本
-│   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, 重みの指数移動平均 (EMA), 微調整の補助 (混合精度, 始める前に読む重み, 学習するパラメータだけのチェックポイント), チェックポイント, 記録, 実験の状態, 生成の画像の FID
+│   ├── training/           # Trainer, Optimizer と Scheduler とその登録簿, Early Stopping, 重みの指数移動平均 (EMA), 微調整の補助 (混合精度, 始める前に読む重み, 学習するパラメータだけのチェックポイント), チェックポイント, 記録, 実験の状態, 生成の画像の FID, 異常の検知の指標
 │   ├── rl/                 # 強化学習の経験の記録, 環境とのやり取りの loader, REINFORCE, Actor-Critic, 方策の一式と守り, 守り付きの評価, 評価の軌跡の表, 記録した軌跡からの方策の見積もり
 │   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿, 出力先のファイルをリンクを辿らずに読む関数
 ├── examples/
@@ -457,6 +457,57 @@ class GenerativeTrainer(Trainer):
 - `frechet_distance(mean1, cov1, mean2, cov2)` は, 平均と共分散からフレシェ距離だけを求める. 行列の平方根は対称な `cov1^(1/2) cov2 cov1^(1/2)` の固有値から求めるので, scipy に依存しない
 - 学習済みの重み (`pt_inception-2015-12-05-6726825d.pth`, 約 91 MB) は, 特徴のモデルを渡さずに `FrechetInceptionDistance` を作るとき (pytorch-fid の Inception を作るとき) に pytorch-fid の GitHub のリリースから取り, PyTorch のキャッシュ (`TORCH_HOME`, 既定は `~/.cache/torch/hub/checkpoints`) に置く. 2 回目からはキャッシュを使う. ネットワークの無い計算機では, 一度ネットワークのある所で作ってキャッシュを写しておく
 - 使用の条件: pytorch-fid は Apache License 2.0. 重みは TensorFlow の FID の公式の実装 (TTUR, Apache License 2.0) が使う Inception (TensorFlow が配った `inception-2015-12-05`) を PyTorch に移したもので, 重みに別の条件は書かれていない. ImageNet で学習した重みなので, 公開や商用に使う場合は ImageNet の利用条件も確かめる. 重みは ML-Found に含めず, 使う人の計算機に取る
+
+### 異常の検知の上位 K 件の適合率と PR-AUC
+
+異常の検知の評価は, `precision_at_k` (上位 K 件の適合率) と `average_precision` (PR-AUC. 平均の適合率) で数える. 入力は行ごとの異常の度合い (大きいほど異常) と, 異常か正常かの正解. 学習の段階では `on_epoch_end` の指標に, 学習の後は `save_evaluation` の表の値に使う. 戻り値は Python の `float` で, torch だけで数える (scikit-learn と scipy に依存しない). 推論の段階 (ML-Inference) は ML-Found に依存せず, 下の見本で同じ値になることを自分のテストで確かめる.
+
+```python
+from ml_found import average_precision, precision_at_k, save_evaluation
+
+scores = errors_per_row     # 行ごとの再構成の誤差など (N,)
+labels = is_anomaly         # 異常なら 1 か True (N,)
+
+# on_epoch_end の中で, 監視する指標に
+metrics = {
+    "precision_at_10": precision_at_k(scores, labels, 10),
+    "pr_auc": average_precision(scores, labels)
+}
+
+# 学習の後の評価の表に
+save_evaluation(
+    experiment, "anomaly", metrics, "test",
+    better={"precision_at_10": "higher", "pr_auc": "higher"}
+)
+```
+
+入力の決まりは次の通り.
+
+- 度合いと正解は 1 次元の同じ長さのテンソル, NumPy の配列, 数の並びのどれか. 勾配の付いたテンソルと GPU のテンソルも受け, CPU の float64 に写して数える. 長さが 0 か, 形が違う場合は誤り
+- 正解は真偽値か, 0 と 1 だけの数. 他の値 (2, -1, 0.5, nan) は誤り
+- 度合いの nan は誤り (欠けた度合いを正常とも異常とも決めないため. 欠けた行は渡す前に除く). 無限大は使え, 同じ符号の無限大どうしは同点
+
+PR-AUC は scikit-learn の `average_precision_score` と同じ形で数える.
+
+- 度合いの高い順に並べ, 度合いの同じ行はまとめて 1 つのしきい値とする. しきい値 t ごとに, 度合いが t 以上の行の適合率 P(t) と再現率 R(t) を求める
+- PR-AUC = Σ (R(t) - R(前のしきい値)) × P(t). 最初のしきい値の前の再現率は 0. 曲線を補間せず, 同点の行を並べる順にも依らない
+- 正解の異常が 1 件も無い場合は 0 (`average_precision_score` と同じ値. 警告は出さない)
+
+上位 K 件の適合率の決まりは次の通り.
+
+- 度合いの高い順の上位 K 件のうち, 異常の行の割合. `k` は 1 以上の整数 (真偽値は誤り)
+- K 件目の境に同点がある場合は, 境より上の行を全て数え, 境の同点の行からは残りの枠の数だけを, 同点の行の中の異常の割合で数える (同点を無作為に並べた場合の期待値). 同点の行を並べる順に依らず, 異常の数が小数になる場合がある
+- K が行の数より多い場合は, K を行の数とする (全ての行の中の異常の割合)
+- 正解の異常が 1 件も無い場合は 0
+
+照合の見本 (手で数えた値. ML-Inference も同じ値を確かめる) は次の通り.
+
+| 見本 | 度合い | 正解 | 値 |
+| --- | --- | --- | --- |
+| 同点を含む | `[0.9, 0.8, 0.8, 0.5, 0.3, 0.3]` | `[1, 0, 1, 0, 1, 0]` | PR-AUC = 13/18 (1/3 × 1 + 1/3 × 2/3 + 0 × 1/2 + 1/3 × 1/2). K = 1 は 1, K = 2 は 0.75 (境の同点の 0.8 の 2 行から 1 枠, 異常の割合 1/2), K = 3 は 2/3, K = 5 は 0.5 (境の同点の 0.3 の 2 行から 1 枠), K = 10 は 0.5 (K を 6 とする) |
+| 上位が正常 | `[0.1, 0.4, 0.35, 0.8, 0.4]` | `[0, 1, 1, 0, 0]` | PR-AUC = 5/12 (0 × 0 + 1/2 × 1/3 + 1/2 × 1/2). K = 2 は 0.25 (0.8 の 1 行と, 境の同点の 0.4 の 2 行から 1 枠), K = 3 は 1/3 |
+| 全て同点 | `[0.5, 0.5, 0.5, 0.5]` | `[1, 0, 0, 1]` | PR-AUC = 0.5. K = 1 は 0.5, K = 3 は 0.5 |
+| 異常が無い | `[0.3, 0.2, 0.1]` | `[0, 0, 0]` | PR-AUC = 0. K = 2 は 0 |
 
 ## 15. 外部ライブラリの乱数
 

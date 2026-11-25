@@ -1,5 +1,6 @@
 import math
 import numbers
+from decimal import Decimal
 import operator
 from fractions import Fraction
 from typing import Any, Optional
@@ -76,8 +77,7 @@ def group_sums(
     scores: torch.Tensor, treatment: torch.Tensor, outcome: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    見積もりの高い順に, 同点の行をまとめた行の数, 処置の群の行の数,
-    処置の群と対照の群の結果の和を求める関数
+    同点のまとまりごとの和を求める関数
 
     Parameters
     ----------
@@ -208,7 +208,7 @@ def thin_points(rows: torch.Tensor, points: Any) -> torch.Tensor:
     if rows.shape[0] <= points:
         return torch.arange(rows.shape[0])
 
-    # rows × (points - 1) が j × 全ての行の数に初めて届く点 (整数で比べる)
+    # 初めて届く点の番号 (整数の比較)
     total = int(rows[-1])
     targets = torch.arange(1, points - 1, dtype=torch.float64) * total
     inner = torch.searchsorted(rows * (points - 1), targets)
@@ -301,13 +301,13 @@ def qini_coefficient(scores: Any, treatment: Any, outcome: Any) -> float:
     return value
 
 
-def top_rows(k: Any, n: int) -> int:
+def top_rows(k: float, n: int) -> int:
     """
     上位 K 割の行の数を, K の 10 進の表記どおりに数えて切り捨てる関数
 
     Parameters
     ----------
-    k: Any
+    k: float
         上位から数える行の割合 (0 より大きく 1 以下)
     n: int
         行の数
@@ -317,21 +317,26 @@ def top_rows(k: Any, n: int) -> int:
     rows: int
         K × n の切り捨て
     """
-    # K の確認
+    # 10 進の表記での K (0.3 は 3/10. NumPy の float32 も表記どおり)
     message = f"k は 0 より大きく 1 以下の割合にしてください ({k!r})"
-    if isinstance(k, bool) or not isinstance(k, numbers.Real):
+    if isinstance(k, bool) or not isinstance(k, (numbers.Real, Decimal)):
         raise ValueError(message)
-    k = float(k)
-    if not 0 < k <= 1:
-        raise ValueError(message)
+    try:
+        fraction = Fraction(str(k))
+    except ValueError:
+        raise ValueError(message) from None
 
-    # 2 進の丸めを入れない切り捨て (0.3 は 3/10)
-    rows = math.floor(Fraction(repr(k)) * n)
+    # 範囲の確認と, 2 進の丸めを入れない切り捨て
+    if not 0 < fraction <= 1:
+        raise ValueError(message)
+    rows = math.floor(fraction * n)
 
     return rows
 
 
-def uplift_at_k(scores: Any, treatment: Any, outcome: Any, k: Any) -> float:
+def uplift_at_k(
+    scores: Any, treatment: Any, outcome: Any, k: float
+) -> float:
     """
     効果を見積もるの上位 K 割の効果の差を数える関数
 
@@ -343,7 +348,7 @@ def uplift_at_k(scores: Any, treatment: Any, outcome: Any, k: Any) -> float:
         行ごとの処置 (処置の群なら 1 か True, 対照の群なら 0 か False)
     outcome: Any
         行ごとの結果 (0 と 1 か, 額) の 1 次元の並び
-    k: Any
+    k: float
         上位から数える行の割合 (0 より大きく 1 以下. 0.3 で上位 3 割)
 
     Returns

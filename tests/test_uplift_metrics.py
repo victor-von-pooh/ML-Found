@@ -1,4 +1,6 @@
 import math
+from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -280,6 +282,112 @@ def test_uplift_at_k_without_ties(k: float, rows: int) -> None:
     )
 
 
+def repeated_uplift(
+    scores: np.ndarray, treatment: np.ndarray, outcome: np.ndarray,
+    rows: int
+) -> float:
+    """
+    境の同点のまとまりの重みを, 行を整数の回数だけ繰り返して数える関数
+
+    Parameters
+    ----------
+    scores: np.ndarray
+        見積もり
+    treatment: np.ndarray
+        処置
+    outcome: np.ndarray
+        結果
+    rows: int
+        上位から数える行の数
+
+    Returns
+    ----------
+    value: float
+        処置の群と対照の群の平均の差. 片方の群が無い場合は nan
+    """
+    # 見積もりの高い順のまとまりごとの, 境の手前の行の数と行の数
+    repeats = []
+    before = 0
+    for value in sorted(set(scores.tolist()), reverse=True):
+        members = np.flatnonzero(scores == value)
+        taken = min(max(rows - before, 0), members.size)
+        repeats.append((members, taken))
+        before += members.size
+
+    # 重み taken / まとまりの行の数を, 全ての重みの分母の積で整数の回数に
+    scale = math.prod(members.size for members, _ in repeats)
+    times = np.zeros(scores.size, dtype=np.int64)
+    for members, taken in repeats:
+        times[members] = taken * scale // members.size
+    treated = np.repeat(outcome[treatment == 1], times[treatment == 1])
+    control = np.repeat(outcome[treatment == 0], times[treatment == 0])
+    if treated.size == 0 or control.size == 0:
+        return math.nan
+    value = float(treated.mean() - control.mean())
+
+    return value
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_tie_weights_match_repeated_rows(seed: int) -> None:
+    """
+    同点を多く含む乱数の見本で, 上位 K 割の効果の差の境の同点の重みが,
+    行を繰り返して数えた平均の差と同じになることを確かめる関数
+
+    Parameters
+    ----------
+    seed: int
+        乱数の種
+
+    Returns
+    ----------
+    None
+    """
+    # 少ない種類の見積もりで同点を作った見本
+    generator = np.random.default_rng(seed)
+    n = int(generator.integers(5, 30))
+    scores = generator.integers(0, 5, size=n) / 4
+    treatment = generator.integers(0, 2, size=n)
+    treatment[:2] = [0, 1]
+    outcome = generator.uniform(-10, 100, size=n)
+
+    # 行の数が 1 から n までの K
+    for rows in range(1, n + 1):
+        k = Fraction(rows, n)
+        expected = repeated_uplift(scores, treatment, outcome, rows)
+        assert_same(uplift_at_k(scores, treatment, outcome, k), expected)
+
+
+@pytest.mark.parametrize("k", [
+    0.29, np.float32(0.29), np.float64(0.29), Decimal("0.29"),
+    Fraction(29, 100)
+])
+def test_k_is_read_as_decimal(k: Any) -> None:
+    """
+    float32 と Decimal の K も 10 進の表記どおりに数えることを確かめる関数
+
+    Parameters
+    ----------
+    k: Any
+        上位から数える行の割合
+
+    Returns
+    ----------
+    None
+    """
+    # 100 行の 0.29 は 29 行 (float32 の 0.29 は 2 進では 0.29 より小さい)
+    scores = np.arange(100, 0, -1, dtype=float)
+    treatment = np.zeros(100, dtype=int)
+    treatment[:28:2] = 1
+    treatment[28] = 1
+    outcome = np.zeros(100)
+    outcome[28] = 29.0
+    treated_mean = 29.0 / 15
+    assert uplift_at_k(scores, treatment, outcome, k) == pytest.approx(
+        treated_mean
+    )
+
+
 def test_thinned_curve() -> None:
     """
     points で間引いた曲線が, 先頭と最後と等しい間隔に初めて届く点だけを
@@ -307,7 +415,7 @@ def test_thinned_curve() -> None:
     for column in ["fraction", "qini", "random"]:
         assert thin[column] == [full[column][i] for i in thin["rows"]]
 
-    # 同点のまとまりの終わりだけの点からは, 初めて届く点を選び重なりを除く
+    # 同点のまとまりの終わりの点から選び, 重なりを除いた点
     curve = qini_curve(
         [3, 3, 3, 2, 1, 1, 1, 1, 0, 0], [1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
         [1, 0, 0, 1, 1, 0, 1, 1, 0, 0], points=4
@@ -423,7 +531,7 @@ def test_invalid_inputs(
 
 
 @pytest.mark.parametrize(
-    "k", [0, -0.1, 1.5, float("nan"), True, "0.3", None]
+    "k", [0, -0.1, 1.5, float("nan"), float("inf"), True, "0.3", None]
 )
 def test_invalid_k(k: Any) -> None:
     """

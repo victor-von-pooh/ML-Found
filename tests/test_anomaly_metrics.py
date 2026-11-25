@@ -88,6 +88,35 @@ def test_order_does_not_matter(name: str) -> None:
             )
 
 
+@pytest.mark.parametrize("seed", range(5))
+def test_matches_scikit_learn(seed: int) -> None:
+    """
+    同点を多く含む乱数の見本で, PR-AUC が scikit-learn の
+    average_precision_score と同じ値になることを確かめる関数
+
+    Parameters
+    ----------
+    seed: int
+        乱数の種
+
+    Returns
+    ----------
+    None
+    """
+    # scikit-learn が無い環境では飛ばす
+    metrics = pytest.importorskip("sklearn.metrics")
+
+    # 少ない種類の度合いで同点を作った見本
+    generator = np.random.default_rng(seed)
+    scores = generator.integers(0, 6, size=40) / 5
+    labels = generator.integers(0, 2, size=40)
+    labels[0] = 1
+    expected = metrics.average_precision_score(labels, scores)
+    assert average_precision(scores, labels) == pytest.approx(
+        expected, abs=1e-12
+    )
+
+
 @pytest.mark.parametrize("convert", [
     lambda s, y: (np.array(s), np.array(y, dtype=bool)),
     lambda s, y: (np.array(s, dtype=np.float32), np.array(y)),
@@ -111,7 +140,7 @@ def test_input_types(convert: Any) -> None:
     ----------
     None
     """
-    # 半精度でも見本の度合いの大小は変わらない
+    # 半精度でも大小の変わらない見本の度合いでの値
     scores, labels, expected, at_k = SAMPLES["ties"]
     moved_scores, moved_labels = convert(scores, labels)
     assert average_precision(moved_scores, moved_labels) == (
@@ -133,7 +162,8 @@ def test_infinite_scores_are_ties() -> None:
     ----------
     None
     """
-    # 見本の 0.9 と 0.8 の同点を無限大に置き換えても同じ値
+    # 見本の 0.9 を無限大, 0.8 の同点を 2.0, 0.3 の同点を負の無限大に
+    # 置き換えた場合と, 無限大どうしの同点の値
     inf = float("inf")
     scores = [inf, 2.0, 2.0, 0.5, -inf, -inf]
     labels = [1, 0, 1, 0, 1, 0]
@@ -245,7 +275,7 @@ class AnomalyTrainer(Trainer):
         metrics: dict
             検証の場合は pr_auc と precision_at_2, それ以外は空の辞書
         """
-        # 検証の他は何もしない
+        # 検証の他は空の辞書
         metrics = {}
         if phase != "valid":
             return metrics
@@ -274,7 +304,7 @@ def test_used_in_training_and_evaluation(tmp_path: Path) -> None:
     ----------
     None
     """
-    # valid/pr_auc を監視して学習
+    # valid/pr_auc を監視する学習
     experiment = make_experiment(
         tmp_path,
         "trainer:\n  epochs: 2\n  monitor: valid/pr_auc\n  mode: max\n"

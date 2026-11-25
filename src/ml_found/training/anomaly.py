@@ -22,7 +22,7 @@ def to_vectors(
     vectors: tuple[torch.Tensor, torch.Tensor]
         度合いと, 0 か 1 の正解のベクトル
     """
-    # テンソルにそろえて CPU の float64 に
+    # CPU の float64 のテンソルへの変換
     scores = torch.as_tensor(scores).detach().to("cpu", torch.float64)
     labels = torch.as_tensor(labels).detach().to("cpu", torch.float64)
 
@@ -149,7 +149,7 @@ def precision_at_k(scores: Any, labels: Any, k: int) -> float:
     sizes, positives = tie_groups(scores, labels)
     k = min(k, scores.shape[0])
 
-    # 境より上のまとまりを全て数え, 境のまとまりは残りの枠の分だけ
+    # 境より上のまとまりの全ての行と, 境のまとまりの残りの枠の分の行の異常の数
     before = sizes.cumsum(0) - sizes
     taken = (k - before).clamp(min=0.0, max=None)
     taken = torch.minimum(taken, sizes)

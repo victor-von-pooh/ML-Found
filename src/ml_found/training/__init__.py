@@ -16,6 +16,9 @@ from ml_found.training.registry import (
     describe_schedulers, register_optimizer, unregister_optimizer
 )
 from ml_found.training.trainer import Trainer
+from ml_found.training.uplift import (
+    qini_coefficient, qini_curve, uplift_at_k
+)
 
 __all__ = [
     "Checkpoint", "EarlyStopping", "FrechetInceptionDistance", "History",
@@ -23,7 +26,8 @@ __all__ = [
     "build_scheduler", "check_optim_config", "check_optim_params",
     "check_param_values", "describe_optimizers", "describe_schedulers",
     "frechet_distance", "load_checkpoint", "missing_data_size_params",
-    "named_views", "precision_at_k", "register_optimizer",
-    "resolve_optimizer_class", "resolve_scheduler_class", "try_build_optim",
-    "unregister_optimizer", "uses_named_optimizers"
+    "named_views", "precision_at_k", "qini_coefficient", "qini_curve",
+    "register_optimizer", "resolve_optimizer_class",
+    "resolve_scheduler_class", "try_build_optim", "unregister_optimizer",
+    "uplift_at_k", "uses_named_optimizers"
 ]

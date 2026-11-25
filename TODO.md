@@ -6,24 +6,24 @@
 ## 優先度 高
 
 ### 異常の検知の指標を共有の場所に置く
-- 何を: 異常の検知の評価の上位 K 件の適合率と PR-AUC (平均の適合率) を数える関数を, FID (`FrechetInceptionDistance`) と同じく ML-Found の公開の名前で置く. 入力は行ごとの異常の度合い (大きいほど異常) と, 異常か正常かの正解. 決まり (度合いが同じ行の扱い, K が行の数より多い場合, 正解の異常が 1 件も無い場合, nan の度合い) を docs/DESIGN.md に書く. torch と numpy だけで動かし, 学習のスクリプトの `on_epoch_end` でも, 学習の後の `save_evaluation` の表でも使える形にする
-- なぜ: 異常の検知では, 学習の段階 (ML-Quest の骨組みの学習のスクリプト) と推論の段階 (ML-Inference の確かめの指標) の 2 つが同じ上位 K 件の適合率と PR-AUC を数え, 画面 (ML-Dashboard と ML-Provide) はそれを並べて見せる. 段階ごとに書くと, 同点や K の扱いの違いで同じ実験の値が食い違うため. 推薦の Recall@K と NDCG は, 既に骨組みと ML-Inference が同じ計算をそれぞれ持っている
-- 終わりの条件: 手で数えた小さな見本 (同点の行, K が行の数より多い場合, 正解の異常が無い場合を含む) で決まりのとおりの値が返り, PR-AUC が scikit-learn の `average_precision_score` と同じ値になることをテストで確かめる. 公開の名前が `__all__` にあり, docs/DESIGN.md に決まりと使い方がある
-- つながり: ML-Quest の「異常の検知の骨組み」, ML-Inference の「異常の度合いで回す振り分けと人の確認の記録」(ML-Inference は今 ML-Found に依存しないので, 依存を足して使うか, DESIGN の決まりと同じ見本で同じ値になることを確かめるかを ML-Inference の項目で決める), ML-Dashboard の「異常の検知の評価を結果に出す」, 「型ごとの指標の共有」(他の型の分)
+- 何を: 異常の検知の評価の上位 K 件の適合率と PR-AUC (平均の適合率) を数える関数を, FID (`FrechetInceptionDistance`) と同じく ML-Found の公開の名前で置く. 学習の段階で数えるので置き場所は ML-Found とし, ML-Inference は ML-Found に依存させず, 推論の段階では docs/DESIGN.md の決まりと同じ見本で同じ値になることをテストで確かめる. 入力は行ごとの異常の度合い (大きいほど異常) と, 異常か正常かの正解. PR-AUC は scikit-learn の `average_precision_score` と同じ形にする (度合いの高い順に, 度合いの同じ行はまとめて 1 つのしきい値とし, しきい値ごとの再現率の増え分にそのしきい値までの適合率を掛けて足す. 補間しない). 他の決まり (上位 K 件の適合率で K 件目の境に同点がある場合, K が行の数より多い場合, 正解の異常が 1 件も無い場合, nan の度合い) も docs/DESIGN.md に書く. torch と numpy だけで動かし, 学習のスクリプトの `on_epoch_end` でも, 学習の後の `save_evaluation` の表でも使える形にする
+- なぜ: 異常の検知では, これから学習の段階 (ML-Quest の骨組みの学習のスクリプト) と推論の段階 (ML-Inference の確かめの指標) の 2 つが同じ上位 K 件の適合率と PR-AUC を数え, 画面 (ML-Dashboard と ML-Provide) はそれを並べて見せる (どちらの段階にも, 今はこの 2 つの計算は無い). 段階ごとに書くと, 同点や K の扱いの違いで同じ実験の値が食い違うため. 推薦の Recall@K と NDCG は, 骨組みと ML-Inference が同じ計算をそれぞれ持っている
+- 終わりの条件: 手で数えた小さな見本 (同点の行, K 件目の境の同点, K が行の数より多い場合, 正解の異常が無い場合を含む) で決まりのとおりの値が返ることをテストで確かめる. PR-AUC の見本の値は `average_precision_score` の形 (同点をまとめたしきい値, 補間なし) で手で数えた値で, scikit-learn は dev の依存に足さない. 見本の値は ML-Inference が同じ値を確かめるのに使えるように docs/DESIGN.md にも書く. 公開の名前が `__all__` にあり, docs/DESIGN.md に決まりと使い方がある
+- つながり: ML-Quest の「異常の検知の骨組み」(学習の段階で使う), ML-Inference の「異常の度合いで回す振り分けと人の確認の記録」(ML-Found に依存せず, docs/DESIGN.md の決まりと同じ見本で同じ値になることをテストで確かめる), ML-Dashboard の「異常の検知の評価を結果に出す」, このリポジトリの条件待ちの「型ごとの指標の共有」(他の型の分)
 
 ## 優先度 中
 
 ### 学習するパラメータの無い作りを同じ実験として残す
-- 何を: 距離に基づく異常の度合い (学習用の正常の行をバッファとして持ち, 新しい行の近さから度合いを出す) のように, 学習するパラメータを持たないモデルを `Trainer` に渡すと, Optimizer を作らずに (更新は 0 回) 検証と `on_epoch_end` の指標だけを数え, `run.json`, `history.csv`, `final_model.pt` (バッファを含む) を他の実験と同じ形で残す. 学習するパラメータが無いのに Optimizer の設定を書いた場合と, `trainer.epochs` が 1 でない場合の扱い (警告か誤り) も決めて docs/DESIGN.md に書く
+- 何を: 距離に基づく異常の度合い (学習用の正常の行をバッファとして持ち, 新しい行の近さから度合いを出す) のように, 学習するパラメータを持たないモデルを `Trainer` に渡すと, Optimizer を作らずに (更新は 0 回) 検証と `on_epoch_end` の指標だけを数え, `run.json`, `history.csv`, `final_model.pt` (バッファを含む) を他の実験と同じ形で残す. 学習するパラメータが無いのに Optimizer の設定を書いた場合は, 誤りにせず Optimizer と Scheduler を作らない (使わないことを `train.log` に 1 行書く). `trainer.epochs` が 1 でない場合も誤りにせず, 毎エポック同じ検証をする (`train.log` に警告を 1 行書く). この扱いを docs/DESIGN.md に書く
 - なぜ: 今の `Trainer` は学習するパラメータの無いモデルで Optimizer を作れずに止まる (torch の「空のパラメータの並び」の誤り). そのため距離に基づく度合いの骨組みは `fit` を使えず, `run.json` が無い実験になり, 画面が他の実験と同じに状態と評価を並べられないため
-- 終わりの条件: 学習するパラメータが無くバッファだけを持つモデルで `fit` すると, `run.json` の状態が終わりになり, `history.csv` に検証の指標が残り, `final_model.pt` を読み直すとバッファが同じ値になることをテストで確かめる. 学習するパラメータのあるモデルの学習は変わらない
+- 終わりの条件: 学習するパラメータが無くバッファだけを持つモデルで `fit` すると, `run.json` の状態が終わりになり, `history.csv` に検証の指標が残り, `final_model.pt` を読み直すとバッファが同じ値になることをテストで確かめる. Optimizer と Scheduler の設定を書いた場合は止まらずに作らないことと `train.log` の 1 行を, `trainer.epochs` が 1 でない場合は止まらずに毎エポック同じ検証の値が `history.csv` に残ることと `train.log` の警告を, テストで確かめる. 学習するパラメータのあるモデルの学習は変わらない
 - つながり: ML-Quest の「異常の検知の骨組み」(距離に基づく度合いの骨組みが `fit` を使うか), ML-Inference の「異常の度合いで回す振り分けと人の確認の記録」(距離に基づく度合いの成果物を読む)
 
 ### 推薦の指標を共有の場所に置く
 - 何を: 利用者ごとの上位 K 件の Recall@K と NDCG を数える関数を, 「異常の検知の指標を共有の場所に置く」と同じ場所と形で置く. 決まり (正解の数が K より多い利用者, 正解の無い利用者を数えない, 数える利用者がいない場合は 0) は, 今の骨組みと ML-Inference の計算と同じにして docs/DESIGN.md に書く
-- なぜ: ML-Quest の推薦の骨組み (学習のスクリプトの `rank_metrics`) と ML-Inference の `rank_metrics` が, 同じ Recall@K と NDCG をそれぞれ書いて持っている. 「型ごとの指標の共有」の待っていた, 2 つ以上の段階で同じ計算が要る実例に当たるため
+- なぜ: ML-Quest の推薦の骨組み (`src/ml_quest/rank_skeleton.py` の `rank_metrics`) と ML-Inference の `rank_metrics` が, 同じ Recall@K と NDCG をそれぞれ書いて持っている. 2 つ以上の段階で同じ計算が要る実例で, 「型ごとの指標の共有」の条件に当たるため
 - 終わりの条件: 骨組みと ML-Inference の今の計算と同じ見本 (正解が K より多い利用者, 正解の無い利用者, 上位が空の利用者を含む) で同じ値が返ることをテストで確かめる. 公開の名前が `__all__` にあり, docs/DESIGN.md に決まりがある
-- つながり: 「異常の検知の指標を共有の場所に置く」, ML-Quest の推薦の骨組み, ML-Inference の並べるの一式の `rank_metrics`
+- つながり: 「異常の検知の指標を共有の場所に置く」(置き場所と, ML-Inference が ML-Found に依存せずに同じ見本で確かめる決まりも同じ), ML-Quest の `src/ml_quest/rank_skeleton.py` の `rank_metrics`, ML-Inference の docs/DESIGN.md の「並べるの一式」の節の `rank_metrics`
 
 ## 優先度 低
 

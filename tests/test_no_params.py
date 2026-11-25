@@ -352,7 +352,7 @@ def test_resume_without_parameters(tmp_path: Path) -> None:
         history.get("valid/loss")[1]
     )
 
-    # パラメータを持つモデルでは再開できない
+    # パラメータを持つモデルへの再開のエラー
     third = make_experiment(
         tmp_path / "third",
         f"trainer:\n  epochs: 1\n  resume_from: {last}\n"
@@ -400,7 +400,7 @@ def test_model_with_parameters_unchanged(tmp_path: Path) -> None:
     ----------
     None
     """
-    # 凍結したパラメータだけのモデルも Optimizer を作り, 学習のフェーズを回す
+    # 凍結だけのモデルの Optimizer の作成と学習のフェーズ
     experiment = make_experiment(tmp_path, "trainer:\n  epochs: 1\n")
     model = nn.Linear(1, 1)
     model.requires_grad_(False)
@@ -434,3 +434,56 @@ def test_model_with_parameters_unchanged(tmp_path: Path) -> None:
     assert isinstance(trainer.optimizer, optim.Adam)
     assert "train/loss" in history.records[0]
     assert "lr" in history.records[0]
+
+
+@pytest.mark.parametrize(
+    ("monitor", "eval_train", "allowed"),
+    [
+        ("train/loss", False, False),
+        ("train/loss", True, False),
+        ("train_eval/loss", True, True),
+        ("valid/max_score", False, True)
+    ]
+)
+def test_monitor_without_train_phase(
+    tmp_path: Path, monitor: str, eval_train: bool, allowed: bool
+) -> None:
+    """
+    監視する指標が記録しない学習の指標の場合に, 学習を始める前に分かる
+    理由で止まることを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monitor: str
+        trainer.monitor に書く指標
+    eval_train: bool
+        評価し直しをするかどうか
+    allowed: bool
+        使える指標かどうか
+
+    Returns
+    ----------
+    None
+    """
+    # 監視する指標を書いた config
+    experiment = make_experiment(
+        tmp_path,
+        f"trainer:\n  epochs: 1\n  monitor: {monitor}\n"
+        f"  eval_train: {str(eval_train).lower()}\n"
+    )
+    trainer = DistanceTrainer(make_model(), experiment)
+
+    # 使える指標なら完了, そうでなければ検証の前に失敗
+    if allowed:
+        trainer.fit(make_loader(), make_loader())
+        assert len(trainer.history.records) == 1
+        return
+    with pytest.raises(ValueError, match="trainer.monitor"):
+        trainer.fit(make_loader(), make_loader())
+    assert not hasattr(trainer, "phases")
+    status = json.loads(
+        (experiment.run_dir / "run.json").read_text(encoding="utf-8")
+    )
+    assert status["status"] == "failed"

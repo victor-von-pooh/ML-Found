@@ -4058,6 +4058,18 @@ class Trainer:
                 "fit に検証用のデータ (valid_loader) を渡してください"
             )
 
+        # 学習の指標 (train/) は記録しないので, 監視する指標は検証か評価し直し
+        # の指標に制限
+        prefixes = ["valid/"] + (
+            ["train_eval/"] if self.trainer_cfg.eval_train else []
+        )
+        if self.no_params and not monitor.startswith(tuple(prefixes)):
+            raise ValueError(
+                f"パラメータを持たないモデルは学習のフェーズを回さず, 監視する"
+                f"指標 {monitor} を記録しません. trainer.monitor には "
+                f"{' か '.join(prefixes)} で始まる指標を書いてください"
+            )
+
         # 学習用データの評価し直しは, ワーカーを使い回す DataLoader では
         # ワーカーの中の乱数を進めるので, 学習が変わることを通知
         persistent = getattr(train_loader, "persistent_workers", False)

@@ -29,8 +29,8 @@ PINBALL_SAMPLES = {
     )
 }
 
-# docs/DESIGN.md の見込みの損の見本 (需要, 発注の数, 品切れの損,
-# 売れ残りの損, 比べる発注の数, 期待する値)
+# docs/DESIGN.md の見込みの損の見本 (需要, 売れる数, 品切れの損,
+# 売れ残りの損, 比べる売れる数, 期待する値)
 ORDER_SAMPLES = {
     "baseline": (
         [10, 5, 8, 0], [12, 3, 8, 2], 3, 1, [7, 9, 8, 0],
@@ -318,7 +318,7 @@ def test_pinball_invalid_inputs(
 ])
 def test_order_invalid_inputs(kwargs: dict) -> None:
     """
-    需要, 発注の数, 比べる発注の数, 損の誤りを確かめる関数
+    需要, 売れる数, 比べる売れる数, 損の誤りを確かめる関数
 
     Parameters
     ----------

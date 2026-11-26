@@ -5,15 +5,19 @@
 
 ## 優先度 高
 
+### 時間をまたぐ量の判断の指標を共有の場所に置く
+- 何を: 分位点の損失 `pinball_loss` と発注の数の見込みの損 `order_cost` を, 値段を変える判断の指標 (`price_elasticity`, `profit_lift`) と同じ場所と形で置く. `pinball_loss` は実際の値 (N,), 分位点ごとの予測 (N, 水準の数) と水準の並びを受け取り, 水準 q の損 max(q (y − ŷ), (q − 1) (y − ŷ)) の水準ごとの平均と全体の平均を返す. `order_cost` は実際の需要 (N,), 発注の数 (N,), 品切れの損 `shortage_cost`, 売れ残りの損 `holding_cost` (商品 1 つあたりの同じお金の単位) と, 比べる発注の数 (前の期間と同じ数. 任意) を受け取り, `shortage_cost` × 足りなかった数 + `holding_cost` × 余った数 の行ごとの値と合計, 比べる発注の数での損, 差と比を返す. 在庫の数を引くのは呼ぶ側 (引いた後の発注の数を渡す). 決まり (欠けた値, 負の値, 水準の範囲は 0 より大きく 1 より小さい, 損が 0 以下) と見本を docs/DESIGN.md の 14 節に書く
+- なぜ: 時間をまたぐ量の判断では, 学習の段階 (ML-Quest の骨組みの損失と評価) と推論の段階 (ML-Inference の需要の一式の評価の写し) が同じ分位点の損失と見込みの損を使う. 2 つ以上の段階で同じ計算が要る実例で, 「型ごとの指標の共有」の条件に当たるため
+- 終わりの条件: 見本 (水準が 1 つと複数, 足りない行と余る行の混ざる発注, 比べる発注の数がある場合と無い場合) で決まりのとおりの値が返ることをテストで確かめる. 公開の名前が `__all__` にあり, docs/DESIGN.md の 14 節に決まりと見本がある
+- つながり: ML-Quest の「時間をまたぐ量の判断の骨組み」, ML-Inference の「時間をまたぐ量の判断」(ML-Found に依存せず, docs/DESIGN.md の見本で同じ値になることを確かめる), docs/DESIGN.md の 14 節の「値段を変える判断の弾力性と利益の比べ」
+
+## 優先度 中
+
 ### 異常の検知の学習の例
 - 何を: `examples/` に, 正常の行が多い表で正常の行だけを学ぶ表の行の自己符号化器の例を足す. モデルは ML-ModelControl の同梱の例 `tabular_autoencoder` (ML-ModelControl の docs/DESIGN.md の 9 節) と同じ形 (縮めてから戻す全結合の層. 出力は入力と同じ幅の再構成 `recon`) にする. step は正常の行の再構成の誤差を損失にし (検証用に正解の付いた異常の行が混ざる場合は, 正常の行だけで平均して `batch_size` に正常の行の数を返す), `on_epoch_end` で行ごとの再構成の誤差を度合いとして上位 K 件の適合率と PR-AUC (`precision_at_k`, `average_precision`) を数えて監視する指標にする. 学習の後に, 指標の表 (`better` 付き), 度合いの分布の曲線 (`kind="curve"`), 上位の行の要約の表 (行の id と度合い) を `save_evaluation` で書く
 - なぜ: 正常だけで学ぶ流れと, 再構成の誤差を評価に残す形は今の作り (`batch_size`, `on_epoch_end`, `save_evaluation`) で書けるが, 形を示す例が無く, 骨組みと画面の見本が同じ形にそろう手がかりが無いため
 - 終わりの条件: 例を少ないエポックで動かすテストで, 監視する指標が上位 K 件の適合率か PR-AUC になり, `load_evaluations` で指標の表と度合いの分布の曲線と上位の行の要約の表が読めることを確かめる. README.md と docs/DESIGN.md の例の一覧に載る
 - つながり: ML-Dashboard の docs/DESIGN.md の「一覧と比較の評価」(異常の検知の評価の読み方), ML-ModelControl の同梱の例 `tabular_autoencoder` (docs/DESIGN.md の 9 節)
-
-## 優先度 中
-
-無し
 
 ## 優先度 低
 
@@ -26,7 +30,7 @@
 - 待っているもの: 画面 (ML-Dashboard) を学習と別のユーザーで動かす実例
 
 ### 型ごとの指標の共有
-- 何を: Chamfer のような型ごとの指標の計算を, 共有の場所に置く (FID は ML-Found の `FrechetInceptionDistance`, 異常の検知は `precision_at_k` と `average_precision`, 効果を見積もるは `qini_curve`, `qini_coefficient`, `uplift_at_k`. 値段を変える判断は `price_elasticity` と `profit_lift`, 推薦は `recall_at_k` と `ndcg_at_k`)
+- 何を: Chamfer のような型ごとの指標の計算を, 共有の場所に置く (FID は ML-Found の `FrechetInceptionDistance`, 異常の検知は `precision_at_k` と `average_precision`, 効果を見積もるは `qini_curve`, `qini_coefficient`, `uplift_at_k`. 値段を変える判断は `price_elasticity` と `profit_lift`, 推薦は `recall_at_k` と `ndcg_at_k`. 時間をまたぐ量の判断の `pinball_loss` と `order_cost` は「時間をまたぐ量の判断の指標を共有の場所に置く」)
 - 待っているもの: 2 つ以上の段階で同じ計算が要る実例. それまではプロジェクトに書く
 
 ### 追加の依存の登録簿に機能を足す

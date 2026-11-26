@@ -747,6 +747,26 @@ save_evaluation(experiment, "order_items", cost["items"], "test")
 - 行ごと水準ごとの損 = max(q (y - ŷ), (q - 1) (y - ŷ)). y は実際の値, ŷ は水準 q の予測. 予測が実際より小さいと q 倍, 大きいと 1 - q 倍の差が損になる
 - 戻り値は `levels` (列 `level` (渡した順の水準) と `loss` (水準ごとの全ての行の損の平均) の辞書. `save_evaluation` の表にそのまま渡せる) と `mean` (全ての行と水準の損の平均. 水準ごとの平均の平均と同じ) の辞書. 小さいほど良い
 
+学習の損失には `PinballLoss` を使う. `pinball_loss` は評価のために勾配を外して Python の数を返すので, step の損失には使えない. `PinballLoss` は `torch.nn.Module` で, 水準を作るときに受け, 実際の値と分位点の予測から, 勾配の付いたスカラーのテンソルを返す. 数え方は `pinball_loss` と同じで, 値は `pinball_loss` の `mean` と同じになる (下の見本). 評価の値と学習の損失の数え方がずれないよう, 骨組みは損失を自分で書かずにこれを使う.
+
+```python
+from ml_found import PinballLoss
+
+criterion = PinballLoss([0.1, 0.5, 0.9])
+
+
+def step(model, batch, phase):
+    inputs, actual = batch    # actual は先の期間の実際の需要 (N,)
+    quantiles = model(inputs)["quantiles"]    # (N, 水準の数)
+    return {"loss": criterion(actual, quantiles)}
+```
+
+- 水準の決まり (範囲, 重なり, 空, 10 進の表記どおりに読む) は `pinball_loss` と同じで, 作るときに確かめる. 水準は `levels` (渡した順の数の並び) に持ち, 重みではないので `state_dict` とチェックポイントには入らない
+- 分位点の予測は (行の数, 水準の数) の浮動小数点数のテンソル (勾配を流すため). 数の並び, NumPy の配列, 整数のテンソルは誤り. 損失は予測と同じ装置と型で数え, 予測と同じ装置と型のスカラーを返す (float32 の予測は float32 のまま, GPU の予測は GPU のまま. CPU の float64 に写さない)
+- 実際の値はテンソル, NumPy の配列, 数の並びのどれかで, 予測と同じ装置と型に写して数える. 1 次元で行の数が予測と同じこと, 0 以上の有限の数であることは `pinball_loss` と同じ決まり. 実際の値のテンソルが勾配を持つ場合は, 実際の値にも勾配が流れる
+- 分位点の予測の nan と無限大は誤り (`pinball_loss` と同じ). 値の確認のため, 呼ぶたびに GPU から真偽を 1 つ読む
+- 予測の勾配は, 予測が実際より大きい要素で (1 - q), 小さい要素で -q を, 行の数 × 水準の数で割った値. 差が 0 の要素は 2 つの傾きの平均 (0.5 - q) を同じ数で割った値になる
+
 見込みの損の決まりは次の通り.
 
 - 行ごとの足りない数 = max(需要 - 発注の数, 0), 余った数 = max(発注の数 - 需要, 0), 損 = `shortage_cost` × 足りない数 + `holding_cost` × 余った数. 在庫の数は呼ぶ側が引き, 引いた後の発注の数を渡す
@@ -757,7 +777,7 @@ save_evaluation(experiment, "order_items", cost["items"], "test")
     - `saving`: `baseline_total` - `total` (正なら比べる発注の数より損が小さい). 比べない場合は nan
     - `ratio`: `total` / `baseline_total` (1 より小さいと比べる発注の数より良い). 比べない場合と, `baseline_total` が 0 の場合は nan (比が損の増減を表さないため. `saving` で比べる). `save_evaluation` では null になり, 監視する指標にすると誤りになるので, その場合は `total` を監視する
 
-照合の見本 (手で数えた値. ML-Inference も同じ値を確かめる) は次の通り. まず分位点の損失の見本. 予測は行ごとの水準の順の並び.
+照合の見本 (手で数えた値. ML-Inference も同じ値を確かめる) は次の通り. まず分位点の損失の見本. 予測は行ごとの水準の順の並び. `PinballLoss` の戻り値も, 予測の型 (float64 と float32) と装置によらず `mean` と同じ値になる.
 
 | 見本 | 実際の値 | 予測 | 水準 | 値 |
 | --- | --- | --- | --- | --- |

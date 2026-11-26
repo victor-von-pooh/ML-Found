@@ -30,7 +30,7 @@
 - 待っているもの: 画面 (ML-Dashboard) を学習と別のユーザーで動かす実例
 
 ### 型ごとの指標の共有
-- 何を: Chamfer のような型ごとの指標の計算を, 共有の場所に置く (FID は ML-Found の `FrechetInceptionDistance`, 異常の検知は `precision_at_k` と `average_precision`, 効果を見積もるは `qini_curve`, `qini_coefficient`, `uplift_at_k`. 値段を変える判断は `price_elasticity` と `profit_lift`, 推薦は `recall_at_k` と `ndcg_at_k`, 時間をまたぐ量の判断は `pinball_loss` と `order_cost`)
+- 何を: 共有の場所に置いた型ごとの指標 (FID の `FrechetInceptionDistance`, 異常の検知の `precision_at_k` と `average_precision`, 効果を見積もるの `qini_curve`, `qini_coefficient`, `uplift_at_k`, 値段を変える判断の `price_elasticity` と `profit_lift`, 推薦の `recall_at_k` と `ndcg_at_k`, 時間をまたぐ量の判断の `pinball_loss` と `order_cost`) の他に, Chamfer 距離のような型ごとの指標の計算も共有の場所に置く
 - 待っているもの: 2 つ以上の段階で同じ計算が要る実例. それまではプロジェクトに書く
 
 ### 追加の依存の登録簿に機能を足す

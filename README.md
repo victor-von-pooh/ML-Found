@@ -80,7 +80,14 @@ NewProject/
 └── train.py
 ```
 
-`examples/minibatch/` か `examples/fullbatch/` をコピーすると, そのまま動く状態から始められる.
+`examples/` の例をコピーすると, そのまま動く状態から始められる.
+
+| 例 | 中身 |
+| --- | --- |
+| `examples/minibatch/` | DataLoader でのミニバッチ学習 (wine の分類). `ema.yaml` は EMA の重みで検証する差分の config |
+| `examples/fullbatch/` | グラフ全体を 1 つのデータとして学習するフルバッチ学習 |
+| `examples/cartpole/` | CartPole を REINFORCE で学習し, 守りと一緒に方策を書き出す (`rl` が要る) |
+| `examples/pendulum/` | Pendulum の連続の行動の方策を `ActorCriticStep` で学習し, 守りと一緒に書き出す (`rl` が要る) |
 
 ### config
 

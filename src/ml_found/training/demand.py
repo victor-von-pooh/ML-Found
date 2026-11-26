@@ -1,6 +1,7 @@
 from typing import Any, Optional
 
 import torch
+from torch import nn
 
 from ml_found.training.price import (
     check_values, decimal_value, to_float64
@@ -179,6 +180,133 @@ def pinball_loss(actual: Any, quantiles: Any, levels: Any) -> dict[str, Any]:
     }
 
     return result
+
+
+class PinballLoss(nn.Module):
+    def __init__(self, levels: Any):
+        # 親クラスのコンストラクタを呼び出す
+        super(PinballLoss, self).__init__()
+
+        # 水準を保存 (重みではないので state_dict に入れない)
+        self.levels = to_levels(levels)
+
+    def forward(self, actual: Any, quantiles: torch.Tensor) -> torch.Tensor:
+        """
+        分位点の損失を勾配の付くスカラーのテンソルで数える関数
+
+        Parameters
+        ----------
+        actual: Any
+            行ごとの実際の値 (0 以上) の 1 次元の並び
+        quantiles: torch.Tensor
+            行ごと水準ごとの分位点の予測の (行の数, 水準の数) の浮動小数点数
+            のテンソル
+
+        Returns
+        ----------
+        loss: torch.Tensor
+            全ての行と水準の損失の平均 (予測と同じ装置と型のスカラー)
+        """
+        # 予測と実際の値の確認 (実際の値は予測と同じ装置と型に)
+        check_prediction(quantiles)
+        actual = to_target(actual, quantiles)
+        expected = (actual.shape[0], len(self.levels))
+        if tuple(quantiles.shape) != expected:
+            raise ValueError(
+                "分位点の予測は (行の数, 水準の数) の形にしてください "
+                f"({tuple(quantiles.shape)}, {expected})"
+            )
+        with torch.no_grad():
+            check_finite(quantiles, "分位点の予測", nonnegative=False)
+
+        # 水準 q の損 max(q (y - ŷ), (q - 1) (y - ŷ)) の全体の平均
+        level = torch.tensor(
+            self.levels, dtype=quantiles.dtype, device=quantiles.device
+        )[None, :]
+        diff = actual[:, None] - quantiles
+        loss = torch.maximum(level * diff, (level - 1) * diff).mean()
+
+        return loss
+
+    def extra_repr(self) -> str:
+        """
+        print で出す水準の文字列を返す関数
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        text: str
+            水準の並び
+        """
+        # 渡した順の水準
+        text = f"levels={self.levels}"
+
+        return text
+
+
+def check_prediction(quantiles: Any) -> None:
+    """
+    分位点の予測が浮動小数点数のテンソルであることを確かめる関数
+
+    Parameters
+    ----------
+    quantiles: Any
+        分位点の予測
+
+    Returns
+    ----------
+    None
+    """
+    # 勾配を流すので浮動小数点数のテンソルだけを受ける
+    if not isinstance(quantiles, torch.Tensor):
+        raise ValueError(
+            "分位点の予測はテンソルにしてください "
+            f"({type(quantiles).__name__})"
+        )
+    if not quantiles.is_floating_point():
+        raise ValueError(
+            f"分位点の予測は浮動小数点数にしてください ({quantiles.dtype})"
+        )
+
+
+def to_target(actual: Any, quantiles: torch.Tensor) -> torch.Tensor:
+    """
+    実際の値を確かめて予測と同じ装置と型のベクトルにする関数
+
+    Parameters
+    ----------
+    actual: Any
+        行ごとの実際の値の 1 次元の並び
+    quantiles: torch.Tensor
+        分位点の予測
+
+    Returns
+    ----------
+    vector: torch.Tensor
+        予測と同じ装置と型のベクトル
+    """
+    # 予測と同じ装置と型のテンソルへの変換と形の確認
+    if isinstance(actual, torch.Tensor):
+        vector = actual.to(quantiles.device, quantiles.dtype)
+    else:
+        vector = torch.as_tensor(
+            actual, dtype=quantiles.dtype, device=quantiles.device
+        )
+    if vector.dim() != 1:
+        raise ValueError(
+            f"実際の値は 1 次元にしてください ({tuple(vector.shape)})"
+        )
+    if vector.shape[0] == 0:
+        raise ValueError("実際の値が空です")
+
+    # 値の確認
+    with torch.no_grad():
+        check_finite(vector, "実際の値", nonnegative=True)
+
+    return vector
 
 
 def order_cost(

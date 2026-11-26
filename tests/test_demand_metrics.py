@@ -6,10 +6,11 @@ from typing import Any
 import numpy as np
 import pytest
 import torch
+from torch import nn, optim
 
 import ml_found
 from ml_found import (
-    load_evaluations, order_cost, pinball_loss, save_evaluation
+    PinballLoss, load_evaluations, order_cost, pinball_loss, save_evaluation
 )
 from test_price_metrics import assert_values
 from test_trainer import make_experiment
@@ -56,6 +57,30 @@ ORDER_SAMPLES = {
         }
     )
 }
+
+
+# 分位点の損失の誤りの入力 (実際の値, 予測, 水準)
+PINBALL_INVALID = [
+    ([], [], [0.5]),
+    ([[1.0]], [[1.0]], [0.5]),
+    ([1.0], [1.0], [0.5]),
+    ([1.0], [[1.0, 2.0]], [0.5]),
+    ([1.0, 2.0], [[1.0]], [0.5]),
+    ([-1.0], [[1.0]], [0.5]),
+    ([NAN], [[1.0]], [0.5]),
+    ([1.0], [[NAN]], [0.5]),
+    ([1.0], [[math.inf]], [0.5]),
+    ([1.0], [[]], []),
+    ([1.0], [[1.0]], [0]),
+    ([1.0], [[1.0]], [1]),
+    ([1.0], [[1.0]], [-0.5]),
+    ([1.0], [[1.0]], [NAN]),
+    ([1.0], [[1.0]], [True]),
+    ([1.0], [[1.0]], ["0.5"]),
+    ([1.0], [[1.0, 2.0]], [0.5, 0.5]),
+    ([1.0], [[1.0]], 0.5),
+    ([1.0], [[1.0]], [[0.5]])
+]
 
 
 @pytest.mark.parametrize("name", sorted(PINBALL_SAMPLES))
@@ -244,27 +269,7 @@ def test_order_samples(name: str) -> None:
         assert_values([result[key]], [expected[key]])
 
 
-@pytest.mark.parametrize("actual, quantiles, levels", [
-    ([], [], [0.5]),
-    ([[1.0]], [[1.0]], [0.5]),
-    ([1.0], [1.0], [0.5]),
-    ([1.0], [[1.0, 2.0]], [0.5]),
-    ([1.0, 2.0], [[1.0]], [0.5]),
-    ([-1.0], [[1.0]], [0.5]),
-    ([NAN], [[1.0]], [0.5]),
-    ([1.0], [[NAN]], [0.5]),
-    ([1.0], [[math.inf]], [0.5]),
-    ([1.0], [[]], []),
-    ([1.0], [[1.0]], [0]),
-    ([1.0], [[1.0]], [1]),
-    ([1.0], [[1.0]], [-0.5]),
-    ([1.0], [[1.0]], [NAN]),
-    ([1.0], [[1.0]], [True]),
-    ([1.0], [[1.0]], ["0.5"]),
-    ([1.0], [[1.0, 2.0]], [0.5, 0.5]),
-    ([1.0], [[1.0]], 0.5),
-    ([1.0], [[1.0]], [[0.5]])
-])
+@pytest.mark.parametrize("actual, quantiles, levels", PINBALL_INVALID)
 def test_pinball_invalid_inputs(
     actual: list, quantiles: list, levels: Any
 ) -> None:
@@ -383,7 +388,7 @@ def test_results_can_be_saved(tmp_path: Path) -> None:
 
 def test_public_names() -> None:
     """
-    2 つの関数が公開の __all__ にあることを確かめる関数
+    2 つの関数と学習の損失が公開の __all__ にあることを確かめる関数
 
     Parameters
     ----------
@@ -394,6 +399,193 @@ def test_public_names() -> None:
     None
     """
     # 上と training の両方
-    for name in ["pinball_loss", "order_cost"]:
+    for name in ["pinball_loss", "order_cost", "PinballLoss"]:
         assert name in ml_found.__all__
         assert name in ml_found.training.__all__
+
+
+def available_devices() -> list[tuple[str, torch.dtype]]:
+    """
+    この計算機で使える装置と, そこで確かめる予測の型を返す関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    devices: list[tuple[str, torch.dtype]]
+        装置の名前と型の組 (float64 の無い mps は float32 だけ)
+    """
+    # CPU と, あれば GPU
+    devices = [("cpu", torch.float64), ("cpu", torch.float32)]
+    if torch.cuda.is_available():
+        devices += [("cuda", torch.float64), ("cuda", torch.float32)]
+    if torch.backends.mps.is_available():
+        devices.append(("mps", torch.float32))
+
+    return devices
+
+
+@pytest.mark.parametrize("name", sorted(PINBALL_SAMPLES))
+@pytest.mark.parametrize("device, dtype", available_devices())
+def test_train_loss_samples(
+    name: str, device: str, dtype: torch.dtype
+) -> None:
+    """
+    学習の損失が見本の pinball_loss の mean と同じ値になり, 予測と同じ
+    装置と型のスカラーで勾配が予測に流れることを確かめる関数
+
+    Parameters
+    ----------
+    name: str
+        見本の名前
+    device: str
+        予測の装置
+    dtype: torch.dtype
+        予測の型
+
+    Returns
+    ----------
+    None
+    """
+    # 見本の予測を勾配の付くテンソルにして数える
+    actual, quantiles, levels, _, mean = PINBALL_SAMPLES[name]
+    prediction = torch.tensor(
+        quantiles, dtype=dtype, device=device, requires_grad=True
+    )
+    loss = PinballLoss(levels)(
+        torch.tensor(actual, dtype=torch.float64), prediction
+    )
+    assert loss.dim() == 0
+    assert loss.device.type == device
+    assert loss.dtype == dtype
+    tolerance = 1e-12 if dtype == torch.float64 else 1e-6
+    assert loss.item() == pytest.approx(mean, abs=tolerance)
+    assert loss.item() == pytest.approx(
+        pinball_loss(actual, quantiles, levels)["mean"], abs=tolerance
+    )
+
+    # 勾配は (q - 1{y < ŷ}) の符号を変えた値を要素の数で割った値
+    # (差が 0 の要素は 2 つの傾きの平均 0.5 - q)
+    loss.backward()
+    target = torch.tensor(actual, dtype=torch.float64)[:, None]
+    level = torch.tensor(levels, dtype=torch.float64)[None, :]
+    values = torch.tensor(quantiles, dtype=torch.float64)
+    slope = torch.where(
+        values > target, 1 - level,
+        torch.where(values < target, -level, 0.5 - level)
+    )
+    expected = slope / values.numel()
+    assert prediction.grad is not None
+    assert torch.allclose(
+        prediction.grad.to("cpu").double(), expected, atol=tolerance
+    )
+
+
+def test_train_loss_inputs() -> None:
+    """
+    実際の値は数の並びと NumPy の配列も受け, 水準は渡した順で読み,
+    state_dict に入らないことを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 実際の値の受け方
+    actual, quantiles, levels, _, mean = PINBALL_SAMPLES["levels"]
+    criterion = PinballLoss(np.array(levels, dtype=np.float32))
+    assert criterion.levels == levels
+    assert len(criterion.state_dict()) == 0
+    prediction = torch.tensor(quantiles, dtype=torch.float64)
+    for values in [actual, np.array(actual), torch.tensor(actual)]:
+        assert float(criterion(values, prediction)) == pytest.approx(mean)
+
+    # 水準と予測の列を同じ順で入れ替えても同じ値
+    order = [2, 0, 1]
+    swapped = PinballLoss([levels[i] for i in order])
+    assert float(swapped(actual, prediction[:, order])) == pytest.approx(mean)
+
+
+def test_train_loss_learns_quantiles() -> None:
+    """
+    学習の損失で定数の予測を学ぶと, 水準ごとの分位点に近づくことを
+    確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 0 から 1 の一様な値の分位点を学ぶ
+    generator = torch.Generator().manual_seed(0)
+    actual = torch.rand(2000, generator=generator)
+    levels = [0.1, 0.5, 0.9]
+    criterion = PinballLoss(levels)
+    weight = nn.Parameter(torch.full((len(levels),), 0.5))
+    optimizer = optim.SGD([weight], lr=0.5)
+    for _ in range(2000):
+        optimizer.zero_grad()
+        prediction = weight[None, :].expand(actual.shape[0], -1)
+        criterion(actual, prediction).backward()
+        optimizer.step()
+
+    # 学んだ値と標本の分位点
+    expected = torch.quantile(actual, torch.tensor(levels))
+    assert torch.allclose(weight.detach(), expected, atol=0.02)
+
+
+@pytest.mark.parametrize("actual, quantiles, levels", PINBALL_INVALID)
+def test_train_loss_invalid_inputs(
+    actual: list, quantiles: list, levels: Any
+) -> None:
+    """
+    pinball_loss と同じ入力が誤りになることを確かめる関数
+
+    Parameters
+    ----------
+    actual: list
+        実際の値
+    quantiles: list
+        分位点の予測
+    levels: Any
+        分位点の水準
+
+    Returns
+    ----------
+    None
+    """
+    # 水準は作るときに, 実際の値と予測は数えるときに確かめる
+    with pytest.raises(ValueError):
+        criterion = PinballLoss(levels)
+        criterion(
+            torch.tensor(actual), torch.tensor(quantiles, dtype=torch.float64)
+        )
+
+
+@pytest.mark.parametrize("quantiles", [
+    [[1.0]], np.array([[1.0]]), torch.tensor([[1]])
+])
+def test_train_loss_needs_float_tensor(quantiles: Any) -> None:
+    """
+    予測が浮動小数点数のテンソルでない場合は誤りになることを確かめる関数
+
+    Parameters
+    ----------
+    quantiles: Any
+        分位点の予測
+
+    Returns
+    ----------
+    None
+    """
+    # 勾配を流せない予測の確認
+    with pytest.raises(ValueError):
+        PinballLoss([0.5])([1.0], quantiles)

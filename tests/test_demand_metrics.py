@@ -188,6 +188,30 @@ def test_tensor_inputs() -> None:
     assert result["ratio"] == pytest.approx(expected["ratio"])
 
 
+def test_python_lists_are_read_as_float64() -> None:
+    """
+    Python の数の並びを float32 に丸めずに float64 で読み, float32 の
+    上限を超える有限の値も受けることを確かめる関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 0.1 と 0.123456789012345 は float32 では丸められる
+    assert order_cost([0.1], [0.0], 1, 1)["total"] == 0.1
+    result = pinball_loss([0.123456789012345], [[0.0]], [0.5])
+    assert result["mean"] == 0.5 * 0.123456789012345
+
+    # float32 の上限を超える値
+    assert order_cost([1e39], [1e39], 1, 1)["total"] == 0.0
+    result = pinball_loss([0.0], [[1e39]], [0.5])
+    assert result["mean"] == 0.5e39
+
+
 @pytest.mark.parametrize("name", sorted(ORDER_SAMPLES))
 def test_order_samples(name: str) -> None:
     """

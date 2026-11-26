@@ -297,6 +297,26 @@ def test_tensor_inputs() -> None:
     assert elasticity["mean"] == pytest.approx(-0.5)
 
 
+def test_python_lists_are_read_as_float64() -> None:
+    """
+    Python の数の並びを float32 に丸めずに float64 で読むことを確かめる
+    関数
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    ----------
+    None
+    """
+    # 値段 0.1 と予測した数 0.1 は float32 では丸められる
+    result = profit_lift([0.1], [0], [[0.1]])
+    assert result["total"] == 0.1 * 0.1
+    elasticity = price_elasticity([0.1], [0.2])
+    assert elasticity["mean"] == 100 * (0.2 - 0.1) / 0.1
+
+
 @pytest.mark.parametrize("now, up", [
     ([], []),
     ([[1.0]], [[1.0]]),

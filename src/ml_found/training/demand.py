@@ -2,7 +2,9 @@ from typing import Any, Optional
 
 import torch
 
-from ml_found.training.price import check_values, decimal_value
+from ml_found.training.price import (
+    check_values, decimal_value, to_float64
+)
 
 
 def to_values(values: Any, name: str, nonnegative: bool) -> torch.Tensor:
@@ -24,7 +26,7 @@ def to_values(values: Any, name: str, nonnegative: bool) -> torch.Tensor:
         CPU の float64 のベクトル
     """
     # CPU の float64 のテンソルへの変換と形の確認
-    vector = torch.as_tensor(values).detach().to("cpu", torch.float64)
+    vector = to_float64(values)
     if vector.dim() != 1:
         raise ValueError(
             f"{name}は 1 次元にしてください ({tuple(vector.shape)})"
@@ -156,7 +158,7 @@ def pinball_loss(actual: Any, quantiles: Any, levels: Any) -> dict[str, Any]:
     # 実際の値, 水準, 予測の確認
     actual = to_values(actual, "実際の値", nonnegative=True)
     values = to_levels(levels)
-    quantiles = torch.as_tensor(quantiles).detach().to("cpu", torch.float64)
+    quantiles = to_float64(quantiles)
     expected = (actual.shape[0], len(values))
     if tuple(quantiles.shape) != expected:
         raise ValueError(

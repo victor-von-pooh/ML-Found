@@ -9,6 +9,29 @@ import torch
 PROFIT_TOLERANCE = 1e-9
 
 
+def to_float64(values: Any) -> torch.Tensor:
+    """
+    値を CPU の float64 のテンソルにする関数
+
+    Parameters
+    ----------
+    values: Any
+        テンソル, NumPy の配列, 数の並び
+
+    Returns
+    ----------
+    tensor: torch.Tensor
+        勾配を外した CPU の float64 のテンソル
+    """
+    # テンソルは CPU に写すときに float64 にし (float64 の無い装置のため),
+    # 数の並びは float32 を経ずに float64 で読む
+    if isinstance(values, torch.Tensor):
+        return values.detach().to("cpu", torch.float64)
+    tensor = torch.as_tensor(values, dtype=torch.float64)
+
+    return tensor
+
+
 def to_vector(values: Any, name: str, positive: bool = False) -> torch.Tensor:
     """
     商品ごとの値を確かめて CPU の float64 のベクトルにする関数
@@ -28,7 +51,7 @@ def to_vector(values: Any, name: str, positive: bool = False) -> torch.Tensor:
         CPU の float64 のベクトル
     """
     # CPU の float64 のテンソルへの変換と形の確認
-    vector = torch.as_tensor(values).detach().to("cpu", torch.float64)
+    vector = to_float64(values)
     if vector.dim() != 1:
         raise ValueError(
             f"{name}は 1 次元にしてください ({tuple(vector.shape)})"
@@ -305,7 +328,7 @@ def profit_lift(
     limit = to_limit(max_change)
 
     # 予測した数の確認
-    units = torch.as_tensor(units).detach().to("cpu", torch.float64)
+    units = to_float64(units)
     expected = (price.shape[0], len(ratios))
     if tuple(units.shape) != expected:
         raise ValueError(

@@ -5,19 +5,13 @@
 
 ## 優先度 高
 
-### 値段を変える判断の指標を共有の場所に置く
-- 何を: 値段を変える判断 (試しに値段を変えた売れ行きの記録から, 値段を入力に入れて売れた数を予測し, 決めた値段の候補の中で利益が最も大きい値段を商品ごとに選ぶ) の評価を数える関数を, 効果を見積もるの指標 (`qini_curve`, `qini_coefficient`, `uplift_at_k`) と同じ場所と形で置く. 1 つは値段の弾力性 (商品ごとに, 今の値段と 1 % 上げた値段での予測した数から, 値段を 1 % 上げたときに数が何 % 変わるか. `price_elasticity`), もう 1 つは利益の比べ (選んだ値段での見込みの利益の和と今の値段での見込みの利益の和と, その比. 利益は (値段 − 原価) × 予測した数で, 原価が無ければ 0. `profit_lift`). 予測した数が 0 の商品の弾力性, 選んだ値段が今の値段と同じ商品, 今の見込みの利益が 0 以下の場合の決まりと, 照合の見本 (手で数えた値) を docs/DESIGN.md の「14. 検証の間隔」に書く. 売れた数の予測の誤差は今の回帰の指標を使う
-- なぜ: 値段を変える判断の骨組み (ML-Quest の「値段を変える判断の骨組み」) が評価を数え, 推論の段階 (ML-Inference の「値段を変える判断」) も同じ弾力性と利益の比べを結論に出すので, 2 つ以上の段階で同じ計算が要る実例で, 「型ごとの指標の共有」の条件に当たるため
-- 終わりの条件: 見本 (予測した数が 0 の商品, 選んだ値段が今の値段と同じ商品, 原価の無い場合を含む) で決まりのとおりの値が返ることをテストで確かめる. 公開の名前が `__all__` にあり, docs/DESIGN.md に決まりと見本がある
-- つながり: 効果を見積もるの指標 (置き場所と, ML-Inference が ML-Found に依存せずに docs/DESIGN.md の見本で確かめる決まりも同じ), ML-Quest の「値段を変える判断の骨組み」, ML-Inference の「値段を変える判断」
-
-## 優先度 中
-
 ### 推薦の指標を共有の場所に置く
 - 何を: 利用者ごとの上位 K 件の Recall@K と NDCG を数える関数を, 異常の検知の指標 (`precision_at_k`, `average_precision`) と同じ場所と形で置く. 決まり (正解の数が K より多い利用者, 正解の無い利用者を数えない, 数える利用者がいない場合は 0) は, 今の骨組みと ML-Inference の計算と同じにして docs/DESIGN.md に書く
 - なぜ: ML-Quest の推薦の骨組み (`src/ml_quest/rank_skeleton.py` の `rank_metrics`) と ML-Inference の `rank_metrics` が, 同じ Recall@K と NDCG をそれぞれ書いて持っている. 2 つ以上の段階で同じ計算が要る実例で, 「型ごとの指標の共有」の条件に当たるため
 - 終わりの条件: 骨組みと ML-Inference の今の計算と同じ見本 (正解が K より多い利用者, 正解の無い利用者, 上位が空の利用者を含む) で同じ値が返ることをテストで確かめる. 公開の名前が `__all__` にあり, docs/DESIGN.md に決まりがある
 - つながり: 異常の検知の指標 (置き場所と, ML-Inference が ML-Found に依存せずに docs/DESIGN.md の見本で確かめる決まりも同じ), ML-Quest の `src/ml_quest/rank_skeleton.py` の `rank_metrics`, ML-Inference の docs/DESIGN.md の「並べるの一式」の節の `rank_metrics`
+
+## 優先度 中
 
 ### 異常の検知の学習の例
 - 何を: `examples/` に, 正常の行が多い表で正常の行だけを学ぶ表の行の自己符号化器の例を足す. モデルは ML-ModelControl の同梱の例 `tabular_autoencoder` (ML-ModelControl の docs/DESIGN.md の 9 節) と同じ形 (縮めてから戻す全結合の層. 出力は入力と同じ幅の再構成 `recon`) にする. step は正常の行の再構成の誤差を損失にし (検証用に正解の付いた異常の行が混ざる場合は, 正常の行だけで平均して `batch_size` に正常の行の数を返す), `on_epoch_end` で行ごとの再構成の誤差を度合いとして上位 K 件の適合率と PR-AUC (`precision_at_k`, `average_precision`) を数えて監視する指標にする. 学習の後に, 指標の表 (`better` 付き), 度合いの分布の曲線 (`kind="curve"`), 上位の行の要約の表 (行の id と度合い) を `save_evaluation` で書く
@@ -36,7 +30,7 @@
 - 待っているもの: 画面 (ML-Dashboard) を学習と別のユーザーで動かす実例
 
 ### 型ごとの指標の共有
-- 何を: Chamfer のような型ごとの指標の計算を, 共有の場所に置く (FID は ML-Found の `FrechetInceptionDistance`, 異常の検知は `precision_at_k` と `average_precision`, 効果を見積もるは `qini_curve`, `qini_coefficient`, `uplift_at_k`. 推薦の分は「推薦の指標を共有の場所に置く」, 値段を変える判断の分は「値段を変える判断の指標を共有の場所に置く」)
+- 何を: Chamfer のような型ごとの指標の計算を, 共有の場所に置く (FID は ML-Found の `FrechetInceptionDistance`, 異常の検知は `precision_at_k` と `average_precision`, 効果を見積もるは `qini_curve`, `qini_coefficient`, `uplift_at_k`. 値段を変える判断は `price_elasticity` と `profit_lift`. 推薦の分は「推薦の指標を共有の場所に置く」)
 - 待っているもの: 2 つ以上の段階で同じ計算が要る実例. それまではプロジェクトに書く
 
 ### 追加の依存の登録簿に機能を足す

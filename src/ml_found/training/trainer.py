@@ -2296,13 +2296,14 @@ class Trainer:
             message = (
                 "再開元は EMA を使っていますが, 今回は trainer.ema.decay が "
                 "null なので EMA の状態を使いません. 再開元のベストモデルは "
-                "EMA の重みと値のままです"
+                "再開元で検証したモデル (eval_model) の重みと値のままです"
             )
         elif self.ema_model is not None and state is None:
             reset_ema_model(self.ema_model, self.model)
             message = (
                 "再開元に EMA の状態が無いので, 再開した重みから EMA を始めます."
-                " 再開元のベストモデルは学習しているモデルの重みと値のままです"
+                " 再開元のベストモデルは再開元で検証したモデル (eval_model) の"
+                "重みと値のままです"
             )
         elif self.ema_model is not None:
             self.ema_model.load_state_dict(state["state"])

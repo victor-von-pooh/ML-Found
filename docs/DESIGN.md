@@ -711,7 +711,7 @@ levels = [0.1, 0.5, 0.9]    # 学んだ分位点の水準
 # 先の期間の実際の需要 (N,) と, 水準ごとの予測 (N, 水準の数)
 pinball = pinball_loss(actual, quantiles, levels)
 
-# 選んだ発注の数 (在庫の数を引いた後) と, 前の期間と同じ数の発注
+# 選んだ発注の数と, 前の期間と同じ数の発注 (どちらも在庫の数を足した, 売れる数)
 cost = order_cost(
     actual, order, shortage_cost=3, holding_cost=1, baseline=last_period
 )
@@ -769,7 +769,7 @@ def step(model, batch, phase):
 
 見込みの損の決まりは次の通り.
 
-- 行ごとの足りない数 = max(需要 - 発注の数, 0), 余った数 = max(発注の数 - 需要, 0), 損 = `shortage_cost` × 足りない数 + `holding_cost` × 余った数. 在庫の数は呼ぶ側が引き, 引いた後の発注の数を渡す
+- 行ごとの足りない数 = max(需要 - 発注の数, 0), 余った数 = max(発注の数 - 需要, 0), 損 = `shortage_cost` × 足りない数 + `holding_cost` × 余った数. 発注の数の引数には, 在庫の数と発注の数を足した, 売れる数を渡す (足りない数と余った数は売れる数と需要の差のため). 比べる発注の数も同じく, 在庫の数を足した数を渡す
 - 戻り値は次の辞書. `items` は列の名前から行ごとの値の並びの辞書 (`save_evaluation` の表にそのまま渡せる)
     - `items`: `shortage` (足りない数), `excess` (余った数), `cost` (損). 比べる発注の数を渡した場合は `baseline_cost` (比べる発注の数での損) も
     - `total`: 損の和 (小さいほど良い)

@@ -16,7 +16,7 @@
 - **パラメータを持たないモデルも同じ実験に**: 中心と精度行列をバッファに持つ距離に基づく異常の度合いのように, パラメータを 1 つも持たないモデルは, Optimizer と Scheduler を作らずに検証だけを数え, `run.json`, `history.csv`, `final_model.pt` を他の実験と同じ形で残す (docs/DESIGN.md の「更新の手順」)
 - **Lightning などに依存しない**: 素の PyTorch だけで書いている
 - **強化学習と方策の書き出し (任意)**: Gymnasium の形の環境とのやり取りを loader にして, 同じ `Trainer` で方策を学習し, 守り (行動の範囲, 止める条件, 外れたときの動き) と一緒に書き出せる. 評価で走らせた軌跡は, 1 歩が 1 行の表 (エピソードの番号, 歩数, 観測, 行動, 報酬, 終了と打ち切りの別, 守りの結果) として `trajectories/` に書き出せる (`save_trajectory`. 既定では書かない. 表の形は docs/FORMAT.md の「trajectories」). 確率で行動を選ぶ方策で記録した軌跡 (行動を選んだ確率の列 `action_prob` の付いた表) からは, 別の方策の良さを環境で動かさずに重点サンプリングで見積もれる (`estimate_policy_value`). 再開では環境の乱数と状態も戻り, 通しの学習と一致する
-- **何の実験かと評価, 見本**: 実験の `task.yaml` (`write_task`, `task_from_dataset`), 学習の後のデータ全体の評価 (`save_evaluation`, `load_evaluations`), 入力と予測と正解の見本 (`save_sample`, `load_samples`) を, 実験の記録に残して読める. 異常の検知の上位 K 件の適合率と PR-AUC (`precision_at_k`, `average_precision`) と, 効果を見積もるの Qini の曲線と係数と上位 K 割の効果の差 (`qini_curve`, `qini_coefficient`, `uplift_at_k`) は, docs/DESIGN.md の決まりで数え, 推論の段階 (ML-Inference) は同じ見本で同じ値になることを確かめる
+- **何の実験かと評価, 見本**: 実験の `task.yaml` (`write_task`, `task_from_dataset`), 学習の後のデータ全体の評価 (`save_evaluation`, `load_evaluations`), 入力と予測と正解の見本 (`save_sample`, `load_samples`) を, 実験の記録に残して読める. 異常の検知の上位 K 件の適合率と PR-AUC (`precision_at_k`, `average_precision`) と, 効果を見積もるの Qini の曲線と係数と上位 K 割の効果の差 (`qini_curve`, `qini_coefficient`, `uplift_at_k`), 値段を変える判断の弾力性と利益の比べ (`price_elasticity`, `profit_lift`) は, docs/DESIGN.md の決まりで数え, 推論の段階 (ML-Inference) は同じ見本で同じ値になることを確かめる
 - **追加の依存の案内**: 任意の機能 (強化学習, MuJoCo, ROS 2, CUDA, 生成の画像の FID, 他の段階のライブラリ ML-EDA, ML-ModelControl, ML-Inference) ごとに, 要るもの, 入っているかの確かめ方 (版の下限があれば版も), 入れ方の一覧を持ち, 足りなければ次の一手を案内して止まる
 
 ## どのアプリから使われるか

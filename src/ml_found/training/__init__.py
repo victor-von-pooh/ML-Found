@@ -11,6 +11,7 @@ from ml_found.training.optim import (
     missing_data_size_params, named_views, resolve_optimizer_class,
     resolve_scheduler_class, try_build_optim, uses_named_optimizers
 )
+from ml_found.training.price import price_elasticity, profit_lift
 from ml_found.training.registry import (
     check_optim_params, check_param_values, describe_optimizers,
     describe_schedulers, register_optimizer, unregister_optimizer
@@ -26,8 +27,8 @@ __all__ = [
     "build_scheduler", "check_optim_config", "check_optim_params",
     "check_param_values", "describe_optimizers", "describe_schedulers",
     "frechet_distance", "load_checkpoint", "missing_data_size_params",
-    "named_views", "precision_at_k", "qini_coefficient", "qini_curve",
-    "register_optimizer", "resolve_optimizer_class",
-    "resolve_scheduler_class", "try_build_optim", "unregister_optimizer",
-    "uplift_at_k", "uses_named_optimizers"
+    "named_views", "precision_at_k", "price_elasticity", "profit_lift",
+    "qini_coefficient", "qini_curve", "register_optimizer",
+    "resolve_optimizer_class", "resolve_scheduler_class", "try_build_optim",
+    "unregister_optimizer", "uplift_at_k", "uses_named_optimizers"
 ]

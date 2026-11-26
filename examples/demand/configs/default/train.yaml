@@ -1,0 +1,39 @@
+# ML-Found が使う設定, 書かなかった項目は ML-Found の既定値
+experiment:
+  name: demand
+  seed: 42
+
+optimizer:
+  name: Adam
+  params:
+    lr: 0.01
+
+trainer:
+  epochs: 60
+  # 検証用の分位点の損失でベストモデルを選ぶ (小さいほど良い)
+  monitor: valid/pinball_loss
+  mode: min
+
+# プロジェクト固有の設定, 項目は自由に追加可能
+data:
+  # 合成の日ごとの売れた数の記録の, 商品の数と日の数
+  products: 30
+  days: 160
+  # 先の期間の日数 (この日数の売れた数の合計を予測する)
+  horizon: 7
+  # 予測に使う過去の日数 (前の 7 日と 28 日の平均)
+  history: 28
+  # 発注を決める日の, 学習用と検証用の終わり (日の番号. 残りはテスト用)
+  train_until: 100
+  valid_until: 125
+  batch_size: 64
+
+model:
+  hidden: 32
+  # 学ぶ分位点の水準 (小さい順)
+  levels: [0.1, 0.25, 0.5, 0.75, 0.9]
+
+order:
+  # 1 つ足りないときの損と 1 つ余ったときの損 (水準 τ = 3 / (3 + 1) = 0.75)
+  shortage_cost: 3
+  holding_cost: 1

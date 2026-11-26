@@ -1,0 +1,43 @@
+# ML-Found が使う設定, 書かなかった項目は ML-Found の既定値
+experiment:
+  name: anomaly
+  seed: 42
+
+optimizer:
+  name: Adam
+  params:
+    lr: 0.005
+
+trainer:
+  epochs: 60
+  # 検証用の上位 K 件の適合率でベストモデルを選ぶ (大きいほど良い)
+  monitor: valid/precision_at_k
+  mode: max
+  # 適合率が同じなら PR-AUC の大きい方
+  monitor_tiebreak: valid/average_precision
+  monitor_tiebreak_mode: max
+
+# プロジェクト固有の設定, 項目は自由に追加可能
+data:
+  # 合成の表の, 学習用 (正常だけ), 検証用, テスト用の正常の行の数
+  train_rows: 800
+  valid_rows: 180
+  test_rows: 180
+  # 検証用とテスト用に混ぜる異常の行の数
+  anomalies: 20
+  # 列の数と, 正常の行を作る隠れた要因の数
+  features: 8
+  factors: 2
+  batch_size: 32
+
+model:
+  # 縮めてから戻す全結合の層の幅
+  hidden: 6
+  bottleneck: 2
+
+anomaly:
+  # 上位 K 件の適合率の K (人が 1 回に確かめる件数)
+  k: 20
+  # 評価に残す, 度合いの上位の行の数と, 度合いの分布の区間の数
+  top: 10
+  bins: 20

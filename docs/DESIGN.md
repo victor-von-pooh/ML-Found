@@ -66,6 +66,7 @@ ML-Found/
 │   └── utils/              # デバイス, バッチの転送, 学習曲線, パラメータの一覧, 追加の依存の登録簿, 出力先のファイルをリンクを辿らずに読む関数
 ├── examples/
 │   ├── minibatch/          # wine データセットの分類, DataLoader で学習する例
+│   ├── anomaly/            # 合成の表の異常の検知. 正常の行だけで自己符号化器を学び, 上位 K 件の適合率と PR-AUC を監視して評価の表に残す
 │   ├── fullbatch/          # グラフのノード分類, マスクで学習と検証を分ける例
 │   ├── cartpole/           # CartPole の方策の学習と, 守りと一緒の書き出し (追加の依存 rl)
 │   └── pendulum/           # Pendulum の連続の行動の方策を Actor-Critic で学習し, 守りと一緒に書き出して守り付きで評価 (追加の依存 rl)
@@ -465,7 +466,7 @@ class GenerativeTrainer(Trainer):
 
 ### 異常の検知の上位 K 件の適合率と PR-AUC
 
-異常の検知の評価は, `precision_at_k` (上位 K 件の適合率) と `average_precision` (PR-AUC. 平均の適合率) で数える. 入力は行ごとの異常の度合い (大きいほど異常) と, 異常か正常かの正解. 学習の段階では `on_epoch_end` の指標に, 学習の後は `save_evaluation` の表の値に使う. 戻り値は Python の `float` で, torch だけで数える (scikit-learn と scipy に依存しない). 推論の段階 (ML-Inference) は ML-Found に依存せず, 下の見本で同じ値になることを自分のテストで確かめる.
+異常の検知の評価は, `precision_at_k` (上位 K 件の適合率) と `average_precision` (PR-AUC. 平均の適合率) で数える. 正常の行だけで学ぶ流れ (`step` で正常の行だけを損失に入れ, 平均の重みの `batch_size` に正常の行の数を返す) と, 評価の表の残し方 (指標の表, 度合いの分布の曲線, 上位の行の要約の表) の形は `examples/anomaly/` が示す. 入力は行ごとの異常の度合い (大きいほど異常) と, 異常か正常かの正解. 学習の段階では `on_epoch_end` の指標に, 学習の後は `save_evaluation` の表の値に使う. 戻り値は Python の `float` で, torch だけで数える (scikit-learn と scipy に依存しない). 推論の段階 (ML-Inference) は ML-Found に依存せず, 下の見本で同じ値になることを自分のテストで確かめる.
 
 ```python
 from ml_found import average_precision, precision_at_k, save_evaluation

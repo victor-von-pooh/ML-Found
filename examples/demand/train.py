@@ -106,8 +106,17 @@ def make_rows(cfg: DictConfig, sales: np.ndarray) -> dict:
         ], axis=1)
         y = sales[:, day:day + horizon].sum(axis=1)
         previous = sales[:, day - horizon:day].sum(axis=1)
-        split = ("train" if day < cfg.data.train_until
-                 else "valid" if day < cfg.data.valid_until else "test")
+        # 先の期間が分割の境目をまたぐ行は除く (後の分割の過去の売れた数と
+        # 前の分割の先の期間が重ならないように)
+        end = day + horizon
+        if end <= cfg.data.train_until:
+            split = "train"
+        elif cfg.data.train_until <= day and end <= cfg.data.valid_until:
+            split = "valid"
+        elif cfg.data.valid_until <= day:
+            split = "test"
+        else:
+            continue
         parts[split].append((x, y, previous))
     rows = {
         name: {

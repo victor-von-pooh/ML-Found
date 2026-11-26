@@ -53,7 +53,7 @@ def to_items(value: Any, name: str, ordered: bool) -> list:
     items: list
         品物の並び (NumPy の配列とテンソルは Python の数に写す)
     """
-    # NumPy の配列とテンソルは 1 次元だけ
+    # NumPy の配列とテンソルの 1 次元の確認
     if isinstance(value, (np.ndarray, torch.Tensor)):
         if value.ndim != 1:
             raise ValueError(

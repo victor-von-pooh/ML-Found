@@ -171,7 +171,7 @@ class AnomalyTrainer(Trainer):
         Returns
         ----------
         outputs: dict
-            正常の行の再構成の二乗誤差 (loss) と, 平均に重みを付ける
+            正常の行の再構成の二乗誤差の平均 (loss) と, 平均に重みを付ける
             正常の行の数 (batch_size)
         """
         # 異常の行は損失に入れない (検証用に混ぜた正解の付いた異常)
@@ -180,6 +180,7 @@ class AnomalyTrainer(Trainer):
         normal = y == 0
         recon = model(x)["recon"]
         if not normal.any():
+            # 異常だけのまとまり (検証用だけで起きる) は重み 0 の 0
             loss = recon.sum() * 0.0
         else:
             loss = self.criterion(recon[normal], x[normal])
@@ -286,8 +287,8 @@ def save_results(
     middles = (edges[:-1] + edges[1:]) / 2
     save_evaluation(
         experiment, "anomaly_scores_test", {
-            "score": middles.tolist(), "normal": normal.tolist(),
-            "anomaly": odd.tolist(),
+            "score": middles.tolist(), "normal_rows": normal.tolist(),
+            "anomaly_rows": odd.tolist(),
         }, "test", description="度合いの区間ごとの正常と異常の行の数",
         kind="curve", x="score"
     )

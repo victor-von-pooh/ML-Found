@@ -51,7 +51,7 @@ def test_anomaly_example_runs(tmp_path: Path) -> None:
     assert 0.0 <= row["average_precision"] <= 1.0
     curve = found["anomaly_scores_test"]
     assert curve["kind"] == "curve" and curve["x"] == "score"
-    assert sum(item["anomaly"] for item in curve["rows"]) == 20
+    assert sum(item["anomaly_rows"] for item in curve["rows"]) == 20
     top = found["anomaly_top_test"]["rows"]
     assert len(top) == 10
     assert [item["score"] for item in top] == sorted(

@@ -114,14 +114,17 @@ def to_candidates(candidates: Any) -> list[Fraction]:
     ratios: list[Fraction]
         候補の順の割合
     """
-    # テンソルはその値のまま, 他は要素ごと
+    # テンソルは NumPy の配列にして, 要素ごとに 10 進の表記で読む
     if isinstance(candidates, torch.Tensor):
         if candidates.dim() != 1:
             raise ValueError(
                 "値段の候補は 1 次元にしてください "
                 f"({tuple(candidates.shape)})"
             )
-        candidates = candidates.detach().to("cpu").tolist()
+        candidates = candidates.detach().to("cpu")
+        if candidates.dtype == torch.bfloat16:
+            candidates = candidates.to(torch.float32)
+        candidates = candidates.numpy()
     try:
         values = list(candidates)
     except TypeError:

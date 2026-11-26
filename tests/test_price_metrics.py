@@ -242,6 +242,31 @@ def test_limit_is_read_as_decimal(limit: Any) -> None:
     assert result["items"]["change"] == pytest.approx([0.1])
 
 
+@pytest.mark.parametrize("dtype", [
+    torch.float32, torch.float16, torch.float64
+])
+def test_tensor_candidates_are_read_as_decimal(dtype: torch.dtype) -> None:
+    """
+    float32 などのテンソルの候補も 10 進の表記どおりに読み, 上限と同じ
+    割合の上げる候補と下げる候補を選べることを確かめる関数
+
+    Parameters
+    ----------
+    dtype: torch.dtype
+        候補のテンソルの型
+
+    Returns
+    ----------
+    None
+    """
+    # float32 の 0.1 は 2 進では 0.1 より大きい
+    candidates = torch.tensor([-0.1, 0, 0.1], dtype=dtype)
+    result = profit_lift(
+        [10, 10], candidates, [[0, 1, 100], [100, 1, 0]], max_change=0.1
+    )
+    assert result["items"]["change"] == pytest.approx([0.1, -0.1])
+
+
 def test_tensor_inputs() -> None:
     """
     勾配の付いたテンソルも受け, 数の並びと同じ値になることを確かめる関数

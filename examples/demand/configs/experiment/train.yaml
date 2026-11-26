@@ -1,0 +1,4 @@
+# default から変えたい項目だけを記述 (default に無い項目は記述不可)
+# 例:
+# order:
+#   shortage_cost: 9

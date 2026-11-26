@@ -59,7 +59,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev,examples,rl]"
 pytest
-python examples/minibatch/train.py   # fullbatch, anomaly, cartpole, pendulum も同じ
+python examples/minibatch/train.py   # fullbatch, anomaly, demand, cartpole, pendulum も同じ
 python examples/minibatch/train.py --experiment configs/experiment/examples/ema.yaml   # EMA の重みで検証する例
 ```
 
@@ -86,6 +86,7 @@ NewProject/
 | --- | --- |
 | `examples/minibatch/` | DataLoader でのミニバッチ学習 (wine の分類). `ema.yaml` は EMA の重みで検証する差分の config |
 | `examples/anomaly/` | 正常の行が多い合成の表で, 正常の行だけで自己符号化器を学び, 検証用の上位 K 件の適合率と PR-AUC (`precision_at_k`, `average_precision`) を監視して, 指標の表, 度合いの分布の曲線, 上位の行の要約の表を `save_evaluation` で書く (異常の検知) |
+| `examples/demand/` | 合成の商品ごとの日ごとの売れた数から, 先の期間の売れた数の合計を分位点 (`PinballLoss`) で学び, 検証用の分位点の損失を監視する. 品切れの損と売れ残りの損の比から決まる水準の分位点を発注の数にし, `order_cost` で前の期間と同じ数の発注と見込みの損を比べて, 指標の表, 水準ごとの表, 行ごとの表を書く (時間をまたぐ量の判断) |
 | `examples/fullbatch/` | グラフ全体を 1 つのデータとして学習するフルバッチ学習 |
 | `examples/cartpole/` | CartPole を REINFORCE で学習し, 守りと一緒に方策を書き出す (`rl` が要る) |
 | `examples/pendulum/` | Pendulum の連続の行動の方策を `ActorCriticStep` で学習し, 守りと一緒に書き出す (`rl` が要る) |

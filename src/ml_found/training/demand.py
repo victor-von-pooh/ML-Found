@@ -340,12 +340,12 @@ def order_cost(
         baseline_total. baseline_total が 0 なら nan) の辞書. 比べない
         場合の baseline_total, saving, ratio は nan
     """
-    # 需要, 発注の数, 損の確認
+    # 需要, 売れる数, 損の確認
     demand = to_values(demand, "実際の需要", nonnegative=True)
-    order = to_values(order, "発注の数", nonnegative=True)
+    order = to_values(order, "売れる数", nonnegative=True)
     shortage = to_cost(shortage_cost, "品切れの損 shortage_cost")
     holding = to_cost(holding_cost, "売れ残りの損 holding_cost")
-    check_length(demand, order, "発注の数")
+    check_length(demand, order, "売れる数")
 
     # 行ごとの足りない数, 余った数, 損
     short, excess, cost = row_costs(demand, order, shortage, holding)
@@ -378,14 +378,14 @@ def check_length(
     demand: torch.Tensor, values: torch.Tensor, name: str
 ) -> None:
     """
-    需要と発注の数の長さが同じことを確かめる関数
+    需要と売れる数の長さが同じことを確かめる関数
 
     Parameters
     ----------
     demand: torch.Tensor
         行ごとの実際の需要
     values: torch.Tensor
-        行ごとの発注の数
+        行ごとの売れる数
     name: str
         エラーのメッセージに出す値の名前
 
@@ -413,7 +413,7 @@ def row_costs(
     demand: torch.Tensor
         行ごとの実際の需要
     order: torch.Tensor
-        行ごとの発注の数
+        行ごとの売れる数 (在庫の数と発注の数を足した数)
     shortage: float
         1 つ足りないときの損
     holding: float
@@ -422,9 +422,9 @@ def row_costs(
     Returns
     ----------
     short: torch.Tensor
-        足りない数 max(需要 - 発注の数, 0)
+        足りない数 max(需要 - 売れる数, 0)
     excess: torch.Tensor
-        余った数 max(発注の数 - 需要, 0)
+        余った数 max(売れる数 - 需要, 0)
     cost: torch.Tensor
         shortage × 足りない数 + holding × 余った数
     """
@@ -447,7 +447,7 @@ def compare_baseline(
     demand: torch.Tensor
         行ごとの実際の需要
     baseline: Any
-        比べる発注の数の 1 次元の並び, None の場合は比べない
+        比べる発注の数での売れる数の 1 次元の並び, None の場合は比べない
     shortage: float
         1 つ足りないときの損
     holding: float
@@ -463,8 +463,8 @@ def compare_baseline(
         return None
 
     # 確認と行ごとの損
-    baseline = to_values(baseline, "比べる発注の数", nonnegative=True)
-    check_length(demand, baseline, "比べる発注の数")
+    baseline = to_values(baseline, "比べる売れる数", nonnegative=True)
+    check_length(demand, baseline, "比べる売れる数")
     _, _, cost = row_costs(demand, baseline, shortage, holding)
 
     return cost

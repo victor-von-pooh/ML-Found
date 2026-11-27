@@ -8,14 +8,18 @@ git の管理下のファイル (submodule の中は含まない) で, 一覧に
 語の 2 つの形だけ. 小文字の ml- は画面のクラス名 (ml-auto など) と取り
 違えないため探さない
 """
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 # リポジトリの名前らしい語 (大文字小文字を区別する. 後ろに _ が続く環境
-# 変数のような語は除く). 比べるときは名前の形をそろえる
-REPO_NAME = re.compile(r"\bML[-_][A-Za-z]+\b(?!_)|\bml_[a-z]+\b(?!_)")
+# 変数のような語は除く. 語の境は ASCII の字だけで見て, 日本語に続けて
+# 書いた名前も拾う). 比べるときは名前の形をそろえる
+REPO_NAME = re.compile(
+    r"\bML[-_][A-Za-z]+\b(?!_)|\bml_[a-z]+\b(?!_)", re.ASCII
+)
 
 # git grep で候補の行を絞る形 (環境で \b が使えない場合があるので語の境は
 # 見ない. 細かい判定は REPO_NAME で行う)
@@ -36,7 +40,7 @@ def name_key(name: str) -> str:
     key: str
         小文字で, - と _ を除いた形
     """
-    # 小文字にして区切りを除く
+    # 小文字にして区切りを除いた形
     key = name.lower().replace("-", "").replace("_", "")
 
     return key
@@ -90,18 +94,20 @@ def grep_lines(root: Path) -> list[tuple[str, str, str]]:
     RuntimeError
         git grep が誤りで終わった場合
     """
-    # 見つからない場合の終わりの値は 1, 誤りは 2 以上
+    # 見つからない場合の終わりの値は 1, 誤りは 2 以上. locale を C にし,
+    # UTF-8 でないファイルの行も同じ扱いで探す
     result = subprocess.run(
         ["git", "grep", "-I", "-n", "-z", "-E", GREP_PATTERN],
         cwd=root, capture_output=True, text=True, encoding="utf-8",
-        errors="replace"
+        errors="replace", env={**os.environ, "LC_ALL": "C"}
     )
     if result.returncode > 1:
         raise RuntimeError(f"git grep が失敗しました: {result.stderr}")
 
-    # -z でファイル, 行の番号, 中身を NUL で区切った行
+    # -z でファイル, 行の番号, 中身を NUL で区切った行 (改ページなどで行を
+    # 切らないよう, 改行だけで分ける)
     found = []
-    for line in result.stdout.splitlines():
+    for line in result.stdout.split("\n")[:-1]:
         place, number, content = line.split("\0", 2)
         found.append((place, number, content))
 
@@ -147,7 +153,7 @@ def main() -> int:
     code: int
         見つけた場合は 1, 無い場合は 0
     """
-    # このスクリプトの 1 つ上をリポジトリのルートとする
+    # このスクリプトの 1 つ上のディレクトリのリポジトリのルート
     root = Path(__file__).resolve().parent.parent
     errors = name_errors(root, allowed_repos(root))
     for error in errors:

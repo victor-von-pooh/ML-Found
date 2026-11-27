@@ -26,7 +26,7 @@ PyTorch のモデルを config から学習させる基盤のライブラリ. �
 ## 進める流れ
 
 1. 方針を変える場合や新しい機能を加える場合は, 先に docs/DESIGN.md を直す (使い方が変わる場合は README.md も). 終えた TODO.md の項目は消す. プロジェクトや実験のディレクトリの形 (他のシステムとの約束) を変える場合は, [docs/FORMAT.md](docs/FORMAT.md) の版の決まりに従い, 文書と `tests/test_format.py` も直す
-2. テストを書き, `pytest` を通す (準備は `pip install -e ".[dev]"`)
+2. テストを書き, `pytest` を通す (準備は `pip install -e ".[dev]"`). CI は, CLAUDE.md の一覧に無いリポジトリの名前が管理下のファイルに無いことも `python scripts/check_repo_names.py` で確かめる
 3. **セルフレビュー**: 複数のエージェントを並行して動かし, バグ, 設計との食い違い, CODING_STYLE.md への準拠を確認する. 既存のプロジェクトとの互換も確かめる
 4. 指摘を直し, 直した内容と残した指摘をユーザーに報告する
 

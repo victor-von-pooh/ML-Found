@@ -31,3 +31,13 @@ jobs:
       # 強化学習の CartPole のテストのため, 追加の依存 rl も入れる
       - run: pip install -e ".[dev,examples,rl]"
       - run: pytest -q
+
+  # CLAUDE.md の一覧に無いリポジトリの名前が, 管理下のファイルに無いことの確認
+  repo-names:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: python scripts/check_repo_names.py

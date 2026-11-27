@@ -3,19 +3,23 @@ CLAUDE.md の一覧に無いリポジトリの名前を探すスクリプト
 
 git の管理下のファイル (submodule の中は含まない) で, 一覧に無い名前を
 見つけたら, 場所を出して 1 で終わる
+
+探す語は, 大文字の ML で始まり - か _ が続く語と, 小文字の ml_ で始まる
+語の 2 つの形だけ. 小文字の ml- は画面のクラス名 (ml-auto など) と取り
+違えないため探さない
 """
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-# リポジトリの名前らしい語 (大文字小文字と - と _ の違いを問わない. 後ろに
-# _ が続く環境変数のような語は除く). 比べるときは名前の形をそろえる
-REPO_NAME = re.compile(r"\bml[-_][a-z]+\b(?!_)", re.IGNORECASE)
+# リポジトリの名前らしい語 (大文字小文字を区別する. 後ろに _ が続く環境
+# 変数のような語は除く). 比べるときは名前の形をそろえる
+REPO_NAME = re.compile(r"\bML[-_][A-Za-z]+\b(?!_)|\bml_[a-z]+\b(?!_)")
 
 # git grep で候補の行を絞る形 (環境で \b が使えない場合があるので語の境は
 # 見ない. 細かい判定は REPO_NAME で行う)
-GREP_PATTERN = r"ml[-_][a-z]"
+GREP_PATTERN = r"ML[-_][A-Za-z]|ml_[a-z]"
 
 
 def name_key(name: str) -> str:
@@ -88,7 +92,7 @@ def grep_lines(root: Path) -> list[tuple[str, str, str]]:
     """
     # 見つからない場合の終わりの値は 1, 誤りは 2 以上
     result = subprocess.run(
-        ["git", "grep", "-I", "-n", "-i", "-z", "-E", GREP_PATTERN],
+        ["git", "grep", "-I", "-n", "-z", "-E", GREP_PATTERN],
         cwd=root, capture_output=True, text=True, encoding="utf-8",
         errors="replace"
     )

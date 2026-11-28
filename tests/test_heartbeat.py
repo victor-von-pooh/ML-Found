@@ -16,17 +16,21 @@ from ml_found.training.heartbeat import (
 from ml_found.training.trainer import Trainer
 from test_trainer import make_experiment, make_loader, regression_step
 
-# 子のプロセスで心拍を始め, 引数の終わり方で終わるスクリプト
+# 子のプロセスで心拍を始め, 書き直した心拍がファイルに届いてから,
+# 引数の終わり方で終わるスクリプト
 CHILD_SCRIPT = """
+import json
 import os
 import signal
 import sys
 import time
-from ml_found.training.heartbeat import PostHeartbeat
+from pathlib import Path
+from ml_found.training.heartbeat import HEARTBEAT_FILE, PostHeartbeat
 
 heartbeat = PostHeartbeat(sys.argv[1], interval=0.05)
 heartbeat.start()
-while heartbeat.beat < 2:
+path = Path(sys.argv[1]) / HEARTBEAT_FILE
+while json.loads(path.read_text(encoding="utf-8"))["beat"] < 2:
     time.sleep(0.01)
 if sys.argv[2] == "kill":
     os.kill(os.getpid(), signal.SIGKILL)

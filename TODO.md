@@ -5,7 +5,11 @@
 
 ## 優先度 高
 
-無し
+### task.yaml の dataset.format_version に版 1 を書けるようにする
+- 何を: docs/FORMAT.md の `dataset.format_version` の説明 (「2 か 3」) を, 版 1 (列の正解のデータセット) も書ける決まりに直す. 版 1 の `dataset.yaml` は受け持ちと正解の出どころを持たないので, `task.dataset` から埋めないこと (`role` と `target` は直接書く) は今のまま. 今の `check_dataset_version` は `dataset.yaml` を読む場合だけ版 1 を止める. 書くだけの `task.dataset.format_version` は整数なら通すので, 文書と動きの食い違いを揃える
+- なぜ: 画像の生成のデータセットは版 1 で, 文書どおりだと `task.yaml` に版を書けず null にするしかない. どのデータセットで学んだかの版が実験のディレクトリから読めなくなる
+- 終わりの条件: FORMAT.md と DESIGN.md の記述と `tests/test_format.py`, `task.py` の検査が同じ決まり (版 1, 2, 3 を書け, 整数でない値は誤り) を言う. 版 1 を書いた `task.yaml` の読み書きのテストがある. 項目の意味は変わらず版を上げないことを書く
+- つながり: ML-Quest の生成の骨組み (版 1 の画像の生成のデータセットを書くとき, 版を null にしている).
 
 ## 優先度 中
 

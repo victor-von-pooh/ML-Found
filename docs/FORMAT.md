@@ -223,12 +223,12 @@ ML-Found が他のシステムと受け渡すファイルの形を定める.
 
 | 欄 | 型 | 中身 |
 | --- | --- | --- |
-| `type` | 文字 | `process` (今ある処理の出力), `annotation` (人が付けた), `measurement` (測った), `synthetic` (作った正確な正解), `environment` (環境の報酬. シミュレータなど. ML-EDA の `dataset.yaml` には無い値), `unknown` (分からない. 既定) |
+| `type` | 文字 | `process` (今ある処理の出力), `annotation` (人が付けた), `measurement` (測った), `synthetic` (作った正確な正解), `environment` (環境の報酬. シミュレータなど. ML-EDA の `dataset.yaml` には無い値), `self` (学んだデータそのものが正解. 生成や自己符号化など. ML-EDA の `dataset.yaml` には無い値), `unknown` (分からない. 既定) |
 | `name` | 文字か null | 正解を作った処理 (か道具) の名前 |
 | `settings` | 任意か null | その処理の設定 |
 
 - パス (`base.experiment`, `dataset.path`) は, `source.yaml` と同じく, プロジェクトの中ならプロジェクトからの相対パス (区切りは `/`), 外なら絶対パス
-- 読む側は, `target.origin.type` が `process` なら「指標はその処理との一致を測り, その処理を超えられない」, `annotation` なら「付けた人との一致」, `environment` なら「環境の報酬で測る. 実機での結果は別に確かめる」と指標の横に書く (ML-Found の `describe_origin` が文を返す). 知らない値は `unknown` として説明する
+- 読む側は, `target.origin.type` が `process` なら「指標はその処理との一致を測り, その処理を超えられない」, `annotation` なら「付けた人との一致」, `environment` なら「環境の報酬で測る. 実機での結果は別に確かめる」, `self` なら「学んだデータそのものが正解. 指標は学んだデータとの近さを測る」と指標の横に書く (ML-Found の `describe_origin` が文を返す). 知らない値は `unknown` として説明する
 - **方策の実験の例**: `role: effect`, `output: action`, `target.kind: reward`, `target.origin.type: environment`, `target.origin.name` に環境の名前 (`CartPole-v1` など), `method: scratch`. 方策は問題の設定 (ML-Quest) では効果の見積もりの扱いなので `role` は `effect`
 - **`format_version` は 1 以上の整数**. 文字 (`'2'`), 小数 (`2.0`), 真偽値, 無い場合は誤りとして止まる (版 1 として読み違えないため)
 - **新しい版の読み方 (`task.yaml` だけの決まり)**: 知っている版より新しい `task.yaml` は, 他の項目は読める項目だけを使うが, `target.origin` は分からないもの (`unknown`) として扱い, 新しい版であることを画面で知らせる (`load_task` は `target.origin` を `unknown` に置き換え, 返す辞書に `newer_version: true` を足す. `describe_origin` に版を渡すと言い切らない文を返す). `task.yaml` は「この処理を超えられない」のような言い切りの元なので, 意味の変わったかもしれない欄から言い切ると誤った説明になる (他のファイルは表示が欠けるだけで, 誤りは言わない)

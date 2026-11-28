@@ -40,8 +40,8 @@ METHODS = ("rule", "pretrained", "head", "partial", "finetune", "scratch")
 BASED_METHODS = ("head", "partial", "finetune")
 
 # 正解の出どころの種類 (ML-EDA の dataset.yaml の版 2 の値を写したもの.
-# environment は環境の報酬で測る方策, self は学んだデータそのものが正解の
-# 生成のために足した値)
+# environment は環境の報酬で測る方策用, self は学んだデータそのものが正解の
+# 生成用で, どちらも ML-EDA の版 2 には無い値)
 ORIGIN_TYPES = (
     "process", "annotation", "measurement", "synthetic", "environment",
     "self", "unknown"

@@ -339,3 +339,144 @@ def test_process_end(tmp_path: Path, how: str, state: str, code: int) -> None:
         assert data["ended_at"] is None
         time.sleep(0.2)
         assert read_heartbeat(tmp_path) == data
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork が無い OS")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_forked_child_does_not_write(tmp_path: Path) -> None:
+    """
+    fork で作った子のプロセスが親の心拍を書き換えないことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+
+    Returns
+    ----------
+    None
+    """
+    heartbeat = PostHeartbeat(tmp_path, interval=60.0)
+    heartbeat.start()
+    before = read_heartbeat(tmp_path)
+
+    # 子では終える, 消す, まとめて終えるの全てを呼び, atexit を通らずに終了
+    pid = os.fork()
+    if pid == 0:
+        code = 0
+        try:
+            heartbeat.end()
+            heartbeat.cancel()
+            end_heartbeats()
+        except BaseException:
+            code = 1
+        os._exit(code)
+    _, status = os.waitpid(pid, 0)
+    assert os.WEXITSTATUS(status) == 0
+
+    # 親の心拍は書いたときのまま (pid も親) で, 親のスレッドも動いたまま
+    after = read_heartbeat(tmp_path)
+    assert after == before
+    assert after["pid"] == os.getpid()
+    assert heartbeat.thread.is_alive()
+    heartbeat.end()
+    assert read_heartbeat(tmp_path)["state"] == "ended"
+
+
+def test_write_error_warns_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    心拍を書けない場合に警告を 1 回だけ出し, 後の処理を止めないことを
+    確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        書き込みの差し替えに使う
+
+    Returns
+    ----------
+    None
+    """
+    def failing_write(path: Path, data: dict, sync: bool = False) -> None:
+        """
+        ディスクの不足と同じく書き込みに失敗する関数
+
+        Parameters
+        ----------
+        path: Path
+            書き込むファイル
+        data: dict
+            書き込む内容
+        sync: bool = False
+            置き換えの前にディスクに書き出すか
+
+        Returns
+        ----------
+        None
+        """
+        raise OSError("書き込みの失敗")
+
+    monkeypatch.setattr(heartbeat_module, "write_json", failing_write)
+    experiment = make_experiment(tmp_path, "trainer:\n  epochs: 1\n")
+    trainer = Trainer(nn.Linear(1, 1), experiment, regression_step)
+
+    # fit の後の最初の心拍と終わりの両方で失敗しても, エラーは出ない
+    trainer.fit(make_loader())
+    trainer.end_post()
+    assert trainer.heartbeat.beat == 2
+    assert not (experiment.run_dir / HEARTBEAT_FILE).exists()
+
+    # 警告は train.log に 1 回だけ
+    log = (experiment.run_dir / "train.log").read_text(encoding="utf-8")
+    assert log.count("学習の後の処理の心拍を書き込めませんでした") == 1
+
+
+def test_ended_is_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    終えた状態だけをディスクまで書き出すことを確かめる関数
+
+    Parameters
+    ----------
+    tmp_path: Path
+        pytest が用意する一時ディレクトリ
+    monkeypatch: pytest.MonkeyPatch
+        書き込みの差し替えに使う
+
+    Returns
+    ----------
+    None
+    """
+    calls = []
+    original = heartbeat_module.write_json
+
+    def recording_write(path: Path, data: dict, sync: bool = False) -> None:
+        """
+        状態と書き出しの有無を記録してから書き込む関数
+
+        Parameters
+        ----------
+        path: Path
+            書き込むファイル
+        data: dict
+            書き込む内容
+        sync: bool = False
+            置き換えの前にディスクに書き出すか
+
+        Returns
+        ----------
+        None
+        """
+        calls.append((data["state"], sync))
+        original(path, data, sync)
+
+    monkeypatch.setattr(heartbeat_module, "write_json", recording_write)
+    heartbeat = PostHeartbeat(tmp_path, interval=60.0)
+    heartbeat.start()
+    heartbeat.end()
+    assert calls == [("running", False), ("ended", True)]

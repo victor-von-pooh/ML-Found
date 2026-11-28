@@ -43,13 +43,14 @@ class PostHeartbeat:
         self.ended = False
         self.warned = False
 
-    def write(self) -> None:
+    def write(self, sync: bool = False) -> None:
         """
         心拍のファイルを書き込み, 失敗しても後の処理を止めない関数
 
         Parameters
         ----------
-        None
+        sync: bool = False
+            置き換えの前にディスクに書き出すか (終えた状態の 1 回だけ)
 
         Returns
         ----------
@@ -60,7 +61,7 @@ class PostHeartbeat:
         self.data["beat"] = self.beat
         self.data["updated_at"] = now_iso()
         try:
-            write_json(self.run_dir / HEARTBEAT_FILE, self.data)
+            write_json(self.run_dir / HEARTBEAT_FILE, self.data, sync)
         except OSError as error:
             if not self.warned and self.logger is not None:
                 self.logger.warning(
@@ -174,7 +175,7 @@ class PostHeartbeat:
             return
         with self.lock:
             self.data.update(state="ended", ended_at=now_iso())
-            self.write()
+            self.write(sync=True)
 
     def cancel(self) -> None:
         """

@@ -5,20 +5,15 @@
 
 ## 優先度 高
 
-### task.yaml の正解の出どころに, 学んだデータそのものが正解の値を足す
-- 何を: `target.origin.type` に, 学んだデータそのものが正解である場合の値を足す. 今の値 (`process`, `annotation`, `measurement`, `synthetic`, `environment`, `unknown`) は, どれも条件の無い生成 (画像や表の生成) に当たらない. 値の名前と `describe_origin` の説明文を決め, docs/FORMAT.md の「task.yaml」の表と `describe_origin` の説明と `tests/test_format.py` を直す. 値は ML-EDA の `dataset.yaml` には無いので, `environment` と同じく「ML-Found だけの値」と書く
-- なぜ: ML-Quest の生成の骨組みは, 正解の出どころに合う値が無いので `unknown` を書いている. `unknown` は「指標が何との一致かを確かめる」と読まれ, 生成では正解が学んだデータ自身であることが指標の横に出ない
-- 版: 選択肢の値を足すだけなので版は上げない (docs/FORMAT.md の「版を変えない変更」). 知らない値は `unknown` として読む決まりなので, 古い ML-Found や ML-Dashboard は誤った説明を出さず, 「分からない」の説明のまま. 新しい説明が出るのは ML-Found を更新してからで, ML-Dashboard の出どころの表示は `describe_origin` の文を出すので, 更新だけで足りる (表示の作り替えは要らない). 値を使って書くのは更新後の ML-Quest の生成の骨組みだけにする
-- 終わりの条件: 値と説明が FORMAT.md, DESIGN.md, `describe_origin`, テストでそろい, 古い読み手が知らない値を `unknown` として読むことをテストで確かめる
-- つながり: ML-Quest の生成の骨組み (`unknown` を書いているのを新しい値に改める), ML-Dashboard (`describe_origin` の文を指標の横に出す)
-
-## 優先度 中
-
 ### task.yaml の dataset.format_version に版 1 を書けるようにする
 - 何を: docs/FORMAT.md の `dataset.format_version` の説明 (「2 か 3」) を, 版 1 (列の正解のデータセット) も書ける決まりに直す. 版 1 の `dataset.yaml` は受け持ちと正解の出どころを持たないので, `task.dataset` から埋めないこと (`role` と `target` は直接書く) は今のまま. 今の `check_dataset_version` は `dataset.yaml` を読む場合だけ版 1 を止める. 書くだけの `task.dataset.format_version` は整数なら通すので, 文書と動きの食い違いを揃える
 - なぜ: 画像の生成のデータセットは版 1 で, 文書どおりだと `task.yaml` に版を書けず null にするしかない. どのデータセットで学んだかの版が実験のディレクトリから読めなくなる
 - 終わりの条件: FORMAT.md と DESIGN.md の記述と `tests/test_format.py`, `task.py` の検査が同じ決まり (版 1, 2, 3 を書け, 整数でない値は誤り) を言う. 版 1 を書いた `task.yaml` の読み書きのテストがある. 項目の意味は変わらず版を上げないことを書く
-- つながり: ML-Quest の生成の骨組み (版 1 の画像の生成のデータセットを書くとき, 版を null にしている). 上の出どころの項目と同じ生成の骨組みの改めで足りる
+- つながり: ML-Quest の生成の骨組み (版 1 の画像の生成のデータセットを書くとき, 版を null にしている).
+
+## 優先度 中
+
+無し
 
 ## 優先度 低
 

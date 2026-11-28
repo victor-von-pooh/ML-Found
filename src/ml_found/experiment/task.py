@@ -40,10 +40,11 @@ METHODS = ("rule", "pretrained", "head", "partial", "finetune", "scratch")
 BASED_METHODS = ("head", "partial", "finetune")
 
 # 正解の出どころの種類 (ML-EDA の dataset.yaml の版 2 の値を写したもの.
-# environment は環境の報酬で測る方策のために足した値)
+# environment は環境の報酬で測る方策, self は学んだデータそのものが正解の
+# 生成のために足した値)
 ORIGIN_TYPES = (
     "process", "annotation", "measurement", "synthetic", "environment",
-    "unknown"
+    "self", "unknown"
 )
 
 # 書ける項目 (知らない項目は typo として誤り)
@@ -68,6 +69,10 @@ ORIGIN_NOTES = {
         "正解は作った正確な値 ({name}). 実際のデータでの性能は別に確かめる"
     ),
     "environment": "環境の報酬で測る. 実機での結果は別に確かめる",
+    "self": (
+        "学んだデータそのものが正解 (生成や自己符号化など). "
+        "指標は学んだデータとの近さを測る"
+    ),
     "unknown": "正解の出どころは分からない. 指標が何との一致かを確かめる"
 }
 
@@ -335,7 +340,7 @@ def build_origin(origin: Any) -> dict:
         warnings.warn(
             "task.target.origin に type が無いので, 正解の出どころは unknown "
             "(分からない) として書きます. process, annotation, measurement, "
-            "synthetic, environment のどれかなら type を書いてください",
+            "synthetic, environment, self のどれかなら type を書いてください",
             stacklevel=4
         )
     built = {

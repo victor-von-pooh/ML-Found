@@ -405,6 +405,7 @@ def test_describe_origin() -> None:
     assert "分からない" in describe_origin(None)
     assert "分からない" in describe_origin({"type": "future_type"})
     assert "環境の報酬" in describe_origin({"type": "environment"})
+    assert "学んだデータそのもの" in describe_origin({"type": "self"})
 
 
 def test_save_evaluation_forms(tmp_path: Path) -> None:

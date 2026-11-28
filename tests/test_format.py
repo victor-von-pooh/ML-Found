@@ -164,6 +164,15 @@ def test_run_directory_matches_format(
     assert status["format_version"] == FORMAT_VERSION == 1
     assert status["status"] == "completed"
 
+    # 学習の後の処理の心拍の項目 (fit を終えたときから書き, 同じプロセスの
+    # 中なので running)
+    heartbeat = json.loads(
+        (run_dir / "heartbeat.json").read_text(encoding="utf-8")
+    )
+    assert set(heartbeat) == documented_keys("### heartbeat.json")
+    assert heartbeat["state"] == "running"
+    assert heartbeat["pid"] == status["pid"]
+
     # optimizers の 1 つの項目 (Scheduler を使わない場合の引数は null)
     assert set(status["optimizers"][0]) == {
         "name", "optimizer", "modules", "scheduler", "scheduler_params"

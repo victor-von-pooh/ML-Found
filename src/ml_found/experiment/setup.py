@@ -32,6 +32,7 @@ from ml_found.training.optim import (
 from ml_found.training.finetune import (
     PRECISIONS, check_autocast, read_init_weights
 )
+from ml_found.training.heartbeat import end_heartbeats
 from ml_found.training.registry import check_optim_params
 from ml_found.utils.device import get_device
 from ml_found.utils.requirements import REQUIREMENTS, require
@@ -588,6 +589,9 @@ def start_experiment(
     # 出力先を作ると未コミットの変更として数えられるので, 先に環境の情報の収集
     env_info = collect_env_info(str(project_root))
     git_diff = get_git_diff(str(project_root))
+
+    # 前の実験の学習の後の処理は, 次の実験を始めたので終えたものとして記録
+    end_heartbeats()
 
     # 実験結果を保存するディレクトリの作成
     run_dir = make_run_dir(

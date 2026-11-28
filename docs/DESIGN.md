@@ -22,7 +22,7 @@ PyTorch のモデルを config から自動で学習させる基盤のライブ�
 | 約束 | 持つか読むか | 版 |
 | --- | --- | --- |
 | プロジェクトの形 (`configs/default`, `configs/experiment`, 学習のスクリプト) | 持つ (ML-Dashboard と ML-Quest の骨組みが使う) | 版 1 |
-| 実験のディレクトリ (`config.yaml`, `source.yaml`, `run.json`, `progress.json`, `history.csv`, `final_model.pt` など) | 持つ (ML-Dashboard と ML-Inference が読む) | 版 1. ファイルごとの版は FORMAT.md |
+| 実験のディレクトリ (`config.yaml`, `source.yaml`, `run.json`, `progress.json`, `heartbeat.json`, `history.csv`, `final_model.pt` など) | 持つ (ML-Dashboard と ML-Inference が読む) | 版 1. ファイルごとの版は FORMAT.md |
 | 何の実験か (`task.yaml`), データ全体の評価 (`evaluations/`), 見本 (`samples/`) | 持つ (ML-Dashboard が読む) | FORMAT.md の「task.yaml」「evaluations」「samples」. 見本の一覧は版 2 (点群の `shift` は ML-EDA の書き出しと同じ向き). 版 1 も読む |
 | 方策の一式 (`policy/`) | 持つ (`policy.json` と `apply_guards` で, 他の段階も同じ守りを当てられる) | 版 1 |
 | 評価の軌跡の表 (`trajectories/<名前>.csv` と説明の `<名前>.json`) | 持つ (ML-EDA が読み, ML-Fathom が分析する. 利用者の手元の表も同じ列の決まりで読めるように, 一般の表の形にする. ML-Found も方策の見積もり (`estimate_policy_value`) で自分の書いた表を読む) | 版 1 |
@@ -1441,6 +1441,7 @@ ReduceLROnPlateau は `trainer.monitor` の値で学習率を下げる.
 | `samples/` | 任意. `save_sample` で書いた見本と一覧 (`index.json`) |
 | `trajectories/` | 任意. `save_trajectory` で書いた強化学習の評価の軌跡の表 (`<名前>.csv`) と説明 (`<名前>.json`) (「評価の軌跡の表」) |
 | `progress.json` | 学習中だけ置かれる, 今のフェーズ (`train`, `train_eval`, `valid`), エポックと予定のエポック数 (`fit` を呼び直した場合は前の `fit` までを含めた数), エポックの中で終えたバッチの数と総数, 段階 (`stage`. `on_epoch_end` を継承した場合, その処理の間だけ `epoch_end`. 高価な評価の間を画面に知らせる), 経過時間, 更新時刻 (`updated_at`). 1 秒以上の間隔で上書きする (1 エポックが短い学習の邪魔にならないように, フェーズの始めと終わりも間隔を守る). 学習を終えると消す |
+| `heartbeat.json` | 学習の後の処理 (`fit` を終えた後の評価や推論の一式の書き出しなど) の心拍. `fit` が `completed` か `stopped` で終えたときに書き始め, プロセスの中の別のスレッドが 10 秒ごとに置き換えで書き直す. プロセスが普通に終わったとき, `trainer.end_post()` を呼んだとき, 同じプロセスで次の `start_experiment` か `fit` を始めたときに `ended` を書いて止める (下の「学習の後の処理の心拍」) |
 
 ### エポックごとの結果を受け取る
 
@@ -1494,6 +1495,14 @@ echo now > outputs/wine/2026-11-12/10-00-00/STOP   # エポックの途中でも
 - ノートブックと IPython のセルで起きたエラーは, カーネルが動き続けて `sys.excepthook` を通らないので記録しない (`run.json` が無い実験はダッシュボードで未完了に見える). `sys.exit()` での終了と, メインでないスレッドで起きたエラーも記録しない. 後から別のライブラリ (traceback の表示を変えるものなど) が `sys.excepthook` を元のものに繋がずに置き換えた場合も記録しない
 
 プロセスが強制終了された場合は `running` のまま残るので, 同じ端末であれば `run.json` の `hostname` と `pid` のプロセスが動いているかで見分ける. 別の端末からは, `progress.json` の `updated_at` が長く更新されていないかで見分ける.
+
+**学習の後の処理の心拍**: 学習のスクリプトは `fit` を終えた後も, 同じプロセスでテストデータの評価や推論の一式の書き出しを続ける. この間は `run.json` が完了で, 書き直す約束のファイルが他に無いので, 画面がプロセスの生き死にを `pid` で確かめられない場合 (pid が使い回されて起動の時刻を読めない環境など) に, 後の処理中の本物と終わったプロセスを見分けられない. そこで `fit` が `completed` か `stopped` で終えたときから, 実験のディレクトリの `heartbeat.json` に動いている印を書く (形は [docs/FORMAT.md](FORMAT.md) の「heartbeat.json」).
+
+- **場所**: `progress.json` と別のファイル. `progress.json` は学習中だけ置いて学習を終えると消す約束で, 中身もエポックとバッチの進み具合なので, 後の処理に使い回さない
+- **間隔**: 10 秒ごと. `fit` の中のバッチの区切りで書く `progress.json` と違い, 後の処理はスクリプトが書くので区切りを ML-Found が知らない. そこでデーモンのスレッドが決まった間隔で書き, 後の処理の長さに関わらず心拍が続くようにする. 書くたびに一時ファイルからの置き換えで書き, 連番 `beat` と `updated_at` を変える (i-node は前の番号が使い直されうるので約束にしない). GIL を離さない 1 つの重い処理の間は遅れうるので, 読む側は間隔の何倍も変わらない場合に止まったとみなす
+- **終わり**: プロセスが普通に終わったとき (`atexit`. 処理されなかったエラー, キーボードの割り込み, `sys.exit()` も含む), スクリプトが `trainer.end_post()` を呼んだとき, 同じプロセスで次の `start_experiment` か `fit` を始めたときに, `state` を `ended` にして書き直しを止める. ファイルは消さない (心拍を書かない実験と, 後の処理を終えた実験を見分けるため). 同じ `Trainer` で `fit` を呼び直した場合だけ, 学習中は `progress.json` が様子を表すので消す. 強制終了 (SIGKILL など) では `running` のまま書き直しが止まり, 読む側はそれで止まったと分かる
+- ノートブックのようにプロセスが残り続ける場合は, 後の処理を終えたところで `trainer.end_post()` を呼ぶ (呼ばないとカーネルを止めるまで `running` が続く)
+- 書けない場合 (ディスクの不足など) は `train.log` に警告を 1 回残し, 後の処理は続ける. `fork` で作った子のプロセス (DataLoader の worker など) は書かない
 
 ## 25. 安全
 

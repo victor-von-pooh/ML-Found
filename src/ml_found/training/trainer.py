@@ -40,6 +40,7 @@ from ml_found.training.optim import (
     needs_data, requires_closure, step_scheduler, to_kwargs,
     uses_named_optimizers
 )
+from ml_found.training.heartbeat import PostHeartbeat, end_heartbeats
 from ml_found.training.status import STOP_FILE, RunStatus, record_not_started
 from ml_found.utils.batch import find_batch_size, move_to_device
 from ml_found.utils.model_summary import (
@@ -747,6 +748,9 @@ class Trainer:
 
         # 外から読める実験の状態と進み具合を書く仕組みの作成
         self.run_status = RunStatus(experiment.run_dir, self.logger)
+
+        # 学習の後の処理の心拍 (fit を終えたときに作る) の入れ物を用意
+        self.heartbeat: Optional[PostHeartbeat] = None
 
         # 外からの要求で学習を止めたかどうかの印を用意
         self.stopped_by_request = False
@@ -3418,6 +3422,13 @@ class Trainer:
         history: History
             エポックごとの記録
         """
+        # 前の fit の後の処理の心拍は, この Trainer のものなら消し, 他の
+        # Trainer のものなら終了
+        if self.heartbeat is not None:
+            self.heartbeat.cancel()
+            self.heartbeat = None
+        end_heartbeats()
+
         # 途中で止まった場合も原因が分かるように, エラーを train.log に記録して再送出
         # 外から読める状態にも, 完了, 中断, 失敗のどれかを記録
         try:
@@ -3442,7 +3453,32 @@ class Trainer:
             final_weights=self.final_weights
         )
 
+        # スクリプトが続ける学習の後の処理 (評価, 推論の一式の書き出し
+        # など) の間, 動いている印を書き続ける心拍の開始
+        self.heartbeat = PostHeartbeat(self.run_status.run_dir, self.logger)
+        self.heartbeat.start()
+
         return history
+
+    def end_post(self) -> None:
+        """
+        学習の後の処理を終えたことを heartbeat.json に書く関数
+
+        プロセスが普通に終われば自動で書くので, ノートブックのように
+        プロセスが残り続ける場合に呼ぶ
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        ----------
+        None
+        """
+        # fit を終えていない場合は心拍が無いので対象外
+        if self.heartbeat is None:
+            return
+        self.heartbeat.end()
 
     def build_scheduler_from_data(self, train_loader: Iterable) -> None:
         """
